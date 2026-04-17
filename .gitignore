@@ -1,0 +1,42 @@
+# Local Go build caches used to avoid Windows temp-dir issues
+.gocache/
+.gotmp/
+
+# Accidental temp source backups
+*.go.[0-9]*
+
+# Compiled binaries
+main
+main.exe
+coden
+coden-*
+*.exe
+
+# Go test/coverage artifacts
+*.test
+*.out
+go.work
+go.work.sum
+vendor/
+
+# Secrets and credentials
+.env
+.env.*
+*.key
+*.pem
+*.p12
+credentials.json
+secrets.yaml
+secrets.yml
+
+# macOS metadata
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo

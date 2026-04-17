@@ -1,0 +1,1204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeN Kanban</title>
+<style>
+/* =====================================================================
+   CodeN Kanban Board -- Dark Theme
+   ===================================================================== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg-main:#1e1e2e;--bg-sidebar:#181825;--bg-card:#313244;
+  --bg-surface:#24243a;--bg-hover:#3b3b54;--bg-column:#1a1a2c;
+  --text-primary:#cdd6f4;--text-secondary:#a6adc8;--text-muted:#6c7086;
+  --accent-blue:#89b4fa;--accent-green:#a6e3a1;--accent-yellow:#f9e2af;
+  --accent-red:#f38ba8;--accent-purple:#cba6f7;--accent-peach:#fab387;
+  --border:#45475a;--shadow:0 2px 8px rgba(0,0,0,.35);
+  --radius:8px;--transition:.2s ease;
+  --priority-p0:#f38ba8;--priority-p1:#fab387;--priority-p2:#89b4fa;--priority-p3:#6c7086;
+}
+html,body{height:100%;font-family:system-ui,-apple-system,sans-serif;background:var(--bg-main);color:var(--text-primary);overflow:hidden;min-width:1024px}
+button{font-family:inherit;cursor:pointer}
+a{color:var(--accent-blue);text-decoration:none}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+#app{display:flex;flex-direction:column;height:100vh}
+#toolbar{display:flex;align-items:center;gap:16px;padding:0 20px;height:52px;background:var(--bg-sidebar);border-bottom:1px solid var(--border);flex-shrink:0;z-index:100}
+#toolbar h1{font-size:16px;font-weight:700;white-space:nowrap;display:flex;align-items:center;gap:8px}
+#toolbar h1 .logo{font-size:20px}
+#connection-dot{width:8px;height:8px;border-radius:50%;background:var(--accent-red);display:inline-block;transition:background var(--transition)}
+#connection-dot.connected{background:var(--accent-green)}
+#agent-bar{display:flex;align-items:center;gap:8px;flex:1;overflow-x:auto;padding:4px 0;margin:0 8px}
+.agent-chip{display:flex;align-items:center;gap:6px;padding:4px 12px 4px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:20px;font-size:12px;white-space:nowrap;cursor:pointer;transition:all var(--transition);flex-shrink:0}
+.agent-chip:hover,.agent-chip.active{border-color:var(--accent-blue);background:var(--bg-hover)}
+.agent-chip.active{box-shadow:0 0 0 1px var(--accent-blue)}
+.agent-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.agent-dot.idle{background:var(--text-muted)}
+.agent-dot.thinking{background:var(--accent-yellow);animation:pulse 1.2s ease-in-out infinite}
+.agent-dot.coding{background:var(--accent-blue);animation:pulse 1.2s ease-in-out infinite}
+.agent-dot.done{background:var(--accent-green)}
+.agent-dot.waiting,.agent-dot.error{background:var(--accent-red)}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.75)}}
+.agent-task{color:var(--text-muted);max-width:120px;overflow:hidden;text-overflow:ellipsis}
+.agent-time{color:var(--text-muted);font-variant-numeric:tabular-nums}
+#actions{display:flex;gap:8px;flex-shrink:0}
+#actions button{padding:6px 14px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text-primary);font-size:13px;transition:all var(--transition)}
+#actions button:hover{border-color:var(--accent-blue);background:var(--bg-hover)}
+#board-wrapper{display:flex;flex:1;overflow:hidden}
+#board{display:flex;flex:1;gap:0;overflow-x:auto;padding:0}
+.column{flex:1;min-width:240px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--bg-column)}
+.column:last-child{border-right:none}
+.column-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);border-bottom:1px solid var(--border);flex-shrink:0;user-select:none}
+.column-count{background:var(--bg-card);border-radius:10px;padding:1px 8px;font-size:11px;color:var(--text-muted)}
+.column-body{flex:1;overflow-y:auto;padding:8px}
+.column.drag-over{background:rgba(137,180,250,.06)}
+.column.drag-over .column-header{color:var(--accent-blue)}
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:6px;cursor:grab;position:relative;transition:transform var(--transition),box-shadow var(--transition),opacity var(--transition)}
+.card:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:var(--accent-blue)}
+.card.dragging{opacity:.4;transform:rotate(2deg)}
+.card.selected{border-color:var(--accent-purple);box-shadow:0 0 0 1px var(--accent-purple)}
+.card.blocked{border-left:3px solid var(--accent-red)}
+.card-top{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.priority-badge{font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;color:#11111b}
+.priority-badge.p0{background:var(--priority-p0)}
+.priority-badge.p1{background:var(--priority-p1)}
+.priority-badge.p2{background:var(--priority-p2)}
+.priority-badge.p3{background:var(--priority-p3);color:var(--text-primary)}
+.card-title{font-size:13px;font-weight:500;line-height:1.4;margin-bottom:8px}
+.card-labels{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}
+.label-tag{font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(137,180,250,.15);color:var(--accent-blue)}
+.card-bottom{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.card-assignee{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted)}
+.avatar{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#11111b;flex-shrink:0}
+.card-icons{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted)}
+.card-elapsed{font-size:10px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.card-progress{position:absolute;bottom:0;left:0;height:2px;background:var(--accent-blue);border-radius:0 0 var(--radius) var(--radius);transition:width .4s ease}
+.card-blocked-icon{color:var(--accent-red)}
+.drop-indicator{height:3px;background:var(--accent-blue);border-radius:2px;margin:2px 0}
+#detail-panel{width:420px;min-width:420px;background:var(--bg-sidebar);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;flex-shrink:0}
+#detail-panel.hidden{display:none}
+.detail-header{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid var(--border)}
+.detail-header .close-btn{background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer;padding:4px;line-height:1}
+.detail-header .close-btn:hover{color:var(--text-primary)}
+.detail-body{padding:16px;display:flex;flex-direction:column;gap:16px}
+.detail-field label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:4px}
+.detail-field input[type="text"],.detail-field textarea,.detail-field select{width:100%;padding:8px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:inherit;font-size:13px;resize:vertical}
+.detail-field input:focus,.detail-field textarea:focus,.detail-field select:focus{outline:none;border-color:var(--accent-blue)}
+.detail-field textarea{min-height:80px}
+.detail-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.detail-tag{display:flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;background:rgba(137,180,250,.15);color:var(--accent-blue);border-radius:4px}
+.detail-tag .remove-tag{cursor:pointer;font-size:13px;line-height:1;color:var(--text-muted)}
+.detail-tag .remove-tag:hover{color:var(--accent-red)}
+.file-list{list-style:none;font-size:12px;color:var(--text-secondary)}
+.file-list li{padding:2px 0}
+.workflow-log{background:#11111b;border-radius:6px;padding:10px;max-height:200px;overflow-y:auto;font-size:11px;font-family:monospace;color:var(--text-secondary);line-height:1.6}
+.workflow-log .log-entry{white-space:pre-wrap}
+.workflow-log .log-step{color:var(--accent-blue)}
+.workflow-log .log-ok{color:var(--accent-green)}
+.workflow-log .log-err{color:var(--accent-red)}
+.detail-timestamps{font-size:11px;color:var(--text-muted);display:flex;flex-direction:column;gap:2px}
+.detail-actions{display:flex;gap:8px;padding-top:8px;border-top:1px solid var(--border)}
+.btn-danger{padding:6px 14px;border:1px solid var(--accent-red);border-radius:6px;background:transparent;color:var(--accent-red);font-size:13px;transition:all var(--transition)}
+.btn-danger:hover{background:var(--accent-red);color:#11111b}
+.btn-save{padding:6px 14px;border:1px solid var(--accent-green);border-radius:6px;background:transparent;color:var(--accent-green);font-size:13px;transition:all var(--transition)}
+.btn-save:hover{background:var(--accent-green);color:#11111b}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:500;animation:fadeIn .15s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{background:var(--bg-sidebar);border:1px solid var(--border);border-radius:12px;width:460px;max-width:90vw;max-height:85vh;overflow-y:auto;box-shadow:0 16px 48px rgba(0,0,0,.5);animation:slideUp .2s ease}
+@keyframes slideUp{from{transform:translateY(24px);opacity:0}to{transform:translateY(0);opacity:1}}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)}
+.modal-header h2{font-size:15px;font-weight:600}
+.modal-close{background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer}
+.modal-close:hover{color:var(--text-primary)}
+.modal-body{padding:20px;display:flex;flex-direction:column;gap:14px}
+.modal-body label{display:block;font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:4px}
+.modal-body input[type="text"],.modal-body textarea,.modal-body select{width:100%;padding:8px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:inherit;font-size:13px}
+.modal-body textarea{min-height:80px;resize:vertical}
+.modal-body input:focus,.modal-body textarea:focus,.modal-body select:focus{outline:none;border-color:var(--accent-blue)}
+.modal-footer{padding:12px 20px 16px;display:flex;justify-content:flex-end;gap:8px}
+.btn-primary{padding:8px 20px;border:none;border-radius:6px;background:var(--accent-blue);color:#11111b;font-size:13px;font-weight:600;transition:opacity var(--transition)}
+.btn-primary:hover{opacity:.85}
+.btn-secondary{padding:8px 20px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text-secondary);font-size:13px;transition:all var(--transition)}
+.btn-secondary:hover{border-color:var(--text-muted);color:var(--text-primary)}
+.agent-popup{position:fixed;background:var(--bg-sidebar);border:1px solid var(--border);border-radius:8px;padding:8px 0;box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:600;min-width:180px}
+.agent-popup-item{display:flex;align-items:center;gap:8px;padding:8px 16px;font-size:13px;cursor:pointer;transition:background var(--transition)}
+.agent-popup-item:hover{background:var(--bg-hover)}
+#filter-indicator{display:none;align-items:center;gap:6px;padding:4px 10px;background:rgba(137,180,250,.12);border-radius:12px;font-size:12px;color:var(--accent-blue);flex-shrink:0}
+#filter-indicator.active{display:flex}
+#filter-indicator .clear-filter{cursor:pointer;font-size:14px;line-height:1}
+#filter-indicator .clear-filter:hover{color:var(--accent-red)}
+.column-empty{color:var(--text-muted);font-size:12px;text-align:center;padding:32px 12px;font-style:italic}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- ============ Toolbar ============ -->
+  <header id="toolbar">
+    <h1><span class="logo">&#9670;</span> CodeN Kanban <span id="connection-dot" title="Disconnected"></span></h1>
+    <div id="agent-bar"></div>
+    <div id="filter-indicator"><span class="filter-text"></span><span class="clear-filter" title="Clear filter">&#10005;</span></div>
+    <div id="actions">
+      <button id="btn-new-card">+ New Card</button>
+      <button id="btn-new-agent">+ Agent</button>
+      <button id="btn-filter">Filter</button>
+    </div>
+  </header>
+
+  <!-- ============ Board ============ -->
+  <div id="board-wrapper">
+    <main id="board">
+      <div class="column" data-column="backlog">
+        <div class="column-header"><span>Backlog</span><span class="column-count">0</span></div>
+        <div class="column-body"></div>
+      </div>
+      <div class="column" data-column="ready">
+        <div class="column-header"><span>Ready</span><span class="column-count">0</span></div>
+        <div class="column-body"></div>
+      </div>
+      <div class="column" data-column="in_progress">
+        <div class="column-header"><span>In Progress</span><span class="column-count">0</span></div>
+        <div class="column-body"></div>
+      </div>
+      <div class="column" data-column="review">
+        <div class="column-header"><span>Review</span><span class="column-count">0</span></div>
+        <div class="column-body"></div>
+      </div>
+      <div class="column" data-column="done">
+        <div class="column-header"><span>Done</span><span class="column-count">0</span></div>
+        <div class="column-body"></div>
+      </div>
+    </main>
+
+    <!-- ============ Detail Panel ============ -->
+    <aside id="detail-panel" class="hidden">
+      <div class="detail-header">
+        <h2 id="detail-title-display">Card Details</h2>
+        <button class="close-btn" id="detail-close">&#10005;</button>
+      </div>
+      <div class="detail-body">
+        <div class="detail-field">
+          <label>Title</label>
+          <input type="text" id="detail-title">
+        </div>
+        <div class="detail-field">
+          <label>Description</label>
+          <textarea id="detail-desc" placeholder="Markdown supported..."></textarea>
+        </div>
+        <div class="detail-field">
+          <label>Priority</label>
+          <select id="detail-priority">
+            <option value="0">P0 - Critical</option>
+            <option value="1">P1 - High</option>
+            <option value="2">P2 - Medium</option>
+            <option value="3">P3 - Low</option>
+          </select>
+        </div>
+        <div class="detail-field">
+          <label>Column / Status</label>
+          <select id="detail-column">
+            <option value="backlog">Backlog</option>
+            <option value="ready">Ready</option>
+            <option value="in_progress">In Progress</option>
+            <option value="review">Review</option>
+            <option value="done">Done</option>
+          </select>
+        </div>
+        <div class="detail-field">
+          <label>Assignee</label>
+          <select id="detail-assignee">
+            <option value="">Unassigned</option>
+          </select>
+        </div>
+        <div class="detail-field">
+          <label>Dependencies</label>
+          <div id="detail-deps" class="detail-tags"></div>
+          <input type="text" id="detail-dep-input" placeholder="Add card ID...">
+        </div>
+        <div class="detail-field">
+          <label>Labels</label>
+          <div id="detail-labels" class="detail-tags"></div>
+          <input type="text" id="detail-label-input" placeholder="Add label (Enter)...">
+        </div>
+        <div class="detail-field">
+          <label>File Scope</label>
+          <ul id="detail-files" class="file-list"></ul>
+        </div>
+        <div class="detail-field">
+          <label>Workflow Log</label>
+          <div id="detail-log" class="workflow-log"></div>
+        </div>
+        <div class="detail-timestamps" id="detail-timestamps"></div>
+        <div class="detail-actions">
+          <button class="btn-save" id="detail-save">Save Changes</button>
+          <button class="btn-danger" id="detail-delete">Delete Card</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+<script>
+/* =====================================================================
+   CodeN Kanban Board - JavaScript Application
+   =====================================================================
+   Single-file vanilla JS application for real-time Kanban board.
+   Connects to CodeN backend via REST API and WebSocket.
+   ===================================================================== */
+
+// ---- Global State ----
+const state = {
+  board: null,       // Current board object
+  cards: [],         // All card objects
+  agents: [],        // All agent objects
+  selectedCard: null,// Currently selected card (shown in detail panel)
+  ws: null,          // WebSocket connection
+  filterAgent: null, // Agent ID to filter by (null = no filter)
+  draggedCardId: null, // ID of card being dragged
+};
+
+// Agent color palette for avatars
+const AGENT_COLORS = [
+  "#89b4fa","#a6e3a1","#f9e2af","#f38ba8","#cba6f7",
+  "#fab387","#94e2d5","#f5c2e7","#74c7ec","#b4befe"
+];
+
+// Column display names
+const COLUMN_NAMES = {
+  backlog: "Backlog",
+  ready: "Ready",
+  in_progress: "In Progress",
+  review: "Review",
+  done: "Done"
+};
+
+// ---- Utility Helpers ----
+
+/** Generate a simple unique ID */
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+/** Get initials from a name */
+function initials(name) {
+  if (!name) return "?";
+  return name.split(/[\s_-]+/).map(w => w[0]).join("").toUpperCase().slice(0, 2);
+}
+
+/** Get a consistent color for an agent based on index or id */
+function agentColor(agent) {
+  if (!agent) return AGENT_COLORS[0];
+  const idx = state.agents.indexOf(agent);
+  return AGENT_COLORS[(idx >= 0 ? idx : 0) % AGENT_COLORS.length];
+}
+
+/** Format elapsed time from a timestamp */
+function elapsed(ts) {
+  if (!ts) return "";
+  const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (diff < 0) return "0s";
+  if (diff < 60) return diff + "s";
+  if (diff < 3600) return Math.floor(diff / 60) + "m";
+  if (diff < 86400) return Math.floor(diff / 3600) + "h " + Math.floor((diff % 3600) / 60) + "m";
+  return Math.floor(diff / 86400) + "d";
+}
+
+/** Format a date for display */
+function fmtDate(ts) {
+  if (!ts) return "-";
+  return new Date(ts).toLocaleString();
+}
+
+/** Escape HTML */
+function esc(str) {
+  if (!str) return "";
+  const d = document.createElement("div");
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ---- API Client ----
+const API = {
+  baseUrl: "/api",
+
+  async request(method, path, body) {
+    try {
+      const opts = {
+        method,
+        headers: { "Content-Type": "application/json" },
+      };
+      if (body) opts.body = JSON.stringify(body);
+      const res = await fetch(this.baseUrl + path, opts);
+      if (!res.ok) {
+        console.error("API error:", res.status, await res.text());
+        return null;
+      }
+      if (res.status === 204) return {};
+      return await res.json();
+    } catch (e) {
+      console.error("API request failed:", e);
+      return null;
+    }
+  },
+
+  async getBoard() {
+    return this.request("GET", "/boards/default");
+  },
+
+  async getCards(boardId) {
+    return this.request("GET", "/boards/" + boardId + "/cards");
+  },
+
+  async createCard(boardId, card) {
+    return this.request("POST", "/boards/" + boardId + "/cards", card);
+  },
+
+  async moveCard(boardId, cardId, toColumn, position) {
+    return this.request("PUT", "/boards/" + boardId + "/cards/" + cardId + "/move", {
+      column: toColumn, position: position
+    });
+  },
+
+  async updateCard(boardId, cardId, updates) {
+    return this.request("PUT", "/boards/" + boardId + "/cards/" + cardId, updates);
+  },
+
+  async deleteCard(boardId, cardId) {
+    return this.request("DELETE", "/boards/" + boardId + "/cards/" + cardId);
+  },
+
+  async getAgents() {
+    return this.request("GET", "/agents");
+  },
+
+  async createAgent(agent) {
+    return this.request("POST", "/agents", agent);
+  },
+
+  async assignCard(agentId, cardId) {
+    return this.request("POST", "/agents/" + agentId + "/assign", { card_id: cardId });
+  },
+};
+
+// ---- WebSocket ----
+
+function connectWebSocket() {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const wsPort = window.__WS_PORT__ || location.port || "7200";
+  const wsUrl = protocol + "//" + location.hostname + ":" + wsPort + "/ws";
+
+  try {
+    state.ws = new WebSocket(wsUrl);
+  } catch (e) {
+    console.warn("WebSocket connection failed:", e);
+    setTimeout(connectWebSocket, 3000);
+    return;
+  }
+
+  state.ws.onopen = () => {
+    console.log("[WS] Connected to", wsUrl);
+    document.getElementById("connection-dot").classList.add("connected");
+    document.getElementById("connection-dot").title = "Connected";
+  };
+
+  state.ws.onclose = () => {
+    console.log("[WS] Disconnected, reconnecting in 3s...");
+    document.getElementById("connection-dot").classList.remove("connected");
+    document.getElementById("connection-dot").title = "Disconnected";
+    state.ws = null;
+    setTimeout(connectWebSocket, 3000);
+  };
+
+  state.ws.onerror = (e) => {
+    console.warn("[WS] Error:", e);
+  };
+
+  state.ws.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    console.log("[WS] Message:", msg.type, msg.data);
+
+    switch (msg.type) {
+      case "card.moved":    handleCardMoved(msg.data); break;
+      case "card.updated":  handleCardUpdated(msg.data); break;
+      case "card.created":  handleCardCreated(msg.data); break;
+      case "card.deleted":  handleCardDeleted(msg.data); break;
+      case "agent.status":  handleAgentStatus(msg.data); break;
+      case "agent.progress":handleAgentProgress(msg.data); break;
+      case "workflow.step": handleWorkflowStep(msg.data); break;
+      case "board.sync":    handleFullSync(msg.data); break;
+    }
+  };
+}
+
+// ---- WebSocket event handlers ----
+
+function handleCardMoved(data) {
+  const card = state.cards.find(c => c.id === data.card_id);
+  if (card) {
+    card.column = data.column;
+    card.position = data.position;
+    renderBoard();
+    if (state.selectedCard && state.selectedCard.id === card.id) {
+      openDetailPanel(card);
+    }
+  }
+}
+
+function handleCardUpdated(data) {
+  const idx = state.cards.findIndex(c => c.id === data.id);
+  if (idx >= 0) {
+    state.cards[idx] = { ...state.cards[idx], ...data };
+    renderBoard();
+    if (state.selectedCard && state.selectedCard.id === data.id) {
+      openDetailPanel(state.cards[idx]);
+    }
+  }
+}
+
+function handleCardCreated(data) {
+  if (!state.cards.find(c => c.id === data.id)) {
+    state.cards.push(data);
+    renderBoard();
+  }
+}
+
+function handleCardDeleted(data) {
+  state.cards = state.cards.filter(c => c.id !== data.card_id);
+  if (state.selectedCard && state.selectedCard.id === data.card_id) {
+    closeDetailPanel();
+  }
+  renderBoard();
+}
+
+function handleAgentStatus(data) {
+  const agent = state.agents.find(a => a.id === data.agent_id);
+  if (agent) {
+    agent.status = data.status;
+    if (data.current_task) agent.current_task = data.current_task;
+    if (data.started_at) agent.started_at = data.started_at;
+    renderAgentBar();
+  }
+}
+
+function handleAgentProgress(data) {
+  // Update card progress if agent is working on it
+  const card = state.cards.find(c => c.id === data.card_id);
+  if (card) {
+    card.progress = data.progress; // 0-100
+    card.workflow_step = data.step;
+    renderBoard();
+  }
+}
+
+function handleWorkflowStep(data) {
+  const card = state.cards.find(c => c.id === data.card_id);
+  if (card) {
+    if (!card.workflow_log) card.workflow_log = [];
+    card.workflow_log.push({
+      step: data.step,
+      message: data.message,
+      status: data.status,
+      timestamp: new Date().toISOString()
+    });
+    if (state.selectedCard && state.selectedCard.id === card.id) {
+      renderWorkflowLog(card);
+    }
+  }
+}
+
+function handleFullSync(data) {
+  if (data.cards) state.cards = data.cards;
+  if (data.agents) state.agents = data.agents;
+  if (data.board) state.board = data.board;
+  renderBoard();
+  renderAgentBar();
+}
+
+
+// ---- Rendering ----
+
+/** Render a single card element */
+function renderCard(card) {
+  const agent = card.assignee_id ? state.agents.find(a => a.id === card.assignee_id) : null;
+  const isBlocked = card.status === "blocked";
+  const isSelected = state.selectedCard && state.selectedCard.id === card.id;
+  const pClass = "p" + (card.priority != null ? card.priority : 3);
+  const pLabel = "P" + (card.priority != null ? card.priority : 3);
+
+  let labelsHtml = "";
+  if (card.labels && card.labels.length) {
+    labelsHtml = "<div class=\"card-labels\">" +
+      card.labels.map(l => "<span class=\"label-tag\">" + esc(l) + "</span>").join("") + "</div>";
+  }
+
+  let assigneeHtml = "";
+  if (agent) {
+    const color = agentColor(agent);
+    assigneeHtml = "<div class=\"card-assignee\">" +
+      "<span class=\"avatar\" style=\"background:" + color + "\">" + initials(agent.name) + "</span>" +
+      "<span>" + esc(agent.name) + "</span></div>";
+  }
+
+  let iconsHtml = "";
+  if (card.dependencies && card.dependencies.length) iconsHtml += "<span title=\"Has dependencies\">&#128279;</span>";
+  if (isBlocked) iconsHtml += "<span class=\"card-blocked-icon\" title=\"Blocked\">&#128274;</span>";
+  if (card.column === "in_progress" && card.started_at) iconsHtml += "<span class=\"card-elapsed\">" + elapsed(card.started_at) + "</span>";
+
+  let progressHtml = "";
+  if (card.progress != null && card.progress > 0 && card.progress < 100)
+    progressHtml = "<div class=\"card-progress\" style=\"width:" + card.progress + "%\"></div>";
+
+  const cls = ["card"];
+  if (isBlocked) cls.push("blocked");
+  if (isSelected) cls.push("selected");
+
+  return "<div class=\"" + cls.join(" ") + "\" data-card-id=\"" + card.id + "\" draggable=\"" + (!isBlocked) + "\">" +
+    "<div class=\"card-top\"><span class=\"priority-badge " + pClass + "\">" + pLabel + "</span></div>" +
+    "<div class=\"card-title\">" + esc(card.title) + "</div>" +
+    labelsHtml +
+    "<div class=\"card-bottom\">" + assigneeHtml + "<div class=\"card-icons\">" + iconsHtml + "</div></div>" +
+    progressHtml + "</div>";
+}
+
+/** Render the full board */
+function renderBoard() {
+  document.querySelectorAll(".column").forEach(col => {
+    const colName = col.dataset.column;
+    const body = col.querySelector(".column-body");
+    const count = col.querySelector(".column-count");
+    let cards = state.cards.filter(c => c.column === colName);
+    if (state.filterAgent) cards = cards.filter(c => c.assignee_id === state.filterAgent);
+    cards.sort((a, b) => (a.position || 0) - (b.position || 0));
+    count.textContent = cards.length;
+    if (cards.length === 0) {
+      body.innerHTML = "<div class=\"column-empty\">No cards</div>";
+    } else {
+      body.innerHTML = cards.map(renderCard).join("");
+    }
+    body.querySelectorAll(".card").forEach(cardEl => {
+      cardEl.addEventListener("click", (e) => {
+        if (e.defaultPrevented) return;
+        const card = state.cards.find(c => c.id === cardEl.dataset.cardId);
+        if (card) openDetailPanel(card);
+      });
+    });
+  });
+  setupDragAndDrop();
+}
+
+/** Render agent bar */
+function renderAgentBar() {
+  const bar = document.getElementById("agent-bar");
+  if (!state.agents.length) {
+    bar.innerHTML = "<span style=\"color:var(--text-muted);font-size:12px\">No agents connected</span>";
+    return;
+  }
+  bar.innerHTML = state.agents.map(agent => {
+    const isActive = state.filterAgent === agent.id;
+    const taskCard = agent.current_task ? state.cards.find(c => c.id === agent.current_task) : null;
+    const taskTitle = taskCard ? esc(taskCard.title) : "";
+    const time = agent.started_at ? elapsed(agent.started_at) : "";
+    return "<div class=\"agent-chip" + (isActive ? " active" : "") + "\" data-agent-id=\"" + agent.id + "\">" +
+      "<span class=\"agent-dot " + (agent.status || "idle") + "\"></span>" +
+      "<span>" + esc(agent.name) + "</span>" +
+      (taskTitle ? "<span class=\"agent-task\">" + taskTitle + "</span>" : "") +
+      (time ? "<span class=\"agent-time\">" + time + "</span>" : "") +
+      "</div>";
+  }).join("");
+
+  bar.querySelectorAll(".agent-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const agentId = chip.dataset.agentId;
+      if (state.filterAgent === agentId) {
+        state.filterAgent = null;
+      } else {
+        state.filterAgent = agentId;
+      }
+      updateFilterIndicator();
+      renderBoard();
+      renderAgentBar();
+    });
+  });
+}
+
+function updateFilterIndicator() {
+  const el = document.getElementById("filter-indicator");
+  if (state.filterAgent) {
+    const agent = state.agents.find(a => a.id === state.filterAgent);
+    el.querySelector(".filter-text").textContent = "Filtered: " + (agent ? agent.name : state.filterAgent);
+    el.classList.add("active");
+  } else {
+    el.classList.remove("active");
+  }
+}
+
+// ---- Drag and Drop ----
+
+function setupDragAndDrop() {
+  document.querySelectorAll(".card[draggable=\"true\"]").forEach(cardEl => {
+    cardEl.addEventListener("dragstart", (e) => {
+      state.draggedCardId = cardEl.dataset.cardId;
+      cardEl.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", cardEl.dataset.cardId);
+    });
+    cardEl.addEventListener("dragend", () => {
+      cardEl.classList.remove("dragging");
+      state.draggedCardId = null;
+      document.querySelectorAll(".column").forEach(c => c.classList.remove("drag-over"));
+      document.querySelectorAll(".drop-indicator").forEach(d => d.remove());
+    });
+  });
+
+  document.querySelectorAll(".column").forEach(col => {
+    col.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      col.classList.add("drag-over");
+
+      // Show drop indicator
+      const body = col.querySelector(".column-body");
+      const cards = Array.from(body.querySelectorAll(".card:not(.dragging)"));
+      document.querySelectorAll(".drop-indicator").forEach(d => d.remove());
+
+      const indicator = document.createElement("div");
+      indicator.className = "drop-indicator";
+
+      let insertBefore = null;
+      for (const c of cards) {
+        const rect = c.getBoundingClientRect();
+        if (e.clientY < rect.top + rect.height / 2) {
+          insertBefore = c;
+          break;
+        }
+      }
+      if (insertBefore) {
+        body.insertBefore(indicator, insertBefore);
+      } else {
+        body.appendChild(indicator);
+      }
+    });
+
+    col.addEventListener("dragleave", (e) => {
+      if (!col.contains(e.relatedTarget)) {
+        col.classList.remove("drag-over");
+        col.querySelectorAll(".drop-indicator").forEach(d => d.remove());
+      }
+    });
+
+    col.addEventListener("drop", (e) => {
+      e.preventDefault();
+      col.classList.remove("drag-over");
+      col.querySelectorAll(".drop-indicator").forEach(d => d.remove());
+
+      const cardId = e.dataTransfer.getData("text/plain");
+      const card = state.cards.find(c => c.id === cardId);
+      if (!card) return;
+
+      const toColumn = col.dataset.column;
+      const body = col.querySelector(".column-body");
+      const cards = Array.from(body.querySelectorAll(".card:not(.dragging)"));
+
+      // Calculate position
+      let position = 0;
+      for (const c of cards) {
+        const rect = c.getBoundingClientRect();
+        if (e.clientY > rect.top + rect.height / 2) position++;
+      }
+
+      // If moving to in_progress and no assignee, show agent popup
+      if (toColumn === "in_progress" && !card.assignee_id && state.agents.length > 0) {
+        showAgentPopup(e.clientX, e.clientY, card, toColumn, position);
+        return;
+      }
+
+      // Optimistic update
+      card.column = toColumn;
+      card.position = position;
+      renderBoard();
+
+      // API call
+      const boardId = state.board ? state.board.id : "default";
+      API.moveCard(boardId, cardId, toColumn, position);
+    });
+  });
+}
+
+// ---- Agent Selection Popup ----
+
+function showAgentPopup(x, y, card, toColumn, position) {
+  removeAgentPopup();
+  const popup = document.createElement("div");
+  popup.className = "agent-popup";
+  popup.id = "agent-popup";
+  popup.style.left = x + "px";
+  popup.style.top = y + "px";
+
+  let html = "<div style=\"padding:8px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em\">Assign Agent</div>";
+  state.agents.forEach(agent => {
+    html += "<div class=\"agent-popup-item\" data-agent-id=\"" + agent.id + "\">" +
+      "<span class=\"agent-dot " + (agent.status || "idle") + "\"></span>" +
+      "<span>" + esc(agent.name) + "</span></div>";
+  });
+  html += "<div class=\"agent-popup-item\" data-agent-id=\"\">" +
+    "<span style=\"color:var(--text-muted)\">Skip (no assignee)</span></div>";
+
+  popup.innerHTML = html;
+  document.body.appendChild(popup);
+
+  // Ensure popup stays in viewport
+  const rect = popup.getBoundingClientRect();
+  if (rect.right > window.innerWidth) popup.style.left = (window.innerWidth - rect.width - 8) + "px";
+  if (rect.bottom > window.innerHeight) popup.style.top = (window.innerHeight - rect.height - 8) + "px";
+
+  popup.querySelectorAll(".agent-popup-item").forEach(item => {
+    item.addEventListener("click", () => {
+      const agentId = item.dataset.agentId;
+      if (agentId) {
+        card.assignee_id = agentId;
+        const boardId = state.board ? state.board.id : "default";
+        API.assignCard(agentId, card.id);
+      }
+      card.column = toColumn;
+      card.position = position;
+      renderBoard();
+      const boardId = state.board ? state.board.id : "default";
+      API.moveCard(boardId, card.id, toColumn, position);
+      removeAgentPopup();
+    });
+  });
+
+  // Close on outside click
+  setTimeout(() => {
+    document.addEventListener("click", closeAgentPopupOnOutside);
+  }, 10);
+}
+
+function closeAgentPopupOnOutside(e) {
+  const popup = document.getElementById("agent-popup");
+  if (popup && !popup.contains(e.target)) {
+    removeAgentPopup();
+  }
+}
+
+function removeAgentPopup() {
+  const popup = document.getElementById("agent-popup");
+  if (popup) popup.remove();
+  document.removeEventListener("click", closeAgentPopupOnOutside);
+}
+
+// ---- Detail Panel ----
+
+function openDetailPanel(card) {
+  state.selectedCard = card;
+  const panel = document.getElementById("detail-panel");
+  panel.classList.remove("hidden");
+
+  document.getElementById("detail-title").value = card.title || "";
+  document.getElementById("detail-desc").value = card.description || "";
+  document.getElementById("detail-priority").value = card.priority != null ? card.priority : 2;
+  document.getElementById("detail-column").value = card.column || "backlog";
+
+  // Populate assignee dropdown
+  const assigneeSel = document.getElementById("detail-assignee");
+  assigneeSel.innerHTML = "<option value=\"\">Unassigned</option>";
+  state.agents.forEach(a => {
+    const opt = document.createElement("option");
+    opt.value = a.id;
+    opt.textContent = a.name;
+    if (card.assignee_id === a.id) opt.selected = true;
+    assigneeSel.appendChild(opt);
+  });
+
+  // Dependencies
+  const depsEl = document.getElementById("detail-deps");
+  depsEl.innerHTML = "";
+  if (card.dependencies && card.dependencies.length) {
+    card.dependencies.forEach(depId => {
+      const depCard = state.cards.find(c => c.id === depId);
+      const tag = document.createElement("span");
+      tag.className = "detail-tag";
+      tag.innerHTML = esc(depCard ? depCard.title : depId) +
+        " <span class=\"remove-tag\" data-dep=\"" + depId + "\">x</span>";
+      depsEl.appendChild(tag);
+    });
+    depsEl.querySelectorAll(".remove-tag").forEach(btn => {
+      btn.addEventListener("click", () => {
+        card.dependencies = card.dependencies.filter(d => d !== btn.dataset.dep);
+        openDetailPanel(card);
+      });
+    });
+  }
+
+  // Labels
+  const labelsEl = document.getElementById("detail-labels");
+  labelsEl.innerHTML = "";
+  if (card.labels && card.labels.length) {
+    card.labels.forEach(label => {
+      const tag = document.createElement("span");
+      tag.className = "detail-tag";
+      tag.innerHTML = esc(label) + " <span class=\"remove-tag\" data-label=\"" + esc(label) + "\">x</span>";
+      labelsEl.appendChild(tag);
+    });
+    labelsEl.querySelectorAll(".remove-tag").forEach(btn => {
+      btn.addEventListener("click", () => {
+        card.labels = card.labels.filter(l => l !== btn.dataset.label);
+        openDetailPanel(card);
+      });
+    });
+  }
+
+  // File scope
+  const filesEl = document.getElementById("detail-files");
+  filesEl.innerHTML = "";
+  if (card.file_scope && card.file_scope.length) {
+    card.file_scope.forEach(fp => {
+      const li = document.createElement("li");
+      li.textContent = fp;
+      filesEl.appendChild(li);
+    });
+  } else {
+    filesEl.innerHTML = "<li style=\"color:var(--text-muted);font-style:italic\">No files</li>";
+  }
+
+  // Workflow log
+  renderWorkflowLog(card);
+
+  // Timestamps
+  const tsEl = document.getElementById("detail-timestamps");
+  tsEl.innerHTML = "";
+  if (card.created_at) tsEl.innerHTML += "<span>Created: " + fmtDate(card.created_at) + "</span>";
+  if (card.started_at) tsEl.innerHTML += "<span>Started: " + fmtDate(card.started_at) + "</span>";
+  if (card.completed_at) tsEl.innerHTML += "<span>Completed: " + fmtDate(card.completed_at) + "</span>";
+
+  renderBoard();
+}
+
+function renderWorkflowLog(card) {
+  const logEl = document.getElementById("detail-log");
+  if (!card.workflow_log || !card.workflow_log.length) {
+    logEl.innerHTML = "<span style=\"color:var(--text-muted);font-style:italic\">No workflow activity</span>";
+    return;
+  }
+  logEl.innerHTML = card.workflow_log.map(entry => {
+    const cls = entry.status === "ok" ? "log-ok" : entry.status === "error" ? "log-err" : "log-step";
+    return "<div class=\"log-entry " + cls + "\">[" + (entry.step || "?") + "] " + esc(entry.message || "") + "</div>";
+  }).join("");
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function closeDetailPanel() {
+  state.selectedCard = null;
+  document.getElementById("detail-panel").classList.add("hidden");
+  renderBoard();
+}
+
+// ---- Modals ----
+
+function showModal(title, bodyHtml, onSubmit) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML =
+    "<div class=\"modal\">" +
+      "<div class=\"modal-header\"><h2>" + esc(title) + "</h2><button class=\"modal-close\">&#10005;</button></div>" +
+      "<div class=\"modal-body\">" + bodyHtml + "</div>" +
+      "<div class=\"modal-footer\">" +
+        "<button class=\"btn-secondary modal-cancel\">Cancel</button>" +
+        "<button class=\"btn-primary modal-submit\">Create</button>" +
+      "</div>" +
+    "</div>";
+  document.body.appendChild(overlay);
+
+  overlay.querySelector(".modal-close").addEventListener("click", () => overlay.remove());
+  overlay.querySelector(".modal-cancel").addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+
+  overlay.querySelector(".modal-submit").addEventListener("click", () => {
+    if (onSubmit(overlay)) overlay.remove();
+  });
+
+  // Focus first input
+  const firstInput = overlay.querySelector("input, textarea, select");
+  if (firstInput) setTimeout(() => firstInput.focus(), 50);
+
+  return overlay;
+}
+
+function showNewCardModal() {
+  const body =
+    "<div><label>Title</label><input type=\"text\" id=\"nc-title\" placeholder=\"Card title...\"></div>" +
+    "<div><label>Description</label><textarea id=\"nc-desc\" placeholder=\"Description (markdown)...\"></textarea></div>" +
+    "<div><label>Priority</label><select id=\"nc-priority\">" +
+      "<option value=\"0\">P0 - Critical</option>" +
+      "<option value=\"1\">P1 - High</option>" +
+      "<option value=\"2\" selected>P2 - Medium</option>" +
+      "<option value=\"3\">P3 - Low</option>" +
+    "</select></div>" +
+    "<div><label>Column</label><select id=\"nc-column\">" +
+      "<option value=\"backlog\" selected>Backlog</option>" +
+      "<option value=\"ready\">Ready</option>" +
+      "<option value=\"in_progress\">In Progress</option>" +
+      "<option value=\"review\">Review</option>" +
+      "<option value=\"done\">Done</option>" +
+    "</select></div>" +
+    "<div><label>Labels (comma separated)</label><input type=\"text\" id=\"nc-labels\" placeholder=\"bug, ui, backend...\"></div>";
+
+  showModal("New Card", body, (overlay) => {
+    const title = overlay.querySelector("#nc-title").value.trim();
+    if (!title) { overlay.querySelector("#nc-title").style.borderColor = "var(--accent-red)"; return false; }
+
+    const card = {
+      id: uid(),
+      title: title,
+      description: overlay.querySelector("#nc-desc").value,
+      priority: parseInt(overlay.querySelector("#nc-priority").value),
+      column: overlay.querySelector("#nc-column").value,
+      labels: overlay.querySelector("#nc-labels").value.split(",").map(s => s.trim()).filter(Boolean),
+      position: state.cards.filter(c => c.column === overlay.querySelector("#nc-column").value).length,
+      created_at: new Date().toISOString(),
+      dependencies: [],
+      assignee_id: null,
+      status: "open",
+      file_scope: [],
+      workflow_log: [],
+    };
+
+    // Optimistic add
+    state.cards.push(card);
+    renderBoard();
+
+    // API call
+    const boardId = state.board ? state.board.id : "default";
+    API.createCard(boardId, card);
+    return true;
+  });
+}
+
+function showNewAgentModal() {
+  const body =
+    "<div><label>Name</label><input type=\"text\" id=\"na-name\" placeholder=\"Agent name...\"></div>" +
+    "<div><label>Role</label><select id=\"na-role\">" +
+      "<option value=\"fullstack\">Full Stack</option>" +
+      "<option value=\"backend\">Backend</option>" +
+      "<option value=\"frontend\">Frontend</option>" +
+      "<option value=\"test\">Test / QA</option>" +
+    "</select></div>" +
+    "<div><label>Provider</label><input type=\"text\" id=\"na-provider\" placeholder=\"e.g. openai, anthropic...\"></div>" +
+    "<div><label>Model</label><input type=\"text\" id=\"na-model\" placeholder=\"e.g. gpt-4, claude-3...\"></div>";
+
+  showModal("New Agent", body, (overlay) => {
+    const name = overlay.querySelector("#na-name").value.trim();
+    if (!name) { overlay.querySelector("#na-name").style.borderColor = "var(--accent-red)"; return false; }
+
+    const agent = {
+      id: uid(),
+      name: name,
+      role: overlay.querySelector("#na-role").value,
+      provider: overlay.querySelector("#na-provider").value.trim(),
+      model: overlay.querySelector("#na-model").value.trim(),
+      status: "idle",
+      current_task: null,
+      started_at: null,
+    };
+
+    state.agents.push(agent);
+    renderAgentBar();
+    API.createAgent(agent);
+    return true;
+  });
+}
+
+// ---- Detail Panel Event Handlers ----
+
+function setupDetailPanelEvents() {
+  document.getElementById("detail-close").addEventListener("click", closeDetailPanel);
+
+  // Save changes
+  document.getElementById("detail-save").addEventListener("click", () => {
+    if (!state.selectedCard) return;
+    const card = state.selectedCard;
+    const boardId = state.board ? state.board.id : "default";
+
+    card.title = document.getElementById("detail-title").value;
+    card.description = document.getElementById("detail-desc").value;
+    card.priority = parseInt(document.getElementById("detail-priority").value);
+
+    const newColumn = document.getElementById("detail-column").value;
+    if (newColumn !== card.column) {
+      card.column = newColumn;
+      API.moveCard(boardId, card.id, newColumn, 0);
+    }
+
+    const newAssignee = document.getElementById("detail-assignee").value || null;
+    if (newAssignee !== card.assignee_id) {
+      card.assignee_id = newAssignee;
+      if (newAssignee) API.assignCard(newAssignee, card.id);
+    }
+
+    API.updateCard(boardId, card.id, {
+      title: card.title,
+      description: card.description,
+      priority: card.priority,
+      labels: card.labels,
+      dependencies: card.dependencies,
+    });
+
+    renderBoard();
+    renderAgentBar();
+  });
+
+  // Delete card
+  document.getElementById("detail-delete").addEventListener("click", () => {
+    if (!state.selectedCard) return;
+    if (!confirm("Delete this card? This cannot be undone.")) return;
+    const card = state.selectedCard;
+    const boardId = state.board ? state.board.id : "default";
+    state.cards = state.cards.filter(c => c.id !== card.id);
+    closeDetailPanel();
+    renderBoard();
+    API.deleteCard(boardId, card.id);
+  });
+
+  // Add label on Enter
+  document.getElementById("detail-label-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const input = e.target;
+      const label = input.value.trim();
+      if (!label || !state.selectedCard) return;
+      if (!state.selectedCard.labels) state.selectedCard.labels = [];
+      if (!state.selectedCard.labels.includes(label)) {
+        state.selectedCard.labels.push(label);
+        openDetailPanel(state.selectedCard);
+      }
+      input.value = "";
+    }
+  });
+
+  // Add dependency on Enter
+  document.getElementById("detail-dep-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const input = e.target;
+      const depId = input.value.trim();
+      if (!depId || !state.selectedCard) return;
+      if (!state.selectedCard.dependencies) state.selectedCard.dependencies = [];
+      if (!state.selectedCard.dependencies.includes(depId)) {
+        state.selectedCard.dependencies.push(depId);
+        openDetailPanel(state.selectedCard);
+      }
+      input.value = "";
+    }
+  });
+}
+
+// ---- Filter Button ----
+
+function setupFilterButton() {
+  const btn = document.getElementById("btn-filter");
+  btn.addEventListener("click", () => {
+    if (state.filterAgent) {
+      // Clear filter
+      state.filterAgent = null;
+    } else if (state.agents.length) {
+      // Show a quick agent picker
+      const body = state.agents.map(a =>
+        "<div><label style=\"display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 0\">" +
+        "<input type=\"radio\" name=\"filter-agent\" value=\"" + a.id + "\"> " + esc(a.name) +
+        "</label></div>"
+      ).join("");
+      showModal("Filter by Agent", body, (overlay) => {
+        const checked = overlay.querySelector("input[name=\"filter-agent\"]:checked");
+        if (checked) {
+          state.filterAgent = checked.value;
+          updateFilterIndicator();
+          renderBoard();
+          renderAgentBar();
+        }
+        return true;
+      });
+      return;
+    }
+    updateFilterIndicator();
+    renderBoard();
+    renderAgentBar();
+  });
+
+  // Clear filter button
+  document.querySelector("#filter-indicator .clear-filter").addEventListener("click", () => {
+    state.filterAgent = null;
+    updateFilterIndicator();
+    renderBoard();
+    renderAgentBar();
+  });
+}
+
+// ---- Periodic timer update ----
+
+function startTimers() {
+  setInterval(() => {
+    // Update elapsed times on cards in_progress
+    let needsRender = false;
+    document.querySelectorAll(".card-elapsed").forEach(() => { needsRender = true; });
+    if (needsRender) renderBoard();
+    // Update agent bar times
+    renderAgentBar();
+  }, 10000); // every 10 seconds
+}
+
+// ---- Initialization ----
+
+async function init() {
+  console.log("[CodeN Kanban] Initializing...");
+
+  // Wire up toolbar buttons
+  document.getElementById("btn-new-card").addEventListener("click", showNewCardModal);
+  document.getElementById("btn-new-agent").addEventListener("click", showNewAgentModal);
+  setupFilterButton();
+  setupDetailPanelEvents();
+
+  // Try to load data from API
+  const board = await API.getBoard();
+  if (board) {
+    state.board = board;
+    const cards = await API.getCards(board.id);
+    if (cards) state.cards = Array.isArray(cards) ? cards : (cards.cards || []);
+  }
+
+  const agents = await API.getAgents();
+  if (agents) state.agents = Array.isArray(agents) ? agents : (agents.agents || []);
+
+  // Render
+  renderBoard();
+  renderAgentBar();
+
+  // Connect WebSocket
+  connectWebSocket();
+
+  // Start elapsed-time timers
+  startTimers();
+
+  console.log("[CodeN Kanban] Ready. Cards:", state.cards.length, "Agents:", state.agents.length);
+}
+
+// Keyboard shortcut: Escape closes detail panel & modals
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    // Close modal if open
+    const modal = document.querySelector(".modal-overlay");
+    if (modal) { modal.remove(); return; }
+    // Close agent popup if open
+    removeAgentPopup();
+    // Close detail panel if open
+    if (state.selectedCard) closeDetailPanel();
+  }
+});
+
+// Start the app when DOM is ready
+document.addEventListener("DOMContentLoaded", init);
+
+</script>
+</body>
+</html>

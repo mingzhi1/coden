@@ -1,0 +1,132 @@
+# CodeN Configuration
+# ============================================================
+# Place this file at:
+#   ~/.coden/config.yaml            (user-level defaults)
+#   <workspace>/.coden/config.yaml  (project-specific overrides)
+#
+# Workspace config merges on top of user config, which merges
+# on top of built-in defaults. Only specify the keys you want
+# to override — unset keys inherit from the layer below.
+#
+# Legacy: <workspace>/tools.yaml is still loaded as a fallback
+# if no .coden/config.yaml is found at either level.
+# ============================================================
+
+# ============================================================
+# Language Server Protocol
+# ============================================================
+lsp:
+  go:
+    enabled: true
+    command: gopls
+    args: ["serve"]
+    languages: ["go"]
+    timeout: 30s
+    max_restarts: 3
+    auto_start: true
+    env: {}
+
+  # python:
+  #   enabled: true
+  #   command: pylsp
+  #   args: []
+  #   languages: ["python"]
+  #   timeout: 30s
+  #   max_restarts: 3
+  #   auto_start: false
+
+  # typescript:
+  #   enabled: true
+  #   command: typescript-language-server
+  #   args: ["--stdio"]
+  #   languages: ["typescript", "javascript"]
+  #   timeout: 30s
+  #   max_restarts: 3
+  #   auto_start: false
+
+# ============================================================
+# Retrieval-Augmented Generation
+# ============================================================
+rag:
+  enabled: true
+  indexing:
+    auto_build: true
+    incremental_interval: 300
+    indexable_extensions:
+      - ".go"
+      - ".py"
+      - ".js"
+      - ".jsx"
+      - ".ts"
+      - ".tsx"
+      - ".rs"
+      - ".java"
+    exclude_dirs:
+      - ".git"
+      - "vendor"
+      - "node_modules"
+      - ".tmp"
+      - ".cache"
+    exclude_patterns:
+      - "*.min.js"
+      - "*.min.css"
+      - "*.map"
+      - "*.lock"
+    max_file_size: 1048576  # 1MB
+    chunk_size: 50
+    chunk_overlap: 10
+  search:
+    k1: 1.5
+    b: 0.75
+    default_top_k: 10
+    max_top_k: 100
+    min_score: 0.1
+  embedding:
+    enabled: false
+    model_path: ""
+    dimension: 768
+
+# ============================================================
+# Text Search
+# ============================================================
+search:
+  ripgrep:
+    enabled: true
+    command: rg
+    check_command: ["rg", "--version"]
+    default_args: ["--json", "--max-count=50", "--max-filesize=1M", "-C=3"]
+    fallback: builtin
+  fd:
+    enabled: false
+    command: fd
+    check_command: ["fd", "--version"]
+  fzf:
+    enabled: false
+    command: fzf
+    check_command: ["fzf", "--version"]
+
+# ============================================================
+# Post-Code Quality Hooks
+# Run between the Code and Accept phases of a workflow.
+# ============================================================
+hooks:
+  post_code: []
+  # Example:
+  # post_code:
+  #   - name: go_vet
+  #     command: "go vet ./..."
+  #     blocking: true
+  #     timeout: 30s
+  #   - name: go_test
+  #     command: "go test -short ./..."
+  #     blocking: true
+  #     timeout: 120s
+
+# ============================================================
+# Tool Discovery (optional, rarely changed)
+# ============================================================
+discovery:
+  check_timeout: 5s
+  auto_check: true
+  cache_ttl: 3600
+  on_missing: warn
