@@ -28,13 +28,14 @@ import (
 // taskExecResult carries the outcome of executing a single task through the
 // Code→Accept retry loop.
 type taskExecResult struct {
-	taskIdx       int
-	task          model.Task // final state (Status = passed | failed)
-	checkpoint    model.CheckpointResult
-	artifact      model.Artifact
-	llmOutput     string       // accumulated assistant messages for insight extraction
-	err           error        // non-nil → abort the whole workflow
-	appendedTasks []model.Task // M11-03: tasks the coder requested to append
+	taskIdx        int
+	task           model.Task // final state (Status = passed | failed)
+	checkpoint     model.CheckpointResult
+	artifact       model.Artifact
+	llmOutput      string       // accumulated assistant messages for insight extraction
+	err            error        // non-nil → abort the whole workflow
+	appendedTasks  []model.Task // M11-03: tasks the coder requested to append
+	replanEvidence []string     // non-nil → replan remaining tasks with this failure evidence
 }
 
 // sharedTasks guards concurrent read/write access to the tasks slice.
@@ -430,6 +431,21 @@ func (k *Kernel) runOneTask(
 					// err is nil — task failed but workflow continues
 				}
 			}
+			if fp == "replan" {
+				clog.Session(sessionID).Info("task failed, requesting replan",
+					"workflow_id", workflowID,
+					"task_id", task.ID,
+					"policy", fp)
+				return taskExecResult{
+					taskIdx:        taskIdx,
+					task:           task,
+					checkpoint:     finalCheckpoint,
+					artifact:       finalArtifact,
+					llmOutput:      llmOut.String(),
+					replanEvidence: finalCheckpoint.Evidence,
+					// err is nil — workflow re-plans rather than aborting
+				}
+			}
 
 			// Secretary failure policy decision (legacy path, supplements kernel policy).
 			if k.secretary != nil {
@@ -551,10 +567,14 @@ func (k *Kernel) runTasksConcurrent(
 
 		// Collect results from this level.
 		var levelErr error
+		var replanEvidence []string
 		for _, res := range results {
 			llmOut.WriteString(res.llmOutput)
 			if res.err != nil && levelErr == nil {
 				levelErr = res.err
+			}
+			if len(res.replanEvidence) > 0 && replanEvidence == nil {
+				replanEvidence = res.replanEvidence
 			}
 			if res.checkpoint.Status != "" {
 				finalCheckpoint = res.checkpoint
@@ -568,6 +588,13 @@ func (k *Kernel) runTasksConcurrent(
 			// Mark all remaining planned tasks as abandoned.
 			k.abandonRemainingTasks(shared, queue, sessionID, workflowID, levelIdx+1, levels)
 			return finalCheckpoint, finalArtifact, llmOut.String(), levelErr
+		}
+
+		// Replan policy: a task failed and requested re-planning of remaining work.
+		if replanEvidence != nil {
+			k.abandonRemainingTasks(shared, queue, sessionID, workflowID, levelIdx+1, levels)
+			return finalCheckpoint, finalArtifact, llmOut.String(),
+				&replanRequestedError{evidence: replanEvidence}
 		}
 
 		// M11-02: Sync final task states back to the queue after each level.
@@ -646,4 +673,14 @@ func (k *Kernel) abandonRemainingTasks(shared *sharedTasks, queue *taskqueue.Que
 			k.emitTasksUpdated(sessionID, workflowID, snap)
 		}
 	}
+}
+
+// replanRequestedError signals that a task failure with "replan" policy requests
+// the workflow to re-plan remaining tasks using the Replanner with failure evidence.
+type replanRequestedError struct {
+	evidence []string
+}
+
+func (e *replanRequestedError) Error() string {
+	return fmt.Sprintf("replan requested: %v", e.evidence)
 }

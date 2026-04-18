@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -476,6 +477,73 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	// N-08: Execute tasks concurrently using DAG-level scheduling.
 	checkpointResult, artifact, llmOutputStr, taskErr := k.runTasksConcurrent(
 		ctx, sessionID, workflowID, intentSpec, queue, discoverySnippets)
+
+	// Handle "replan" failure policy: re-plan abandoned tasks and retry once.
+	if re, ok := taskErr.(*replanRequestedError); ok && k.workflow.Replanner() != nil {
+		clog.Session(sessionID).Info("replan policy triggered, re-planning remaining tasks",
+			"workflow_id", workflowID,
+			"evidence", re.evidence)
+
+		// Collect abandoned tasks from the queue.
+		var abandonedTasks []model.Task
+		for _, t := range queue.Snapshot() {
+			if t.Status == model.TaskStatusAbandoned {
+				t.Status = model.TaskStatusPlanned
+				abandonedTasks = append(abandonedTasks, t)
+			}
+		}
+
+		if len(abandonedTasks) > 0 {
+			// Inject failure evidence into the intent for the Replanner.
+			replanIntent := intentSpec
+			replanIntent.Goal = fmt.Sprintf("%s\n\n[REPLAN] Previous task failed: %s",
+				intentSpec.Goal, strings.Join(re.evidence, "; "))
+
+			k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
+				WorkflowID: workflowID,
+				Step:       "replan",
+				Status:     "running",
+			})
+
+			refined, rpErr := k.workflow.Replanner().RePlan(ctx, replanIntent, abandonedTasks, discoverySnippets)
+			if rpErr != nil {
+				slog.Warn("replan-on-failure failed, treating as hard failure",
+					"workflow", workflowID, "error", rpErr)
+				k.handleWorkflowError(sessionID, workflowID, taskErr)
+				return
+			}
+
+			k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
+				WorkflowID: workflowID,
+				Step:       "replan",
+				Status:     "done",
+			})
+
+			if len(refined) > 0 {
+				if dagErr := validateTaskDAG(refined); dagErr != nil {
+					k.handleWorkflowError(sessionID, workflowID,
+						fmt.Errorf("replan-on-failure produced invalid DAG: %w", dagErr))
+					return
+				}
+				// Replace queue with re-planned tasks and re-run.
+				replanQueue := taskqueue.New(refined)
+				k.emitTasksUpdated(sessionID, workflowID, refined)
+				cp2, art2, llm2, err2 := k.runTasksConcurrent(
+					ctx, sessionID, workflowID, intentSpec, replanQueue, discoverySnippets)
+				// Merge results: use replan results if available.
+				if cp2.Status != "" {
+					checkpointResult = cp2
+				}
+				if art2.Path != "" || art2.Summary != "" {
+					artifact = art2
+				}
+				llmOutputStr += llm2
+				taskErr = err2
+				queue = replanQueue
+			}
+		}
+	}
+
 	if taskErr != nil {
 		k.handleWorkflowError(sessionID, workflowID, taskErr)
 		return

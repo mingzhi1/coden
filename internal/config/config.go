@@ -26,7 +26,7 @@ type WorkflowConfig struct {
 	MaxRetries    int           `yaml:"max_retries"`
 	Timeout       time.Duration `yaml:"timeout"`
 	ParallelTasks bool          `yaml:"parallel_tasks"`
-	FailurePolicy string        `yaml:"failure_policy"` // "stop" or "skip"
+	FailurePolicy string        `yaml:"failure_policy"` // "stop", "skip", or "replan"
 }
 
 // ContextConfig controls context window management.
