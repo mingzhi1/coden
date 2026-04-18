@@ -9,6 +9,7 @@ import (
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
 	"github.com/mingzhi1/coden/internal/core/workflow"
+	"github.com/mingzhi1/coden/internal/hook"
 )
 
 // toolCtx enriches ctx with workflow/session IDs so the tool runtime can
@@ -70,6 +71,20 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 		}
 		if err := k.authorizeToolCall(sessionID, workflowID, workerID, call, toolStarted); err != nil {
 			return model.Artifact{}, beforeState, err
+		}
+
+		// ── Hook: pre_tool_use ──────────────────────────────────────────
+		if blocked := k.runHookPointWithContext(ctx, hook.PreToolUse, &hook.Context{
+			SessionID: sessionID, WorkflowID: workflowID,
+			ToolName: call.Request.Kind, ToolInput: toolInputSummary(call.Request),
+		}); blocked {
+			k.events.Emit(sessionID, model.EventToolFinished, model.ToolFinishedPayload{
+				WorkflowID: workflowID, ToolCallID: call.ToolCallID, WorkerID: workerID,
+				Tool: call.Request.Kind, Path: call.Request.Path,
+				Status: "blocked", Summary: "pre_tool_use hook blocked",
+				DurationMS: durationMillis(toolStarted),
+			})
+			return model.Artifact{}, beforeState, fmt.Errorf("tool %q blocked by pre_tool_use hook", call.Request.Kind)
 		}
 
 		var result toolruntime.Result
@@ -157,6 +172,12 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 			Detail:     toolEventDetail(call.Request, result),
 			ExitCode:   result.ExitCode,
 			DurationMS: durationMillis(toolStarted),
+		})
+
+		// ── Hook: post_tool_use ─────────────────────────────────────────
+		k.runHookPointWithContext(ctx, hook.PostToolUse, &hook.Context{
+			SessionID: sessionID, WorkflowID: workflowID,
+			ToolName: call.Request.Kind, ToolInput: toolInputSummary(call.Request),
 		})
 
 		if _, err := k.objects.SaveModify(workflowID, artifactPath, k.mainDBPath, toolAuditPayload(call, result, status, "", "")); err != nil {
@@ -384,5 +405,24 @@ func toolStatus(kind string) string {
 		return "executed"
 	default:
 		return "ok"
+	}
+}
+
+// toolInputSummary builds a concise summary of a tool request for hook env vars.
+func toolInputSummary(req toolruntime.Request) string {
+	switch req.Kind {
+	case "run_shell":
+		return req.Command
+	case "write_file", "read_file", "edit_file":
+		return req.Path
+	case "search":
+		return req.Query
+	case "list_dir":
+		if req.Dir != "" {
+			return req.Dir
+		}
+		return req.Path
+	default:
+		return req.Path
 	}
 }

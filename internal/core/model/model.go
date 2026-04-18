@@ -32,6 +32,8 @@ const (
 	EventSearchStarted        = "search.started"         // SA-09: discovery search phase started
 	EventSearchFinished       = "search.finished"        // SA-09: discovery search phase finished
 	EventSearchRefined        = "search.refined"         // SA-09: discovery refinement pass completed
+	EventHookStarted          = "hook.started"           // Hook execution started
+	EventHookFinished         = "hook.finished"          // Hook execution finished
 )
 
 var ErrEmptyEventPayload = errors.New("empty event payload")
@@ -199,6 +201,24 @@ type SearchRefinedPayload struct {
 	SnippetsBefore int    `json:"snippets_before"`
 	SnippetsAfter  int    `json:"snippets_after"`
 	DurationMs     int64  `json:"duration_ms"`
+}
+
+// HookStartedPayload is emitted when a hook begins execution.
+type HookStartedPayload struct {
+	WorkflowID string `json:"workflow_id"`
+	HookName   string `json:"hook_name"`
+	HookPoint  string `json:"hook_point"`
+}
+
+// HookFinishedPayload is emitted when a hook finishes execution.
+type HookFinishedPayload struct {
+	WorkflowID string `json:"workflow_id"`
+	HookName   string `json:"hook_name"`
+	HookPoint  string `json:"hook_point"`
+	Verdict    string `json:"verdict"`
+	DurationMS int64  `json:"duration_ms"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 func EncodePayload(v any) json.RawMessage {

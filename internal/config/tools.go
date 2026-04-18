@@ -152,15 +152,25 @@ type PlatformConfig struct {
 
 // HookEntry represents a single hook as declared in tools.yaml.
 type HookEntry struct {
-	Name     string `yaml:"name"`
-	Command  string `yaml:"command"`
-	Blocking bool   `yaml:"blocking"`
-	Timeout  string `yaml:"timeout"` // parsed to time.Duration at conversion time
+	Name     string            `yaml:"name"`
+	Command  string            `yaml:"command"`
+	Blocking bool              `yaml:"blocking"`
+	Timeout  string            `yaml:"timeout"` // parsed to time.Duration at conversion time
+	Env      map[string]string `yaml:"env,omitempty"`
+	Priority int               `yaml:"priority,omitempty"`
 }
 
-// HooksConfig groups all hook lists loaded from tools.yaml.
+// HooksConfig groups all hook lists loaded from config.yaml.
 type HooksConfig struct {
-	PostCode []HookEntry `yaml:"post_code"`
+	PreIntent    []HookEntry `yaml:"pre_intent"`
+	PostIntent   []HookEntry `yaml:"post_intent"`
+	PostPlan     []HookEntry `yaml:"post_plan"`
+	PreCode      []HookEntry `yaml:"pre_code"`
+	PostCode     []HookEntry `yaml:"post_code"`
+	PreToolUse   []HookEntry `yaml:"pre_tool_use"`
+	PostToolUse  []HookEntry `yaml:"post_tool_use"`
+	PostAccept   []HookEntry `yaml:"post_accept"`
+	PostWorkflow []HookEntry `yaml:"post_workflow"`
 }
 
 // configFileName is the name used for the new two-level config files.

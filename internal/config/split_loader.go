@@ -179,8 +179,20 @@ func mergeSplitHooks(cfg *ToolsConfig, data []byte) {
 		slog.Warn("[config] failed to parse hooks.yaml split file", "error", err)
 		return
 	}
-	if len(f.Hooks.PostCode) > 0 {
-		cfg.Hooks.PostCode = f.Hooks.PostCode
+	mergeHookEntries(&cfg.Hooks.PreIntent, f.Hooks.PreIntent)
+	mergeHookEntries(&cfg.Hooks.PostIntent, f.Hooks.PostIntent)
+	mergeHookEntries(&cfg.Hooks.PostPlan, f.Hooks.PostPlan)
+	mergeHookEntries(&cfg.Hooks.PreCode, f.Hooks.PreCode)
+	mergeHookEntries(&cfg.Hooks.PostCode, f.Hooks.PostCode)
+	mergeHookEntries(&cfg.Hooks.PreToolUse, f.Hooks.PreToolUse)
+	mergeHookEntries(&cfg.Hooks.PostToolUse, f.Hooks.PostToolUse)
+	mergeHookEntries(&cfg.Hooks.PostAccept, f.Hooks.PostAccept)
+	mergeHookEntries(&cfg.Hooks.PostWorkflow, f.Hooks.PostWorkflow)
+}
+
+func mergeHookEntries(dst *[]HookEntry, src []HookEntry) {
+	if len(src) > 0 {
+		*dst = src
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mingzhi1/coden/internal/core/discovery"
 	"github.com/mingzhi1/coden/internal/core/insight"
+	"github.com/mingzhi1/coden/internal/hook"
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/taskqueue"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
@@ -175,6 +176,14 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	wfCtx := k.buildWorkflowContext(ctx, sessionID)
 	ctx = model.WithWorkflowContext(ctx, wfCtx)
 
+	// ── Hook: pre_intent ────────────────────────────────────────────────
+	if blocked := k.runHookPointWithContext(ctx, hook.PreIntent, &hook.Context{
+		SessionID: sessionID, WorkflowID: workflowID, Prompt: prompt,
+	}); blocked {
+		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("pre_intent hook blocked"))
+		return
+	}
+
 	k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
 		WorkflowID: workflowID,
 		Step:       "intent",
@@ -203,6 +212,14 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		Step:       "intent",
 		Status:     "done",
 	})
+
+	// ── Hook: post_intent ───────────────────────────────────────────────
+	if blocked := k.runHookPointWithContext(ctx, hook.PostIntent, &hook.Context{
+		SessionID: sessionID, WorkflowID: workflowID, Prompt: prompt,
+	}); blocked {
+		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("post_intent hook blocked"))
+		return
+	}
 
 	// V1-01c: Route based on intent kind.
 	// Questions skip Plan/Code/Accept and get a direct LLM answer.
@@ -326,6 +343,12 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	}
 	if err := validateTaskDAG(tasks); err != nil {
 		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("invalid task graph: %w", err))
+		return
+	}
+
+	// ── Hook: post_plan ─────────────────────────────────────────────────
+	if blocked := k.runHookPoint(ctx, hook.PostPlan, sessionID, workflowID, "", "", 0); blocked {
+		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("post_plan hook blocked"))
 		return
 	}
 
@@ -579,8 +602,16 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		"status", checkpointResult.Status,
 		"tasks", len(tasks))
 
-	// Post-saga: clear workspace dirty set and notify tools (RAG incremental update).
+	// ── Hook: post_workflow (non-blocking, fire-and-forget) ─────────────
 	dirtyPaths := k.workspace.DirtyPaths()
+	k.runHookPointWithContext(ctx, hook.PostWorkflow, &hook.Context{
+		SessionID:    sessionID,
+		WorkflowID:   workflowID,
+		FinalStatus:  checkpointResult.Status,
+		ChangedFiles: dirtyPaths,
+	})
+
+	// Post-saga: clear workspace dirty set and notify tools (RAG incremental update).
 	k.workspace.ClearAllDirty()
 	k.tools.NotifyCheckpointPassed(dirtyPaths)
 

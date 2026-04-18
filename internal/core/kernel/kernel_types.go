@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/mingzhi1/coden/internal/core/artifact"
+	"github.com/mingzhi1/coden/internal/hook"
 	"github.com/mingzhi1/coden/internal/core/checkpoint"
 	"github.com/mingzhi1/coden/internal/core/events"
 	"github.com/mingzhi1/coden/internal/core/gitstate"
@@ -59,7 +60,7 @@ type Kernel struct {
 	rollbackPolicy         string               // "auto" | "manual" | "off"; default "auto"
 	maxTaskRetries         int                  // N-06: per-task retry budget; default 1 (= 2 total attempts)
 	failurePolicy          string               // M11-04: "stop" | "skip" | "replan"; default "stop"
-	postCodeHooks          []HookConfig         // post-code quality gate hooks (lint, test, vet)
+	hookManager            *hook.Manager        // unified hook manager (9 hook points)
 	artifactMgr            artifact.Manager     // M13: optional artifact lifecycle manager
 	closed                 bool
 }
@@ -125,14 +126,18 @@ func (k *Kernel) SetFailurePolicy(policy string) {
 	}
 }
 
-// SetPostCodeHooks configures the post-code quality gate hooks that run
-// between the Code and Accept phases. Hooks are executed in parallel after
-// each Code phase completes. Blocking hooks that fail cause the Code phase
-// to retry instead of proceeding to Accept.
-func (k *Kernel) SetPostCodeHooks(hooks []HookConfig) {
+// SetHookManager injects the unified hook manager.
+func (k *Kernel) SetHookManager(m *hook.Manager) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.postCodeHooks = hooks
+	k.hookManager = m
+}
+
+// HookManager returns the hook manager (may be nil).
+func (k *Kernel) HookManager() *hook.Manager {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.hookManager
 }
 
 var kernelIDSeq atomic.Uint64

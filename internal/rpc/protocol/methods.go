@@ -40,6 +40,10 @@ const (
 	// LLM server sidecar methods (Kernel → llm-server).
 	MethodLLMChat      = "llm/chat"
 	MethodLLMSideQuery = "llm/sidequery"
+	// Hook management (Client → Kernel).
+	MethodHookList     = "hook.list"
+	MethodHookRegister = "hook.register"
+	MethodHookRemove   = "hook.remove"
 )
 
 // MethodCategory groups protocol methods by responsibility boundary.
@@ -59,6 +63,7 @@ const (
 	CategoryTool       MethodCategory = "tool"
 	CategoryTask       MethodCategory = "task"
 	CategoryLLM        MethodCategory = "llm"
+	CategoryHook       MethodCategory = "hook"
 )
 
 // MethodPlane describes which RPC boundary a method belongs to.
@@ -102,6 +107,8 @@ func CategoryOf(method string) MethodCategory {
 		return CategoryTask
 	case MethodLLMChat, MethodLLMSideQuery:
 		return CategoryLLM
+	case MethodHookList, MethodHookRegister, MethodHookRemove:
+		return CategoryHook
 	default:
 		return CategoryUnknown
 	}
@@ -137,6 +144,8 @@ func PlaneOf(method string) MethodPlane {
 		MethodWorkflowWorkers:
 		return PlaneClientToKernel
 	case MethodTaskSkip, MethodTaskUndo:
+		return PlaneClientToKernel
+	case MethodHookList, MethodHookRegister, MethodHookRemove:
 		return PlaneClientToKernel
 	case MethodWorkerDescribe, MethodWorkerExecute, MethodWorkerCancel:
 		return PlaneKernelToWorker

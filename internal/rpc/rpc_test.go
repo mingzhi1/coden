@@ -164,6 +164,14 @@ func (k *stubKernel) SkipTask(_ context.Context, _, _ string) error { return nil
 
 func (k *stubKernel) UndoTask(_ context.Context, _ string) (string, error) { return "", nil }
 
+func (k *stubKernel) ListHooks(_ context.Context, _ string) ([]protocol.HookInfo, error) {
+	return nil, nil
+}
+func (k *stubKernel) RegisterHook(_ context.Context, _ protocol.HookRegisterParams) error {
+	return nil
+}
+func (k *stubKernel) RemoveHook(_ context.Context, _ string) (bool, error) { return false, nil }
+
 func (k *stubKernel) Snapshot(_ context.Context, sessionID string, _ int) (model.SessionSnapshot, error) {
 	return model.SessionSnapshot{SessionID: sessionID}, nil
 }

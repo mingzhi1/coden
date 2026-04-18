@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/mingzhi1/coden/internal/core/model"
+	"github.com/mingzhi1/coden/internal/rpc/protocol"
 	"github.com/mingzhi1/coden/internal/rpc/transport"
 )
 
@@ -39,6 +40,10 @@ type KernelAPI interface {
 	// M11-05: task management
 	SkipTask(ctx context.Context, sessionID, taskID string) error
 	UndoTask(ctx context.Context, sessionID string) (string, error)
+	// Hook management
+	ListHooks(ctx context.Context, point string) ([]protocol.HookInfo, error)
+	RegisterHook(ctx context.Context, p protocol.HookRegisterParams) error
+	RemoveHook(ctx context.Context, name string) (bool, error)
 }
 
 // Handler processes a single RPC method and returns a result or error.

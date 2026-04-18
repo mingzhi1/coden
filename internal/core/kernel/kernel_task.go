@@ -21,6 +21,7 @@ import (
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/taskqueue"
 	"github.com/mingzhi1/coden/internal/core/workflow"
+	"github.com/mingzhi1/coden/internal/hook"
 	clog "github.com/mingzhi1/coden/internal/log"
 	"github.com/mingzhi1/coden/internal/secretary"
 )
@@ -169,6 +170,15 @@ func (k *Kernel) runOneTask(
 
 	maxRetries := k.maxTaskRetries
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// ── Hook: pre_code ──────────────────────────────────────────────
+		if blocked := k.runHookPoint(ctx, hook.PreCode, sessionID, workflowID, task.ID, task.Title, attempt); blocked {
+			finalCheckpoint = model.CheckpointResult{
+				WorkflowID: workflowID, SessionID: intentSpec.SessionID,
+				Status: "fail", Evidence: []string{"pre_code hook blocked"},
+				FixGuidance: "A pre_code hook prevented code execution.", CreatedAt: time.Now(),
+			}
+			break
+		}
 		// ── Code phase ──────────────────────────────────────────────────────
 		snap := shared.setStatus(taskIdx, model.TaskStatusCoding)
 		k.emitTasksUpdated(sessionID, workflowID, snap)
@@ -250,15 +260,9 @@ func (k *Kernel) runOneTask(
 		})
 
 		// ── Post-code hooks (zero-LLM-cost quality gates) ───────────────────
-		k.mu.Lock()
-		postHooks := k.postCodeHooks
-		k.mu.Unlock()
-		hookResults := RunPostCodeHooks(taskCtx, k.workspace.Root(), postHooks)
-
 		skipAccept := false
-
-		if HasBlockingFailures(hookResults, postHooks) {
-			hookErrMsg := BlockingErrorsWithConfigs(hookResults, postHooks)
+		if hookBlocked := k.runHookPoint(taskCtx, hook.PostCode, sessionID, workflowID, task.ID, task.Title, attempt); hookBlocked {
+			hookErrMsg := "post-code hooks blocked execution"
 			finalCheckpoint = model.CheckpointResult{
 				WorkflowID:    workflowID,
 				SessionID:     intentSpec.SessionID,
@@ -352,6 +356,9 @@ func (k *Kernel) runOneTask(
 				Step:       "accept",
 				Status:     "done",
 			})
+
+			// ── Hook: post_accept ───────────────────────────────────────────
+			k.runHookPoint(ctx, hook.PostAccept, sessionID, workflowID, task.ID, task.Title, attempt)
 		}
 
 		// ── Pass / Fail / Retry ─────────────────────────────────────────────

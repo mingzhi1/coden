@@ -193,9 +193,104 @@ RAG 索引只包含验收通过的代码，写入期间标记 stale。
 
 ---
 
-## 快速开始
+## Hook System（全阶段钩子）
 
-> **注意**：`cmd/` 入口尚未发布，当前为 library 模式。以下命令展示目标用法，需自行创建 `cmd/coden/main.go` 入口。
+Hook 是可配置的 shell 命令，在工作流生命周期的 **9 个阶段** 自动执行。用于质量门、审计、通知、自动提交等场景。
+
+```
+ 用户输入
+      │
+ ❶ pre_intent     输入预处理、敏感词过滤
+      │
+   Intent Worker
+      │
+ ❷ post_intent    意图审计、路由覆盖
+      │
+   Plan Worker
+      │
+ ❸ post_plan      任务数上限检查、DAG 验证
+      │
+   ┌──┴──┐ Per Task
+   │ ❹ pre_code    分支保护、快照保存
+   │     │
+   │  Code Worker → Tool Execution
+   │     │          ❺ pre_tool_use   权限检查、审计
+   │     │          ❻ post_tool_use  diff 验证、日志
+   │     │
+   │ ❼ post_code   go vet / test / lint 质量门
+   │     │
+   │  Accept Worker
+   │     │
+   │ ❽ post_accept 自动提交、通知
+   └─────┘
+      │
+ ❾ post_workflow   清理、统计、CI 触发
+```
+
+**Hook 分类**
+
+| 分类 | Hook Points | 可阻断工作流 |
+|------|-------------|-------------|
+| **Workflow-level** | pre_intent, post_intent, post_plan, post_workflow | ✓ (blocking) |
+| **Task-level** | pre_code, post_code, post_accept | ✓ (blocking) |
+| **Tool-level** | pre_tool_use, post_tool_use | ✓ (可拒绝 tool) |
+
+**执行模型**：同一阶段内串行按 priority 执行。`blocking: true` 的 hook 失败会短路剩余 hook 并阻断工作流。
+
+**配置示例**（`~/.coden/config.yaml` 或 `<workspace>/.coden/config.yaml`）：
+
+```yaml
+tools:
+  hooks:
+    post_code:
+      - name: go_vet
+        command: "go vet ./..."
+        blocking: true
+        timeout: 30s
+      - name: golint
+        command: "golangci-lint run"
+        blocking: false
+        timeout: 60s
+        priority: 10
+
+    pre_tool_use:
+      - name: shell_audit
+        command: "echo \"AUDIT: $CODEN_HOOK_TOOL_NAME $CODEN_HOOK_TOOL_INPUT\" >> .coden/audit.log"
+        blocking: false
+        timeout: 5s
+
+    post_workflow:
+      - name: cleanup
+        command: "rm -rf .coden/tmp/*"
+        blocking: false
+        timeout: 5s
+```
+
+**环境变量**：Hook 通过 `CODEN_HOOK_*` 环境变量接收上下文：
+
+| 变量 | 说明 | 可用阶段 |
+|------|------|---------|
+| `CODEN_HOOK_SESSION_ID` | 会话 ID | 全部 |
+| `CODEN_HOOK_WORKFLOW_ID` | 工作流 ID | 全部 |
+| `CODEN_HOOK_WORKSPACE` | 工作区根目录 | 全部 |
+| `CODEN_HOOK_PROMPT` | 用户原始输入 | pre/post_intent |
+| `CODEN_HOOK_TASK_ID` | 当前任务 ID | pre/post_code, post_accept |
+| `CODEN_HOOK_TASK_TITLE` | 当前任务标题 | pre/post_code, post_accept |
+| `CODEN_HOOK_ATTEMPT` | 当前重试次数 | pre/post_code, post_accept |
+| `CODEN_HOOK_TOOL_NAME` | 工具名称 | pre/post_tool_use |
+| `CODEN_HOOK_TOOL_INPUT` | 工具输入摘要 | pre/post_tool_use |
+| `CODEN_HOOK_STATUS` | 最终状态 (pass/fail) | post_workflow |
+| `CODEN_HOOK_CHANGED_FILES` | 变更文件列表 (换行分隔) | post_workflow |
+
+**RPC 动态管理**：运行时可通过 JSON-RPC 动态注册/移除/查询 hook：
+
+- `hook.list` — 列出已注册 hook
+- `hook.register` — 动态注册 hook
+- `hook.remove` — 按名称移除 hook
+
+---
+
+## 快速开始
 
 ```bash
 # 依赖：Go 1.25+
@@ -233,16 +328,17 @@ llm:
 
 | 模块 | 进度 | 说明 |
 |------|------|------|
-| Kernel & 状态核心 | `█████████░` 95% | Session/Turn/Task/Checkpoint/Event Bus 全部完成，M13 Artifact 接入中 |
-| RPC 协议层 | `█████████░` 90% | JSON-RPC 2.0，31 个方法，handler 全部接入 |
-| Workflow Engine | `█████████░` 90% | 6 阶段流水线完成，任务状态机完成，L2 Regression 尚未实现 |
-| LLM Broker | `████████░░` 85% | per-role pool、provider fallback、usage stats 完成，Sidecar 模式接入完成 |
+| Kernel & 状态核心 | `█████████░` 95% | Session/Turn/Task/Checkpoint/Event Bus 全部完成，Artifact 接入完成 |
+| RPC 协议层 | `█████████░` 95% | JSON-RPC 2.0，34 个方法，handler 全部接入 |
+| Workflow Engine | `█████████░` 95% | 6 阶段流水线完成，任务状态机完成，L2 Regression 尚未实现 |
+| Hook System | `█████████░` 90% | 9 阶段统一框架完成，Config/RPC/Event Bus 全部接入，Filter/Webhook 待实现 |
+| LLM Broker | `█████████░` 90% | per-role pool、provider fallback、usage stats 完成，Sidecar 模式接入完成 |
 | Tool Runtime | `█████████░` 90% | 14 工具完成，MCP 动态发现完成，tool_search 延迟注册完成 |
 | Search Agent | `█████████░` 95% | SA-01~09 全部完成，meso-level discovery 完成 |
 | 三层检索 | `████████░░` 85% | grep/LSP/RAG 全部实现，RAG stale 标记完成，写后同步完成 |
 | Secretary | `███████░░░` 75% | ContextGate/ExecGate/AfterTurn 完成，MEMORY.md 写入完成，权限模型待强化 |
-| TUI | `████████░░` 80% | 3 栏布局、事件驱动、History Tab 完成，slash command 扩展中 |
-| LLM Server Sidecar | `████████░░` 80% | TCP sidecar、ACP/Anthropic/OpenAI/DeepSeek 完成，crash 监控待实现 |
+| TUI | `████████░░` 80% | 双栏四面板布局（Chat+Input / Workers+Changed）、事件驱动、History Tab 完成，slash command 扩展中 |
+| LLM Server Sidecar | `█████████░` 90% | TCP sidecar、ACP/Anthropic/OpenAI/DeepSeek 完成，crash 监控待实现 |
 | Artifact 管理 | `████████░░` 85% | M13 Phase 1-3 完成：存储/查询/引用/GC，Phase 4（导出/TUI）待完善 |
 | Web Kanban | `███████░░░` 70% | HTTP/WS server + 完整 UI、Board/Card CRUD API、Session API（列表/创建/变更/Submit）完成，Event 回写 Card 状态待完成 |
 

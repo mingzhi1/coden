@@ -9,6 +9,7 @@ import (
 
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/rpc/client"
+	"github.com/mingzhi1/coden/internal/rpc/protocol"
 	"github.com/mingzhi1/coden/internal/rpc/server"
 	"github.com/mingzhi1/coden/internal/rpc/transport"
 )
@@ -207,6 +208,14 @@ func (k *objectStoreKernel) GetWorkflowWorkers(_ context.Context, _, _ string) (
 func (k *objectStoreKernel) SkipTask(_ context.Context, _, _ string) error { return nil }
 
 func (k *objectStoreKernel) UndoTask(_ context.Context, _ string) (string, error) { return "", nil }
+
+func (k *objectStoreKernel) ListHooks(_ context.Context, _ string) ([]protocol.HookInfo, error) {
+	return nil, nil
+}
+func (k *objectStoreKernel) RegisterHook(_ context.Context, _ protocol.HookRegisterParams) error {
+	return nil
+}
+func (k *objectStoreKernel) RemoveHook(_ context.Context, _ string) (bool, error) { return false, nil }
 
 func (k *objectStoreKernel) Snapshot(_ context.Context, sessionID string, _ int) (model.SessionSnapshot, error) {
 	return model.SessionSnapshot{SessionID: sessionID}, nil
