@@ -53,7 +53,7 @@ type retryAcceptor struct {
 	calls       atomic.Int32
 }
 
-func (a *retryAcceptor) Accept(_ context.Context, wfID string, intent model.IntentSpec, art model.Artifact) (model.CheckpointResult, error) {
+func (a *retryAcceptor) Accept(_ context.Context, wfID string, intent model.IntentSpec, art model.Artifact, _ []model.Task) (model.CheckpointResult, error) {
 	n := a.calls.Add(1)
 	status := "fail"
 	var evidence []string

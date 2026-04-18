@@ -30,7 +30,7 @@ func (fakeCoder) Build(context.Context, string, model.IntentSpec, []model.Task) 
 
 type fakeAcceptor struct{}
 
-func (fakeAcceptor) Accept(context.Context, string, model.IntentSpec, model.Artifact) (model.CheckpointResult, error) {
+func (fakeAcceptor) Accept(context.Context, string, model.IntentSpec, model.Artifact, []model.Task) (model.CheckpointResult, error) {
 	return model.CheckpointResult{}, nil
 }
 

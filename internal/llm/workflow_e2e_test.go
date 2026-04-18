@@ -90,7 +90,7 @@ func TestFullWorkflowE2E(t *testing.T) {
 		Path:    "artifacts/e2e-test.md",
 		Summary: "test artifact",
 	}
-	acceptResult, err := acceptor.Accept(ctx, workflowID, intent, artifact)
+	acceptResult, err := acceptor.Accept(ctx, workflowID, intent, artifact, nil)
 	if err != nil {
 		t.Fatalf("acceptor failed: %v", err)
 	}

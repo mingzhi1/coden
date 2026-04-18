@@ -145,7 +145,7 @@ func (w coderWorker) Execute(ctx context.Context, input WorkerInput) (WorkerOutp
 }
 
 func (w acceptorWorker) Execute(ctx context.Context, input WorkerInput) (WorkerOutput, error) {
-	checkpoint, err := w.acceptor.Accept(ctx, input.WorkflowID, input.Intent, input.Artifact)
+	checkpoint, err := w.acceptor.Accept(ctx, input.WorkflowID, input.Intent, input.Artifact, input.Tasks)
 	if err != nil {
 		return WorkerOutput{}, err
 	}

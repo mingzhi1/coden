@@ -116,7 +116,7 @@ func (c *e2eCoder) Metadata() WorkerMetadata {
 // e2eAcceptor always passes.
 type e2eAcceptor struct{}
 
-func (e2eAcceptor) Accept(_ context.Context, wfID string, intent model.IntentSpec, art model.Artifact) (model.CheckpointResult, error) {
+func (e2eAcceptor) Accept(_ context.Context, wfID string, intent model.IntentSpec, art model.Artifact, _ []model.Task) (model.CheckpointResult, error) {
 	return model.CheckpointResult{
 		WorkflowID: wfID,
 		SessionID:  intent.SessionID,
@@ -214,7 +214,7 @@ func TestFullPipelineE2E(t *testing.T) {
 
 	// Step 7: Accept
 	artifact := model.Artifact{Path: plan.Request.Path, Summary: plan.Request.Content}
-	cp, err := engine.Accept(ctx, "wf-e2e", intent, artifact)
+	cp, err := engine.Accept(ctx, "wf-e2e", intent, artifact, nil)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}

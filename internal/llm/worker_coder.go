@@ -71,6 +71,17 @@ func (c *LLMCoder) Build(ctx context.Context, workflowID string, intent model.In
 	ctxInfo := contextSummary(ctx)
 	userMsg := fmt.Sprintf("Goal: %s\n\nTasks:\n%s\n\nGenerate the implementation artifact plan.",
 		intent.Goal, strings.Join(taskList, "\n"))
+
+	// Inject critic feedback so the coder addresses flagged issues.
+	if len(wc.CritiqueIssues) > 0 {
+		var issues strings.Builder
+		issues.WriteString("\n\n## Critic Feedback (address in implementation)\n")
+		for _, issue := range wc.CritiqueIssues {
+			issues.WriteString("- " + issue + "\n")
+		}
+		userMsg += issues.String()
+	}
+
 	if wc.WorkspaceRoot != "" {
 		userMsg = fmt.Sprintf("Workspace root: %s\n\n%s", wc.WorkspaceRoot, userMsg)
 	}

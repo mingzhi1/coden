@@ -19,7 +19,7 @@ type failFirstAcceptor struct {
 	calls int
 }
 
-func (a *failFirstAcceptor) Accept(_ context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact) (model.CheckpointResult, error) {
+func (a *failFirstAcceptor) Accept(_ context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact, _ []model.Task) (model.CheckpointResult, error) {
 	a.mu.Lock()
 	a.calls++
 	call := a.calls

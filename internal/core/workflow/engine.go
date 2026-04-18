@@ -74,8 +74,8 @@ func (e *Engine) Code(ctx context.Context, workflowID string, intent model.Inten
 	return e.coder.Build(ctx, workflowID, intent, tasks)
 }
 
-func (e *Engine) Accept(ctx context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact) (model.CheckpointResult, error) {
-	return e.acceptor.Accept(ctx, workflowID, intent, artifact)
+func (e *Engine) Accept(ctx context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact, tasks []model.Task) (model.CheckpointResult, error) {
+	return e.acceptor.Accept(ctx, workflowID, intent, artifact, tasks)
 }
 
 func (e *Engine) Inputter() Inputter {
