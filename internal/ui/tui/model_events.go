@@ -62,6 +62,9 @@ func (m *Model) beginSubmit(prompt string) tea.Cmd {
 	m.changed = nil
 	m.activeToolName = ""
 	m.toolCallCount = 0
+	m.activeWorkflowID = ""
+	m.latestRun = nil
+	m.pendingCheckpointWorkflowID = ""
 	m.lastSubmittedPrompt = prompt
 	m.workflowStartedAt = time.Now()
 	// Record prompt in history for up-arrow recall.

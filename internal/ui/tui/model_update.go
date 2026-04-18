@@ -215,7 +215,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			removedLines := len(m.chatLines) - maxChatLines
 			m.chatLines = m.chatLines[removedLines:]
 			// Adjust scroll position to maintain relative view
-			if m.chatScroll > 0 {
+			if m.followChat {
+				m.chatScroll = m.maxChatScroll()
+			} else if m.chatScroll > 0 {
 				m.chatScroll = max(0, m.chatScroll-removedLines)
 			}
 		}
