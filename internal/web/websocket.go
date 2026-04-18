@@ -117,6 +117,18 @@ func mapEventToWSMessage(ev model.Event) *WSMessage {
 		return makeWSMsg("card.updated", ev.Payload)
 	case model.EventWorkspaceChanged:
 		return makeWSMsg("workspace.changed", ev.Payload)
+	case model.EventSessionCreated:
+		return makeWSMsg("session.created", ev.Payload)
+	case model.EventSessionAttached:
+		return makeWSMsg("session.attached", ev.Payload)
+	case model.EventSessionDetached:
+		return makeWSMsg("session.detached", ev.Payload)
+	case model.EventWorkflowCanceled:
+		return makeWSMsg("workflow.canceled", ev.Payload)
+	case model.EventWorkflowRetry:
+		return makeWSMsg("workflow.retry", ev.Payload)
+	case model.EventWorkerMessage:
+		return makeWSMsg("worker.message", ev.Payload)
 	default:
 		return nil
 	}

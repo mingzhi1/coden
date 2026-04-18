@@ -14,55 +14,57 @@ import (
 
 	"github.com/mingzhi1/coden/internal/core/board"
 	"github.com/mingzhi1/coden/internal/core/events"
+	"github.com/mingzhi1/coden/internal/core/model"
 )
 
 //go:embed static
 var staticFS embed.FS
 
-// Server is the Kanban web server that serves the board UI and API.
-type Server struct {
-	addr     string
-	store    board.Store
-	eventBus *events.Bus
-	pool     AgentPoolAPI // interface to avoid circular deps
-	server   *http.Server
-	wsHub    *WSHub
-	mu       sync.Mutex
+// SessionAPI defines the subset of the ClientAPI used by the web layer.
+// Implementations include *api.Service (production) and fakes (testing).
+type SessionAPI interface {
+	ListSessions(ctx context.Context, limit int) ([]model.Session, error)
+	CreateSession(ctx context.Context, sessionID string) (model.Session, error)
+	RenameSession(ctx context.Context, sessionID, name string) (model.Session, error)
+	WorkspaceChanges(ctx context.Context, sessionID string) ([]model.WorkspaceChangedPayload, error)
+	Submit(ctx context.Context, sessionID, prompt string) (string, error)
 }
 
-// AgentPoolAPI is the subset of AgentPool methods needed by the web server.
-// This avoids a circular dependency between web and agentpool packages.
-type AgentPoolAPI interface {
-	SpawnAgent(name, role, provider, model string) (*board.Agent, error)
-	StopAgent(agentID string) error
-	AssignCard(agentID, cardID string) error
-	ListAgents() []*board.Agent
-	GetAgent(id string) (*board.Agent, error)
+// Server is the Kanban web server that serves the board UI and API.
+type Server struct {
+	addr      string
+	store     board.Store
+	clientAPI SessionAPI // optional; enables session management when non-nil
+	eventBus  *events.Bus
+	server    *http.Server
+	wsHub     *WSHub
+	mu        sync.Mutex
 }
 
 // Config holds web server configuration.
 type Config struct {
-	Addr     string       // listen address, e.g. "127.0.0.1:7200"
-	Store    board.Store
-	EventBus *events.Bus
-	Pool     AgentPoolAPI // may be nil (agent features disabled)
+	Addr      string       // listen address, e.g. "127.0.0.1:7200"
+	Store     board.Store
+	ClientAPI SessionAPI   // optional; enables /api/sessions routes when non-nil
+	EventBus  *events.Bus
 }
 
 // New creates a new web server.
 func New(cfg Config) *Server {
 	s := &Server{
-		addr:     cfg.Addr,
-		store:    cfg.Store,
-		eventBus: cfg.EventBus,
-		pool:     cfg.Pool,
-		wsHub:    NewWSHub(),
+		addr:      cfg.Addr,
+		store:     cfg.Store,
+		clientAPI: cfg.ClientAPI,
+		eventBus:  cfg.EventBus,
+		wsHub:     NewWSHub(),
 	}
 	return s
 }
 
-// Start begins serving HTTP and WebSocket connections.
-// It blocks until the context is canceled or an error occurs.
-func (s *Server) Start(ctx context.Context) error {
+// Handler builds and returns the HTTP handler for the web server.
+// It registers all API routes (boards, cards, WebSocket) with CORS
+// middleware applied. Callers can wrap or serve the handler directly.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// --- API routes ---
@@ -77,12 +79,13 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("DELETE /api/boards/{boardId}/cards/{cardId}", s.handleDeleteCard)
 	mux.HandleFunc("POST /api/boards/{boardId}/cards/{cardId}/move", s.handleMoveCard)
 
-	mux.HandleFunc("GET /api/agents", s.handleListAgents)
-	mux.HandleFunc("POST /api/agents", s.handleCreateAgent)
-	mux.HandleFunc("GET /api/agents/{agentId}", s.handleGetAgent)
-	mux.HandleFunc("PATCH /api/agents/{agentId}", s.handleUpdateAgent)
-	mux.HandleFunc("DELETE /api/agents/{agentId}", s.handleDeleteAgent)
-	mux.HandleFunc("POST /api/agents/{agentId}/assign", s.handleAssignCard)
+	// --- Session routes (require ClientAPI) ---
+	if s.clientAPI != nil {
+		mux.HandleFunc("GET /api/sessions", s.handleListSessions)
+		mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+		mux.HandleFunc("GET /api/sessions/{sessionId}/changes", s.handleSessionChanges)
+		mux.HandleFunc("POST /api/cards/{cardId}/submit", s.handleSubmitCard)
+	}
 
 	// --- WebSocket ---
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
@@ -90,13 +93,22 @@ func (s *Server) Start(ctx context.Context) error {
 	// --- Static files ---
 	staticContent, err := fs.Sub(staticFS, "static")
 	if err != nil {
-		return fmt.Errorf("web: failed to load static files: %w", err)
+		slog.Error("[web] failed to load static files", "err", err)
+		return withCORS(mux)
 	}
 	mux.Handle("GET /", http.FileServer(http.FS(staticContent)))
 
+	return withCORS(mux)
+}
+
+// Start begins serving HTTP and WebSocket connections.
+// It blocks until the context is canceled or an error occurs.
+func (s *Server) Start(ctx context.Context) error {
+	handler := s.Handler()
+
 	s.server = &http.Server{
 		Addr:              s.addr,
-		Handler:           withCORS(mux),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

@@ -50,6 +50,28 @@ func (s *Server) handleCreateBoard(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetBoard(w http.ResponseWriter, r *http.Request) {
 	boardID := r.PathValue("boardId")
+
+	// Support "default" as a virtual board ID: return the first board.
+	if boardID == "default" {
+		boards, err := s.store.ListBoards()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if len(boards) == 0 {
+			writeError(w, http.StatusNotFound, "no boards found")
+			return
+		}
+		b := boards[0]
+		cards, _ := s.store.ListCards(b.ID)
+		type boardWithCards struct {
+			*board.Board
+			Cards []*board.Card `json:"cards"`
+		}
+		writeJSON(w, http.StatusOK, boardWithCards{Board: b, Cards: cards})
+		return
+	}
+
 	b, err := s.store.GetBoard(boardID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "board not found")

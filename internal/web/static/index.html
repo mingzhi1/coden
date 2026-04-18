@@ -210,6 +210,7 @@ a{color:var(--accent-blue);text-decoration:none}
             <option value="backlog">Backlog</option>
             <option value="ready">Ready</option>
             <option value="in_progress">In Progress</option>
+            <option value="blocked">Blocked</option>
             <option value="review">Review</option>
             <option value="done">Done</option>
           </select>
@@ -337,6 +338,8 @@ function normalizeCard(card) {
   if (!card) return card;
   if (card.column_id && !card.column) card.column = card.column_id;
   if (!card.column_id && card.column) card.column_id = card.column;
+  if (card.depends_on && !card.dependencies) card.dependencies = card.depends_on;
+  if (!card.depends_on && card.dependencies) card.depends_on = card.dependencies;
   return card;
 }
 
@@ -1130,38 +1133,36 @@ function showNewCardModal() {
       "<option value=\"backlog\" selected>Backlog</option>" +
       "<option value=\"ready\">Ready</option>" +
       "<option value=\"in_progress\">In Progress</option>" +
+      "<option value=\"blocked\">Blocked</option>" +
       "<option value=\"review\">Review</option>" +
       "<option value=\"done\">Done</option>" +
     "</select></div>" +
     "<div><label>Labels (comma separated)</label><input type=\"text\" id=\"nc-labels\" placeholder=\"bug, ui, backend...\"></div>";
 
-  showModal("New Card", body, (overlay) => {
+  showModal("New Card", body, async (overlay) => {
     const title = overlay.querySelector("#nc-title").value.trim();
     if (!title) { overlay.querySelector("#nc-title").style.borderColor = "var(--accent-red)"; return false; }
 
+    const colVal = overlay.querySelector("#nc-column").value;
     const card = {
-      id: uid(),
       title: title,
       description: overlay.querySelector("#nc-desc").value,
       priority: parseInt(overlay.querySelector("#nc-priority").value),
-      column: overlay.querySelector("#nc-column").value,
+      column_id: colVal,
       labels: overlay.querySelector("#nc-labels").value.split(",").map(s => s.trim()).filter(Boolean),
-      position: state.cards.filter(c => c.column === overlay.querySelector("#nc-column").value).length,
-      created_at: new Date().toISOString(),
-      dependencies: [],
-      assignee_id: null,
-      status: "open",
-      file_scope: [],
-      workflow_log: [],
+      depends_on: [],
+      files: [],
     };
 
-    // Optimistic add
-    state.cards.push(card);
-    renderBoard();
-
-    // API call
     const boardId = state.board ? state.board.id : "default";
-    API.createCard(boardId, card);
+    const created = await API.createCard(boardId, card);
+    if (created) {
+      // Use server response (has real ID and timestamps)
+      if (!state.cards.find(c => c.id === created.id)) {
+        state.cards.push(created);
+      }
+      renderBoard();
+    }
     return true;
   });
 }
@@ -1222,11 +1223,11 @@ function setupDetailPanelEvents() {
       description: card.description,
       priority: card.priority,
       labels: card.labels,
-      dependencies: card.dependencies,
+      depends_on: card.dependencies || card.depends_on || [],
     });
 
     renderBoard();
-    renderAgentBar();
+    renderSessionBar();
   });
 
   // Delete card
