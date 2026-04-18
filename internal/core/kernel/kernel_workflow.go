@@ -568,6 +568,19 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	}
 
 	if taskErr != nil {
+		// Persist a partial turn summary even for failed workflows so that
+		// subsequent turns in the same session have context about what was
+		// attempted and what went wrong.
+		tasks = queue.Snapshot()
+		failedCP := checkpointResult
+		if failedCP.Status == "" {
+			failedCP.Status = "fail"
+		}
+		failedTS := k.buildTurnSummary(sessionID, workflowID, intentSpec, tasks, failedCP)
+		if saveErr := k.turnSummaries.Save(failedTS); saveErr != nil {
+			clog.Session(sessionID).Warn("failed to save partial turn summary",
+				"workflow_id", workflowID, "error", saveErr)
+		}
 		k.handleWorkflowError(sessionID, workflowID, taskErr)
 		return
 	}

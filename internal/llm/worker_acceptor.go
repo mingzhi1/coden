@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -154,6 +155,12 @@ func (a *LLMAcceptor) Accept(ctx context.Context, workflowID string, intent mode
 			extraContent,
 		)
 	}
+
+	slog.Info("[llm:acceptor] user message built",
+		"evidence_count", len(artifact.Evidence),
+		"has_task_section", taskSection != "",
+		"artifact_path", artifact.Path,
+		"user_msg_len", len(userMsg))
 
 	reply, err := RecoverableChat(ctx, a.chatter, RoleAcceptor, []Message{
 		{Role: "system", Content: systemPrompt},

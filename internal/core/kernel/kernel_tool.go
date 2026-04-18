@@ -100,7 +100,16 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 			}
 			// Collect execution evidence from pre-executed mutations for the acceptor.
 			if call.Request.Kind == "run_shell" && call.Request.Command != "" {
-				evidence = append(evidence, fmt.Sprintf("%s → exit %d", call.Request.Command, result.ExitCode))
+				evLine := fmt.Sprintf("%s → exit %d", call.Request.Command, result.ExitCode)
+				// Include truncated stdout so the acceptor can verify output content.
+				if out := strings.TrimSpace(result.Output); out != "" {
+					const maxEvOutput = 500
+					if len(out) > maxEvOutput {
+						out = out[:maxEvOutput] + "…"
+					}
+					evLine += "\nOutput: " + out
+				}
+				evidence = append(evidence, evLine)
 			} else if (call.Request.Kind == "edit_file" || call.Request.Kind == "write_file") && call.Request.Path != "" {
 				evidence = append(evidence, fmt.Sprintf("%s %s", call.Request.Kind, call.Request.Path))
 			}
