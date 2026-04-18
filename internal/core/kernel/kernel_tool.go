@@ -24,6 +24,7 @@ func toolCtx(ctx context.Context, workflowID, sessionID string) context.Context 
 // 用于失败时回滚。
 func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, workerID string, allowedPaths []string, calls []workflow.ToolCall) (model.Artifact, map[string][]byte, error) {
 	var artifact model.Artifact
+	var evidence []string
 	beforeState := make(map[string][]byte)
 
 	for _, call := range calls {
@@ -96,6 +97,12 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 				if _, already := beforeState[call.Request.Path]; !already {
 					beforeState[call.Request.Path] = []byte(call.ExecResult.Before)
 				}
+			}
+			// Collect execution evidence from pre-executed mutations for the acceptor.
+			if call.Request.Kind == "run_shell" && call.Request.Command != "" {
+				evidence = append(evidence, fmt.Sprintf("%s → exit %d", call.Request.Command, result.ExitCode))
+			} else if (call.Request.Kind == "edit_file" || call.Request.Kind == "write_file") && call.Request.Path != "" {
+				evidence = append(evidence, fmt.Sprintf("%s %s", call.Request.Kind, call.Request.Path))
 			}
 		} else {
 			if (call.Request.Kind == "write_file" || call.Request.Kind == "edit_file") && call.Request.Path != "" {
@@ -198,6 +205,7 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 		}
 	}
 
+	artifact.Evidence = evidence
 	return artifact, beforeState, nil
 }
 

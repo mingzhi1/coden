@@ -387,8 +387,9 @@ type Task struct {
 }
 
 type Artifact struct {
-	Path    string
-	Summary string
+	Path     string
+	Summary  string
+	Evidence []string // execution evidence from the coder (e.g. "go test exit 0")
 }
 
 type CheckpointResult struct {

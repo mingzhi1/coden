@@ -109,25 +109,33 @@ func (a *LLMAcceptor) Accept(ctx context.Context, workflowID string, intent mode
 		}
 	}
 
+	// Build execution evidence section from the coder's tool results.
+	var evidenceSection string
+	if len(artifact.Evidence) > 0 {
+		evidenceSection = "\n\nCoder execution results (verified):\n" + bulletList(artifact.Evidence)
+	}
+
 	var userMsg string
 	extraContent := additionalFiles.String()
 	if artifactContent != "" {
 		userMsg = fmt.Sprintf(
-			"Goal: %s\n\nSuccess criteria:\n%s\n\nArtifact path: %s\nArtifact summary: %s\n\nArtifact content:\n```\n%s\n```%s",
+			"Goal: %s\n\nSuccess criteria:\n%s\n\nArtifact path: %s\nArtifact summary: %s%s\n\nArtifact content:\n```\n%s\n```%s",
 			intent.Goal,
 			bulletList(intent.SuccessCriteria),
 			artifact.Path,
 			artifact.Summary,
+			evidenceSection,
 			artifactContent,
 			extraContent,
 		)
 	} else {
 		userMsg = fmt.Sprintf(
-			"Goal: %s\n\nSuccess criteria:\n%s\n\nArtifact path: %s\nArtifact summary: %s%s",
+			"Goal: %s\n\nSuccess criteria:\n%s\n\nArtifact path: %s\nArtifact summary: %s%s%s",
 			intent.Goal,
 			bulletList(intent.SuccessCriteria),
 			artifact.Path,
 			artifact.Summary,
+			evidenceSection,
 			extraContent,
 		)
 	}

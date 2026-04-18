@@ -182,12 +182,23 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 			}
 
 			// LLM produced no more tool calls — finalize with accumulated mutations.
-			plan := parseCodePlanReply(workflowID, intent.ID, intent.Goal, reply)
-			plan.ToolCalls = append(allMutations, plan.ToolCalls...)
-			if len(plan.ToolCalls) > 0 {
-				plan.ToolCallID = plan.ToolCalls[0].ToolCallID
-				plan.Request = plan.ToolCalls[0].Request
+			if len(allMutations) > 0 {
+				// Agentic loop produced real mutations — return them directly
+				// without the parseCodePlanReply fallback which would append
+				// a spurious artifacts/intent-*.md write that overwrites the
+				// correct artifact path.
+				first := allMutations[0]
+				plan := workflow.CodePlan{
+					ToolCalls:  allMutations,
+					ToolCallID: first.ToolCallID,
+					Request:    first.Request,
+				}
+				plan = refineCodePlanWithContext(ctx, workflowID, plan)
+				c.push("info", "coder", fmt.Sprintf("round %d: final plan with %d mutation(s)", round+1, len(plan.Calls())))
+				return plan, nil
 			}
+			// No mutations accumulated — fall back to parsing reply for inline code.
+			plan := parseCodePlanReply(workflowID, intent.ID, intent.Goal, reply)
 			plan = refineCodePlanWithContext(ctx, workflowID, plan)
 			c.push("info", "coder", fmt.Sprintf("round %d: final plan with %d call(s)", round+1, len(plan.Calls())))
 			return plan, nil

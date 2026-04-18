@@ -256,6 +256,7 @@ Rules:
 - fix_guidance must be non-empty when status is "fail", empty string when status is "pass"
 - Be strict: if any success criterion is not met, return "fail"
 - Build verification (success_cmd) runs separately before this review and is NOT included here. Focus on code correctness and completeness.
+- If "Coder execution results (verified)" are provided, these are actual tool execution outcomes — trust them as ground truth. Do not contradict verified results.
 - Reply ONLY with valid JSON, no markdown fences, no explanations
 
 Faithful reporting:
