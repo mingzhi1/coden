@@ -206,6 +206,11 @@ func NewWithStores(workspaceRoot, mainDBPath string, sessionStore session.Store,
 	evBus := events.NewBus()
 	sec := secretary.New(skills, secretary.DefaultPolicy(), busEmitAdapter{bus: evBus})
 
+	// Generate inventory prompts so the Coder LLM knows which tools and
+	// environment capabilities are actually available in this workspace.
+	toolsPrompt := inventory.FormatToolsPrompt(inv)
+	envPrompt := inventory.FormatEnvironmentPrompt(inv)
+
 	return &Kernel{
 		sessionMus:             make(map[string]*sync.Mutex),
 		sessions:               make(map[string]map[string]string),
@@ -228,6 +233,8 @@ func NewWithStores(workspaceRoot, mainDBPath string, sessionStore session.Store,
 		git:                    gitstate.New(workspaceRoot), // M8-04
 		workflow:               workflow.NewWithInputter(inputter, planner, coder, a),
 		secretary:              sec,
+		inventoryToolsPrompt:   toolsPrompt,
+		inventoryEnvPrompt:     envPrompt,
 		maxTaskRetries:         1,      // N-06: default 1 = two total attempts per task
 		failurePolicy:          "stop", // M11-04: default = abandon remaining on failure
 	}

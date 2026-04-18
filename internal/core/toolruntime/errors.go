@@ -80,16 +80,8 @@ func ClassifyShellError(command, stdout, stderr string, exitCode int, timedOut b
 		}
 	}
 
-	// compile_error: go build / go vet output patterns
-	if strings.Contains(lower, "build failed") ||
-		strings.Contains(lower, "syntax error") ||
-		strings.Contains(lower, "undefined:") ||
-		strings.Contains(lower, "cannot use") ||
-		strings.Contains(lower, "imported and not used") ||
-		strings.Contains(lower, "declared and not used") ||
-		strings.Contains(lower, "too many arguments") ||
-		strings.Contains(lower, "not enough arguments") ||
-		strings.Contains(lower, ".go:") {
+	// compile_error: patterns from Go, TypeScript, Rust, Python, Java, C/C++
+	if isCompileError(lower) {
 		return &ClassifiedError{
 			Class:     ErrorClassCompileError,
 			HumanMsg:  "Compilation failed. Fix the syntax or type errors shown above before re-running.",
@@ -98,10 +90,8 @@ func ClassifyShellError(command, stdout, stderr string, exitCode int, timedOut b
 		}
 	}
 
-	// test_failure: go test patterns
-	if strings.Contains(lower, "--- fail") ||
-		strings.Contains(lower, "fail\t") ||
-		strings.Contains(lower, "panic:") && strings.Contains(lower, "_test.go") {
+	// test_failure: patterns from Go, pytest, Jest/Mocha, Rust, Java/JUnit
+	if isTestFailure(lower) {
 		return &ClassifiedError{
 			Class:     ErrorClassTestFailure,
 			HumanMsg:  "One or more tests failed. Review the test output and fix the implementation.",
@@ -135,4 +125,84 @@ func isExecutableCheck(stderr string) bool {
 	return strings.Contains(lower, "exec") ||
 		strings.Contains(lower, "executable") ||
 		!strings.Contains(lower, "open")
+}
+
+// isCompileError returns true when the lowered combined output matches known
+// compilation / type-check error patterns across supported languages.
+func isCompileError(lower string) bool {
+	patterns := []string{
+		// Generic
+		"build failed", "syntax error", "syntaxerror",
+
+		// Go
+		"undefined:", "cannot use", "imported and not used",
+		"declared and not used", "too many arguments", "not enough arguments",
+
+		// TypeScript / JavaScript
+		"error ts", // tsc emits "error TS2304:" etc.
+		"typeerror:", "referenceerror:",
+
+		// Rust
+		"error[e", // rustc emits "error[E0433]:" etc.
+
+		// Python
+		"indentationerror:", "modulenotfounderror:", "nameerror:",
+
+		// Java / Kotlin
+		"error: cannot find symbol", "error: incompatible types",
+
+		// C / C++
+		"fatal error:", "undefined reference",
+	}
+	for _, p := range patterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	// Language-specific source file indicators with line numbers (e.g. "foo.go:12:" or "foo.ts:5:10")
+	srcExts := []string{".go:", ".ts:", ".tsx:", ".js:", ".jsx:", ".rs:", ".java:", ".kt:", ".c:", ".cpp:", ".cc:", ".cs:", ".swift:", ".zig:"}
+	for _, ext := range srcExts {
+		idx := strings.Index(lower, ext)
+		if idx < 0 {
+			continue
+		}
+		// Require a digit immediately after ".<ext>:" to avoid false positives
+		// like "tests/test_main.py::test_add" matching ".py:".
+		after := idx + len(ext)
+		if after < len(lower) && lower[after] >= '0' && lower[after] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// isTestFailure returns true when the lowered combined output matches known
+// test failure patterns across supported languages.
+func isTestFailure(lower string) bool {
+	patterns := []string{
+		// Go
+		"--- fail", "fail\t",
+
+		// pytest
+		"failed", "error in", // pytest summary: "1 failed"
+
+		// Jest / Mocha / Node
+		"tests failed", "test suites failed",
+
+		// Rust (cargo test)
+		"test result: failed",
+
+		// Java / JUnit / Gradle
+		"build failed", "there were failing tests",
+	}
+	for _, p := range patterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	// Go panic in test file
+	if strings.Contains(lower, "panic:") && strings.Contains(lower, "_test.go") {
+		return true
+	}
+	return false
 }

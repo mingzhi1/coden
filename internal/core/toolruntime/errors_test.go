@@ -81,3 +81,50 @@ func TestClassifyShellError_RuntimeFallback(t *testing.T) {
 		t.Errorf("expected exit code 2, got %d", ce.ExitCode)
 	}
 }
+
+func TestClassifyShellError_MultiLanguageCompile(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+	}{
+		{"typescript", "src/index.ts:5:10 - error TS2304: Cannot find name 'Foo'."},
+		{"rust", "error[E0433]: failed to resolve: use of undeclared crate or module `foo`"},
+		{"python", "  File \"main.py\", line 3\nSyntaxError: invalid syntax"},
+		{"java", "Main.java:5: error: cannot find symbol"},
+		{"cpp_fatal", `main.cpp:2:10: fatal error: 'missing.h' file not found`},
+		{"cpp_undef_ref", `build/main.o: undefined reference to 'foo()'`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ce := toolruntime.ClassifyShellError("build", "", tc.stderr, 1, false)
+			if ce == nil {
+				t.Fatal("expected classified error")
+			}
+			if ce.Class != toolruntime.ErrorClassCompileError {
+				t.Errorf("expected compile_error, got %q", ce.Class)
+			}
+		})
+	}
+}
+
+func TestClassifyShellError_MultiLanguageTestFailure(t *testing.T) {
+	cases := []struct {
+		name   string
+		stdout string
+	}{
+		{"pytest", "FAILED tests/test_main.py::test_add - AssertionError"},
+		{"jest", "Tests: 2 failed, 3 passed\nTest Suites: 1 failed"},
+		{"cargo_test", "test result: FAILED. 1 passed; 1 failed; 0 ignored"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ce := toolruntime.ClassifyShellError("test", tc.stdout, "", 1, false)
+			if ce == nil {
+				t.Fatal("expected classified error")
+			}
+			if ce.Class != toolruntime.ErrorClassTestFailure {
+				t.Errorf("expected test_failure, got %q", ce.Class)
+			}
+		})
+	}
+}
