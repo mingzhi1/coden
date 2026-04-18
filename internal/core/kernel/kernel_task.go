@@ -14,6 +14,7 @@ package kernel
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -509,6 +510,24 @@ func (k *Kernel) runOneTask(
 			Reason:     "acceptor rejected artifact",
 			Evidence:   finalCheckpoint.Evidence,
 		})
+
+		// Exponential backoff between task retries to let rate limits cool down.
+		// 3s on first retry, 6s on second, etc.
+		retryBackoff := time.Duration(3*(1<<uint(attempt))) * time.Second
+		if retryBackoff > 30*time.Second {
+			retryBackoff = 30 * time.Second
+		}
+		slog.Info("[kernel] task retry backoff",
+			"task", task.Title, "attempt", attempt+1, "backoff", retryBackoff)
+		select {
+		case <-ctx.Done():
+			return taskExecResult{
+				taskIdx: taskIdx, task: task,
+				checkpoint: finalCheckpoint, artifact: finalArtifact,
+				llmOutput: llmOut.String(), err: ctx.Err(),
+			}
+		case <-time.After(retryBackoff):
+		}
 	}
 
 	// Unreachable when maxRetries >= 0, but keep the compiler happy.

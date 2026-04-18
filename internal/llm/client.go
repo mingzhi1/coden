@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -151,7 +152,15 @@ func (p *Pool) chatFromTier(ctx context.Context, tier []*Client, messages []Mess
 		slog.Info("[llm] trying provider", "provider", c.Provider(), "model", c.Model(), "attempt", i+1, "total", len(tier))
 		reply, err := chatWithRetry(ctx, c, messages)
 		if err == nil {
-			p.recordSuccess(key)
+			// Check for degenerate response (very short reply after rate limiting).
+			if IsDegenerateReply(reply) {
+				p.recordSoftFailure(key)
+				slog.Warn("[llm] degenerate response detected",
+					"provider", c.Provider(), "model", c.Model(),
+					"reply_len", len(reply))
+			} else {
+				p.recordSuccess(key)
+			}
 			slog.Info("[llm] provider succeeded", "provider", c.Provider(), "model", c.Model(), "reply_len", len(reply))
 			return reply, nil
 		}
@@ -207,26 +216,57 @@ func (p *Pool) recordFailure(key string, err error) {
 func (p *Pool) recordSuccess(key string) {
 	p.breakerMu.Lock()
 	defer p.breakerMu.Unlock()
-	delete(p.breakerCounts, key)
-	delete(p.breakerTripped, key)
+	// Successful non-degenerate response halves the failure count
+	// rather than fully resetting, so sustained degradation still trips the breaker.
+	if cnt := p.breakerCounts[key]; cnt > 0 {
+		p.breakerCounts[key] = cnt / 2
+	} else {
+		delete(p.breakerCounts, key)
+		delete(p.breakerTripped, key)
+	}
+}
+
+// recordSoftFailure counts a degenerate (valid but useless) response as a
+// partial failure toward the circuit breaker. Counts half as much as a hard failure.
+func (p *Pool) recordSoftFailure(key string) {
+	p.breakerMu.Lock()
+	defer p.breakerMu.Unlock()
+	// Increment by 1 (same as hard failure) — degenerate responses are strong
+	// signal of rate limiting and should trip the breaker quickly.
+	p.breakerCounts[key]++
+	if p.breakerCounts[key] >= breakerThreshold && p.breakerTripped[key].IsZero() {
+		p.breakerTripped[key] = time.Now()
+		slog.Warn("[llm] circuit breaker tripped (degenerate responses)", "key", key)
+	}
 }
 
 // chatWithRetry retries transient errors (429, 5xx, timeouts) with exponential backoff.
 // Returns immediately on non-retryable errors or context cancellation.
-const maxRetries = 2
+// For 429 rate-limit errors, uses longer backoff (2s base) with jitter.
+const maxRetries = 3
 
 func chatWithRetry(ctx context.Context, c *Client, messages []Message) (string, error) {
 	var lastErr error
-	delay := 500 * time.Millisecond
+	baseDelay := 500 * time.Millisecond
+	rateLimitBaseDelay := 2 * time.Second
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
+			delay := baseDelay
+			if lastErr != nil && isRateLimitError(lastErr) {
+				delay = rateLimitBaseDelay
+			}
+			// Exponential backoff: delay * 2^(attempt-1)
+			for i := 1; i < attempt; i++ {
+				delay *= 2
+			}
+			// Add jitter: ±25%
+			jitter := time.Duration(float64(delay) * (0.75 + rand.Float64()*0.5))
 			select {
 			case <-ctx.Done():
 				return "", ctx.Err()
-			case <-time.After(delay):
+			case <-time.After(jitter):
 			}
-			delay *= 2
 		}
 
 		reply, err := c.Chat(ctx, messages)
@@ -250,11 +290,11 @@ func isRetryableError(err error) bool {
 		return true
 	}
 
-	s := err.Error()
-	// Rate limit
-	if strings.Contains(s, "429") || strings.Contains(s, "rate") {
+	if isRateLimitError(err) {
 		return true
 	}
+
+	s := err.Error()
 	// Server errors
 	for _, code := range []string{"500", "502", "503", "529"} {
 		if strings.Contains(s, "API "+code) || strings.Contains(s, "error "+code) {
@@ -268,6 +308,15 @@ func isRetryableError(err error) bool {
 	return false
 }
 
+// isRateLimitError checks if the error is specifically a 429 rate limit error.
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "429") || strings.Contains(s, "rate")
+}
+
 // RetryableError wraps an error to explicitly mark it as retryable.
 type RetryableError struct {
 	Err error
@@ -275,6 +324,29 @@ type RetryableError struct {
 
 func (e *RetryableError) Error() string { return e.Err.Error() }
 func (e *RetryableError) Unwrap() error { return e.Err }
+
+// DegenerateResponseError indicates a response that is technically valid (HTTP 200)
+// but too short to be useful — typically caused by rate-limit degradation where
+// the API returns a near-empty response after recovering from a 429.
+type DegenerateResponseError struct {
+	Reply    string
+	ReplyLen int
+}
+
+func (e *DegenerateResponseError) Error() string {
+	return fmt.Sprintf("llm: degenerate response (%d chars)", e.ReplyLen)
+}
+
+// DegenerateReplyThreshold is the minimum reply length (in chars) for a response
+// to be considered valid. Replies shorter than this with no parseable tool calls
+// are flagged as degenerate.
+const DegenerateReplyThreshold = 40
+
+// IsDegenerateReply checks if a reply is too short to contain useful content.
+// Callers should combine this with a check for zero tool calls.
+func IsDegenerateReply(reply string) bool {
+	return len(strings.TrimSpace(reply)) < DegenerateReplyThreshold
+}
 
 // Model returns the first primary model name.
 func (p *Pool) Model() string {

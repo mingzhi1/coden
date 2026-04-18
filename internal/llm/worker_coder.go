@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
@@ -161,6 +162,9 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 		readBudgetChars = 3000
 	}
 
+	degenerateCount := 0           // consecutive degenerate replies
+	const maxDegenerateRetries = 2 // max degenerate retries before giving up on round
+
 	for round := 0; round < maxCoderRounds; round++ {
 		prof.Checkpoint(fmt.Sprintf("round_%d_compress_start", round+1))
 		// M12-03: 4-layer compression chain (delegated to deps.Compress).
@@ -181,6 +185,36 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 		calls := parsePlanToolCalls(workflowID, reply)
 		slog.Info("[llm:coder] parsed tool calls from reply", "round", round+1, "total", len(calls), "reads", len(func() []workflow.ToolCall { r, _ := splitToolCalls(calls); return r }()), "mutations", len(func() []workflow.ToolCall { _, m := splitToolCalls(calls); return m }()))
 		if len(calls) == 0 {
+			// Check for degenerate response (rate-limit degradation).
+			// Degenerate replies are very short and contain no tool calls — they
+			// indicate the API is returning stub responses after rate limiting.
+			// Back off instead of nudging, to avoid wasting API quota.
+			if IsDegenerateReply(reply) {
+				degenerateCount++
+				slog.Warn("[llm:coder] degenerate response detected",
+					"round", round+1, "reply_len", len(reply),
+					"degenerate_count", degenerateCount)
+				c.push("warn", "coder", fmt.Sprintf("round %d: degenerate response (%d chars), backing off (%d/%d)",
+					round+1, len(reply), degenerateCount, maxDegenerateRetries))
+				if degenerateCount > maxDegenerateRetries {
+					slog.Warn("[llm:coder] too many degenerate responses, aborting round",
+						"round", round+1, "degenerate_count", degenerateCount)
+					break
+				}
+				// Exponential backoff: 2s, 4s before retry
+				backoff := time.Duration(1<<uint(degenerateCount)) * time.Second
+				select {
+				case <-ctx.Done():
+					return workflow.CodePlan{}, ctx.Err()
+				case <-time.After(backoff):
+				}
+				round-- // degenerate retry does not consume a round
+				continue
+			}
+
+			// Reset degenerate counter on non-degenerate reply
+			degenerateCount = 0
+
 			// T1-02: Check if the model stopped prematurely — nudge to continue
 			// if the output token budget has not been sufficiently consumed.
 			cumulativeOutputTokens += tokenbudget.EstimateTokens(reply)
@@ -222,6 +256,7 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 
 		reads, mutations := splitToolCalls(calls)
 		cumulativeOutputTokens += tokenbudget.EstimateTokens(reply)
+		degenerateCount = 0 // successful tool calls reset degenerate counter
 
 		prof.Checkpoint(fmt.Sprintf("round_%d_tool_exec_start", round+1))
 		// Execute reads and mutations immediately; feed all results back to LLM.

@@ -103,6 +103,14 @@ func (p *OpenAI) Chat(ctx context.Context, model string, messages []Message) (st
 		return content, &TruncatedError{Content: content, Err: fmt.Errorf("openai: response truncated (finish_reason=length)")}
 	}
 
+	// Reject empty/whitespace-only responses — likely caused by rate limiting
+	// or API degradation. The error message contains "503" to trigger retry
+	// logic in the caller's isRetryableError check.
+	if strings.TrimSpace(content) == "" {
+		slog.Warn("[llm:openai] empty response", "model", model, "duration_ms", duration.Milliseconds())
+		return "", fmt.Errorf("openai: empty response from %s (API 503 equivalent)", model)
+	}
+
 	slog.Info("[llm:openai] response received", "model", model, "duration_ms", duration.Milliseconds(),
 		"prompt_tokens", result.Usage.PromptTokens, "completion_tokens", result.Usage.CompletionTokens,
 		"total_tokens", result.Usage.TotalTokens, "reply_len", len(content))
