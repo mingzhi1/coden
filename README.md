@@ -59,32 +59,42 @@ Clients: TUI / CLI / Web
 
 ---
 
-## 8 角色 Worker 流水线
+## Workflow 流水线
 
 ```
 用户输入
-  → Intent    意图解析 → IntentSpec + Kind          [Light]
+  → Intent    意图解析 → IntentSpec + Kind          [Light LLM]
   └─ question → Coder 直接回答 → 结束
-  → Plan      WHAT：任务 DAG + 依赖关系              [Strong]
-  → Discovery WHERE：grep / LSP / RAG 并行搜索
-  → Critic    REVIEW：异构 Provider 审查，反自恋     [Strong, 不同厂商]
-  → RePlan    HOW：基于真实代码细化到函数/行号        [Strong]
+  → Plan      WHAT：任务 DAG + 依赖关系              [Strong LLM]
+  → Discovery WHERE：grep / LSP / RAG 并行搜索       [零 LLM 成本]
+  → Critic    REVIEW：异构 Provider 审查，反自恋     [Strong LLM, 不同厂商]
+  → RePlan    HOW：基于真实代码细化到函数/行号        [Strong LLM]
   → Kernel 调度（按 DAG 并行）
-      ├─→ Coder × N   执行 patch                   [Light]
+      ├─→ Coder × N   执行 patch                   [Light LLM]
       ├─→ Tool Runtime write / edit / shell
-      └─→ Acceptor    pass/fail + FixGuidance       [Strong]
+      └─→ Acceptor    pass/fail + FixGuidance       [Strong LLM]
             ├─ pass → task.passed
             └─ fail → inject FixGuidance → Coder retry
   → Checkpoint 存档 + Secretary AfterTurn → MEMORY.md
 ```
 
-**模型分层原则**
+**流水线组件分类**
 
-| Worker | 档次 | 原因 |
-|--------|------|------|
+| 类别 | 组件 | 说明 |
+|------|------|------|
+| **Dispatched Workers**（经 `executeWorker` 调度） | Intent / Plan / Coder / Acceptor | 标准 Worker 生命周期，产生事件与 tracing |
+| **Inline Components**（Kernel 直接调用） | Discovery / Critic / RePlan | Kernel 内部同步调用，不经过 Worker dispatch |
+| **Background Service** | Secretary | 异步执行，策略引擎 + MEMORY.md 写入 |
+
+**LLM 模型分层原则**
+
+| 组件 | 档次 | 原因 |
+|------|------|------|
 | Planner / Critic / Replanner / Acceptor | **Strong** | 决策点，错误代价高 |
-| Intent / Searcher / Coder / Secretary | Light | 执行点，速度优先 |
-| Critic | 异构 Provider | 与 Planner 不同厂商，消除盲区 |
+| Intent / Coder | **Light** | 执行点，速度优先 |
+| Critic | **异构 Provider** | 与 Planner 不同厂商，消除盲区 |
+| Discovery | **零 LLM** | 纯代码工具（grep / LSP / RAG），不调用 LLM |
+| Secretary | **条件性 Light** | AfterTurn 阶段可选调用 LLM 提取 insight |
 
 ---
 
@@ -164,7 +174,7 @@ llm:
 | 层 | 控制者 | 职责 | 循环上限 |
 |---|--------|------|---------|
 | **L1** Workflow | `runWorkflow()` | 线性流水线调度 | 1（线性） |
-| **L2** Task DAG | `runOneTask()` | 按依赖图并行调度，失败重试 | `maxTaskRetries=2` |
+| **L2** Task DAG | `runOneTask()` | 按依赖图并行调度，失败重试 | `maxTaskRetries=1`（共 2 次尝试） |
 | **L3** Agentic | `agenticBuild()` | LLM 多轮工具循环（Coder） | `maxCoderRounds=5` |
 
 ---
@@ -184,6 +194,8 @@ RAG 索引只包含验收通过的代码，写入期间标记 stale。
 ---
 
 ## 快速开始
+
+> **注意**：`cmd/` 入口尚未发布，当前为 library 模式。以下命令展示目标用法，需自行创建 `cmd/coden/main.go` 入口。
 
 ```bash
 # 依赖：Go 1.25+
@@ -222,7 +234,7 @@ llm:
 | 模块 | 进度 | 说明 |
 |------|------|------|
 | Kernel & 状态核心 | `█████████░` 95% | Session/Turn/Task/Checkpoint/Event Bus 全部完成，M13 Artifact 接入中 |
-| RPC 协议层 | `████████░░` 85% | JSON-RPC 2.0，21 个方法，部分 handler 未接入（session.list / workspace.read 等） |
+| RPC 协议层 | `█████████░` 90% | JSON-RPC 2.0，31 个方法，handler 全部接入 |
 | Workflow Engine | `█████████░` 90% | 6 阶段流水线完成，任务状态机完成，L2 Regression 尚未实现 |
 | LLM Broker | `████████░░` 85% | per-role pool、provider fallback、usage stats 完成，Sidecar 模式接入完成 |
 | Tool Runtime | `█████████░` 90% | 14 工具完成，MCP 动态发现完成，tool_search 延迟注册完成 |
@@ -231,9 +243,8 @@ llm:
 | Secretary | `███████░░░` 75% | ContextGate/ExecGate/AfterTurn 完成，MEMORY.md 写入完成，权限模型待强化 |
 | TUI | `████████░░` 80% | 3 栏布局、事件驱动、History Tab 完成，slash command 扩展中 |
 | LLM Server Sidecar | `████████░░` 80% | TCP sidecar、ACP/Anthropic/OpenAI/DeepSeek 完成，crash 监控待实现 |
-| Artifact 管理 | `███░░░░░░░` 30% | M13 Phase 1 骨架完成，存储/查询/生命周期管理进行中 |
-| Web Kanban | `██░░░░░░░░` 20% | HTTP/WS server 骨架完成，前端看板未开始 |
-| 多 Agent 协作 | `█░░░░░░░░░` 10% | BoardStore 数据模型设计完成，AgentPool 调度未实现 |
+| Artifact 管理 | `████████░░` 85% | M13 Phase 1-3 完成：存储/查询/引用/GC，Phase 4（导出/TUI）待完善 |
+| Web Kanban | `███████░░░` 70% | HTTP/WS server + 完整 UI、Board/Card CRUD API、Session API（列表/创建/变更/Submit）完成，Event 回写 Card 状态待完成 |
 
 ---
 
@@ -241,14 +252,14 @@ llm:
 
 ### Web Kanban 看板
 
-看板不是只读展示，而是调度入口——拖动卡片即触发 Agent 执行。
+看板不是只读展示，而是调度入口——拖动卡片即触发 Workflow 执行。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Web Kanban UI                             │
 │  Backlog │ Ready │ In Progress │ Review │ Done │ Blocked    │
-│          │       │  [Agent A]  │        │      │            │
-│          │  ●    │  [Agent B]  │   ●    │  ●   │            │
+│          │       │  [Sess-1]   │        │      │            │
+│          │  ●    │  [Sess-2]   │   ●    │  ●   │            │
 └──────────┴───────┴─────────────┴────────┴──────┴────────────┘
            │ WebSocket / HTTP
 ┌──────────┴──────────────────────────────────────────────────┐
@@ -257,39 +268,34 @@ llm:
            │
 ┌──────────┴──────────────────────────────────────────────────┐
 │  CodeN Core                                                  │
-│  ├── AgentPool（Agent 注册 · 任务路由 · 冲突检测）            │
 │  ├── BoardStore（Board / Column / Card · 图状依赖）           │
-│  └── Kernel（Session · Workflow · Event Bus）                │
+│  └── Kernel（多 Session 并行 · Workflow · Event Bus）        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 **设计原则**：
 - `Board Is a View` — 看板是任务系统的可视化投影，不绕过状态机
-- `Drag = Submit` — 拖动到 In Progress 本质上是触发一次 `workflow.submit`
+- `Session Is Execution` — Card 执行时绑定 Session，复用现有基础设施，不引入额外抽象
+- `Drag = Submit` — 拖动到 In Progress + 选择 Session，本质上是触发一次 `Submit()`
 - `Events Drive UI` — UI 由 Event Bus 驱动，不轮询
 - `Kernel Owns State` — 最终状态仍由 Kernel 控制，UI 不直接拥有真相
 
-Card 数据模型支持层级任务（Epic / Task / Sub-task）、图状依赖（blocks / relates_to / supersedes）、原子 claim 防止多 Agent 抢占。
+Card 数据模型支持层级任务（Epic / Task / Sub-task）、图状依赖（blocks / relates_to / supersedes）。并行执行直接复用 Kernel 多 Session 能力，无需独立编排层。
 
 ---
 
-### 多人 / 多 Agent 协作
+### 多 Session 并行
 
 ```
-User A ──┐
-User B ──┤── ClientAPI ──→ AgentPool ──→ Agent Session A (Workflow A)
-User C ──┘                           └──→ Agent Session B (Workflow B)
-                                              │
-                                         Kernel（单写者）
-                                         冲突检测 · 文件锁
-                                         事件广播给所有订阅者
+User ── ClientAPI ──→ Kernel（单写者）
+                       ├── Session A → Workflow A (Card X)
+                       ├── Session B → Workflow B (Card Y)
+                       └── Session C → Workflow C (Card Z)
+                              │
+                         Event Bus 广播给所有订阅者
 ```
 
-**核心问题**：多 Agent 并行时的文件冲突。设计策略：
-- **Conflict First**：调度前先检测文件重叠，冲突任务串行化
-- **原子 Claim**：Card 被某 Agent claim 后，其他 Agent 不可抢占
-- **按 Agent 过滤 Diff**：每个变更追踪到 Session/Card，支持独立 review 和 commit
-- **Session 恢复**：Agent 崩溃后可通过 Checkpoint + Event replay 重新 attach
+Kernel 原生支持多 Session 并行执行。每个 Card 绑定一个 Session，多个 Card 同时执行时自然并行。不需要独立的 Agent 编排层——Session 就是执行单元。
 
 ---
 
