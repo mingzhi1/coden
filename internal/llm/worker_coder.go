@@ -197,9 +197,11 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 				c.push("warn", "coder", fmt.Sprintf("round %d: degenerate response (%d chars), backing off (%d/%d)",
 					round+1, len(reply), degenerateCount, maxDegenerateRetries))
 				if degenerateCount > maxDegenerateRetries {
-					slog.Warn("[llm:coder] too many degenerate responses, aborting round",
+					slog.Warn("[llm:coder] too many degenerate responses, aborting",
 						"round", round+1, "degenerate_count", degenerateCount)
-					break
+					return workflow.CodePlan{}, fmt.Errorf(
+						"coder: %d consecutive degenerate responses (<%d chars) — API may be rate-limited or degraded",
+						degenerateCount, DegenerateReplyThreshold)
 				}
 				// Exponential backoff: 2s, 4s before retry
 				backoff := time.Duration(1<<uint(degenerateCount)) * time.Second

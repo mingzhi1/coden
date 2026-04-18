@@ -66,13 +66,22 @@ func (p *OpenAI) Chat(ctx context.Context, model string, messages []Message) (st
 	}
 	defer resp.Body.Close()
 
+	// Check context cancellation before reading the response body.
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", fmt.Errorf("openai: read body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		slog.Warn("[llm:openai] error response", "status", resp.StatusCode, "body", trimBody(raw, 300), "duration_ms", time.Since(start).Milliseconds())
-		return "", fmt.Errorf("openai: API %d: %s", resp.StatusCode, trimBody(raw, 300))
+		return "", &ProviderError{
+			Provider:   "openai",
+			StatusCode: resp.StatusCode,
+			Message:    string(trimBody(raw, 300)),
+		}
 	}
 
 	var result struct {
@@ -104,11 +113,14 @@ func (p *OpenAI) Chat(ctx context.Context, model string, messages []Message) (st
 	}
 
 	// Reject empty/whitespace-only responses — likely caused by rate limiting
-	// or API degradation. The error message contains "503" to trigger retry
-	// logic in the caller's isRetryableError check.
+	// or API degradation. Marked as retryable server error.
 	if strings.TrimSpace(content) == "" {
 		slog.Warn("[llm:openai] empty response", "model", model, "duration_ms", duration.Milliseconds())
-		return "", fmt.Errorf("openai: empty response from %s (API 503 equivalent)", model)
+		return "", &ProviderError{
+			Provider:   "openai",
+			StatusCode: 503,
+			Message:    fmt.Sprintf("empty response from %s", model),
+		}
 	}
 
 	slog.Info("[llm:openai] response received", "model", model, "duration_ms", duration.Milliseconds(),

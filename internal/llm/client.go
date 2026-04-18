@@ -143,10 +143,12 @@ func (p *Pool) ChatLight(ctx context.Context, messages []Message) (string, error
 
 func (p *Pool) chatFromTier(ctx context.Context, tier []*Client, messages []Message) (string, error) {
 	var lastErr error
+	skipped := 0
 	for i, c := range tier {
 		key := c.Provider() + "/" + c.Model()
 		if p.isCircuitOpen(key) {
 			slog.Info("[llm] circuit breaker open, skipping", "provider", c.Provider(), "model", c.Model())
+			skipped++
 			continue
 		}
 		slog.Info("[llm] trying provider", "provider", c.Provider(), "model", c.Model(), "attempt", i+1, "total", len(tier))
@@ -177,6 +179,11 @@ func (p *Pool) chatFromTier(ctx context.Context, tier []*Client, messages []Mess
 			slog.Info("[llm] falling back", "to_provider", next.Provider(), "to_model", next.Model())
 		}
 		lastErr = err
+	}
+	// If all providers were skipped due to circuit breaker, return typed error
+	// so callers (recovery layer) know NOT to retry.
+	if skipped == len(tier) && len(tier) > 0 {
+		return "", &CircuitBreakerOpenError{Tier: "pool"}
 	}
 	if lastErr != nil {
 		return "", lastErr
@@ -246,6 +253,11 @@ func (p *Pool) recordSoftFailure(key string) {
 const maxRetries = 3
 
 func chatWithRetry(ctx context.Context, c *Client, messages []Message) (string, error) {
+	// Early exit: don't even start if context is already cancelled.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	var lastErr error
 	baseDelay := 500 * time.Millisecond
 	rateLimitBaseDelay := 2 * time.Second
@@ -290,18 +302,18 @@ func isRetryableError(err error) bool {
 		return true
 	}
 
+	// Check typed ProviderError (replaces string-based classification).
+	var pe *provider.ProviderError
+	if errors.As(err, &pe) {
+		return pe.IsRetryable()
+	}
+
 	if isRateLimitError(err) {
 		return true
 	}
 
+	// Fallback: string-based check for non-typed errors (e.g. network errors).
 	s := err.Error()
-	// Server errors
-	for _, code := range []string{"500", "502", "503", "529"} {
-		if strings.Contains(s, "API "+code) || strings.Contains(s, "error "+code) {
-			return true
-		}
-	}
-	// Network/timeout
 	if strings.Contains(s, "timeout") || strings.Contains(s, "connection") {
 		return true
 	}
@@ -313,8 +325,13 @@ func isRateLimitError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var pe *provider.ProviderError
+	if errors.As(err, &pe) {
+		return pe.IsRateLimit()
+	}
+	// Fallback for non-typed errors.
 	s := err.Error()
-	return strings.Contains(s, "429") || strings.Contains(s, "rate")
+	return strings.Contains(s, "429") || strings.Contains(s, "rate limit")
 }
 
 // RetryableError wraps an error to explicitly mark it as retryable.
@@ -346,6 +363,18 @@ const DegenerateReplyThreshold = 40
 // Callers should combine this with a check for zero tool calls.
 func IsDegenerateReply(reply string) bool {
 	return len(strings.TrimSpace(reply)) < DegenerateReplyThreshold
+}
+
+// CircuitBreakerOpenError is returned when all providers in a pool tier
+// have their circuit breakers tripped. This signals callers (e.g. the
+// recovery layer) to NOT retry, since the underlying providers are known
+// to be degraded.
+type CircuitBreakerOpenError struct {
+	Tier string // "primary" or "light"
+}
+
+func (e *CircuitBreakerOpenError) Error() string {
+	return fmt.Sprintf("llm: all %s providers circuit-breaker tripped", e.Tier)
 }
 
 // Model returns the first primary model name.

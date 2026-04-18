@@ -34,7 +34,16 @@ func (p *DeepSeek) Chat(ctx context.Context, model string, messages []Message) (
 		if errors.As(err, &te) {
 			return reply, &TruncatedError{Content: reply, Err: fmt.Errorf("deepseek: %s", strings.TrimPrefix(te.Err.Error(), "openai: "))}
 		}
-		// Replace "openai:" prefix with "deepseek:"
+		// Re-wrap ProviderError with correct provider name.
+		var pe *ProviderError
+		if errors.As(err, &pe) {
+			return "", &ProviderError{
+				Provider:   "deepseek",
+				StatusCode: pe.StatusCode,
+				Message:    pe.Message,
+				Err:        pe.Err,
+			}
+		}
 		return "", fmt.Errorf("deepseek: %s", strings.TrimPrefix(err.Error(), "openai: "))
 	}
 	return reply, nil

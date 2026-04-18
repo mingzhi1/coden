@@ -173,3 +173,12 @@ func (b *Broker) LightModel() string { return b.pool.LightModel() }
 
 // Summary returns a human-readable description of the pool configuration.
 func (b *Broker) Summary() string { return b.pool.Summary() }
+
+// ClearRoleOverride removes a temporary role override set by SetRole.
+// This is used by recovery layers to restore original routing after a
+// fallback attempt.
+func (b *Broker) ClearRoleOverride(role string) {
+	b.mu.Lock()
+	delete(b.roleOverrides, role)
+	b.mu.Unlock()
+}

@@ -88,7 +88,11 @@ func (p *Anthropic) Chat(ctx context.Context, model string, messages []Message) 
 	}
 	if resp.StatusCode != http.StatusOK {
 		slog.Warn("[llm:anthropic] error response", "status", resp.StatusCode, "body", trimBody(raw, 300), "duration_ms", time.Since(start).Milliseconds())
-		return "", fmt.Errorf("anthropic: API %d: %s", resp.StatusCode, trimBody(raw, 300))
+		return "", &ProviderError{
+			Provider:   "anthropic",
+			StatusCode: resp.StatusCode,
+			Message:    string(trimBody(raw, 300)),
+		}
 	}
 
 	var result struct {

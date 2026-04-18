@@ -36,6 +36,15 @@ func (p *MiniMax) Chat(ctx context.Context, model string, messages []Message) (s
 		if errors.As(err, &te) {
 			return reply, &TruncatedError{Content: reply, Err: fmt.Errorf("minimax: %s", strings.TrimPrefix(te.Err.Error(), "openai: "))}
 		}
+		var pe *ProviderError
+		if errors.As(err, &pe) {
+			return "", &ProviderError{
+				Provider:   "minimax",
+				StatusCode: pe.StatusCode,
+				Message:    pe.Message,
+				Err:        pe.Err,
+			}
+		}
 		return "", fmt.Errorf("minimax: %s", strings.TrimPrefix(err.Error(), "openai: "))
 	}
 	return reply, nil
