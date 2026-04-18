@@ -154,6 +154,7 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 	// working when it stops before exhausting the output token budget.
 	// Budget set to availableTokens (conservative prompt budget).
 	contTracker := tokenbudget.NewContinuationTracker(30000)
+	cumulativeOutputTokens := 0 // cumulative output tokens across all rounds
 	// read_file results: cap each call at 25% of tool-history budget (in chars, 4 chars/token).
 	readBudgetChars := (toolHistoryBudget * 25 / 100) * 4 // = 12000 * 0.25 * 4 = 12000 chars, but cap at 3000
 	if readBudgetChars > 3000 {
@@ -182,7 +183,8 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 		if len(calls) == 0 {
 			// T1-02: Check if the model stopped prematurely — nudge to continue
 			// if the output token budget has not been sufficiently consumed.
-			decision := contTracker.Check(tokenbudget.EstimateTokens(reply))
+			cumulativeOutputTokens += tokenbudget.EstimateTokens(reply)
+			decision := contTracker.Check(cumulativeOutputTokens)
 			if decision.ShouldContinue {
 				slog.Info("[llm:coder] token budget continuation",
 					"round", round+1, "pct", decision.Pct, "tokens", decision.TurnTokens)
@@ -219,6 +221,7 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 		}
 
 		reads, mutations := splitToolCalls(calls)
+		cumulativeOutputTokens += tokenbudget.EstimateTokens(reply)
 
 		prof.Checkpoint(fmt.Sprintf("round_%d_tool_exec_start", round+1))
 		// Execute reads and mutations immediately; feed all results back to LLM.
