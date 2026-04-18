@@ -103,7 +103,7 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 				evLine := fmt.Sprintf("%s → exit %d", call.Request.Command, result.ExitCode)
 				// Include truncated stdout so the acceptor can verify output content.
 				if out := strings.TrimSpace(result.Output); out != "" {
-					const maxEvOutput = 500
+					const maxEvOutput = 1000
 					if len(out) > maxEvOutput {
 						out = out[:maxEvOutput] + "…"
 					}

@@ -58,6 +58,9 @@ func (c *LLMCoder) Build(ctx context.Context, workflowID string, intent model.In
 	taskList := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		entry := fmt.Sprintf("- %s", t.Title)
+		if t.SuccessCmd != "" {
+			entry += fmt.Sprintf(" [verify: %s]", t.SuccessCmd)
+		}
 		if len(t.Steps) > 0 {
 			for _, s := range t.Steps {
 				entry += fmt.Sprintf("\n  - %s", s)
