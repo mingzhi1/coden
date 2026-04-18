@@ -173,6 +173,9 @@ func (s *Server) handleUpdateCard(w http.ResponseWriter, r *http.Request) {
 	if v, ok := updates["files"]; ok {
 		json.Unmarshal(v, &card.Files)
 	}
+	if v, ok := updates["session_id"]; ok {
+		json.Unmarshal(v, &card.SessionID)
+	}
 	card.UpdatedAt = time.Now().UTC()
 
 	if err := s.store.UpdateCard(card); err != nil {
@@ -192,7 +195,7 @@ func (s *Server) handleDeleteCard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type deletePayload struct {
-		CardID string `json:"cardId"`
+		CardID string `json:"card_id"`
 	}
 	data, _ := json.Marshal(deletePayload{CardID: cardID})
 	s.wsHub.Broadcast(&WSMessage{Type: "card.deleted", Data: data})
@@ -229,9 +232,9 @@ func (s *Server) handleMoveCard(w http.ResponseWriter, r *http.Request) {
 
 	// Broadcast move event
 	type movePayload struct {
-		CardID     string `json:"cardId"`
-		FromColumn string `json:"fromColumn"`
-		ToColumn   string `json:"toColumn"`
+		CardID     string `json:"card_id"`
+		FromColumn string `json:"from_column"`
+		ToColumn   string `json:"column"`
 		Position   int    `json:"position"`
 	}
 	data, _ := json.Marshal(movePayload{
@@ -241,13 +244,6 @@ func (s *Server) handleMoveCard(w http.ResponseWriter, r *http.Request) {
 		Position:   req.Position,
 	})
 	s.wsHub.Broadcast(&WSMessage{Type: "card.moved", Data: data})
-
-	// If moved to in_progress and has no assignee, this is where
-	// the AgentPool integration would trigger auto-assignment.
-	if req.Column == board.ColumnInProgress && card.AssigneeID == "" && s.pool != nil {
-		slog.Info("[web] card moved to in_progress without assignee, awaiting assignment",
-			"card", cardID)
-	}
 
 	writeJSON(w, http.StatusOK, card)
 }

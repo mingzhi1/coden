@@ -99,6 +99,10 @@ a{color:var(--accent-blue);text-decoration:none}
 .workflow-log .log-step{color:var(--accent-blue)}
 .workflow-log .log-ok{color:var(--accent-green)}
 .workflow-log .log-err{color:var(--accent-red)}
+.session-changes{background:#11111b;border-radius:6px;padding:10px;max-height:200px;overflow-y:auto;font-size:12px;line-height:1.8}
+.session-changes .change-entry{display:flex;align-items:center;gap:4px;padding:2px 0}
+.session-changes .change-path{flex:1;font-family:monospace;font-size:11px;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-changes .change-op{font-size:10px;text-transform:uppercase;flex-shrink:0}
 .detail-timestamps{font-size:11px;color:var(--text-muted);display:flex;flex-direction:column;gap:2px}
 .detail-actions{display:flex;gap:8px;padding-top:8px;border-top:1px solid var(--border)}
 .btn-danger{padding:6px 14px;border:1px solid var(--accent-red);border-radius:6px;background:transparent;color:var(--accent-red);font-size:13px;transition:all var(--transition)}
@@ -142,7 +146,7 @@ a{color:var(--accent-blue);text-decoration:none}
     <div id="filter-indicator"><span class="filter-text"></span><span class="clear-filter" title="Clear filter">&#10005;</span></div>
     <div id="actions">
       <button id="btn-new-card">+ New Card</button>
-      <button id="btn-new-agent">+ Agent</button>
+      <button id="btn-new-agent">+ Session</button>
       <button id="btn-filter">Filter</button>
     </div>
   </header>
@@ -160,6 +164,10 @@ a{color:var(--accent-blue);text-decoration:none}
       </div>
       <div class="column" data-column="in_progress">
         <div class="column-header"><span>In Progress</span><span class="column-count">0</span></div>
+        <div class="column-body"></div>
+      </div>
+      <div class="column" data-column="blocked">
+        <div class="column-header"><span>Blocked</span><span class="column-count">0</span></div>
         <div class="column-body"></div>
       </div>
       <div class="column" data-column="review">
@@ -227,6 +235,10 @@ a{color:var(--accent-blue);text-decoration:none}
           <ul id="detail-files" class="file-list"></ul>
         </div>
         <div class="detail-field">
+          <label>Session Changes</label>
+          <div id="detail-session-changes" class="session-changes"></div>
+        </div>
+        <div class="detail-field">
           <label>Workflow Log</label>
           <div id="detail-log" class="workflow-log"></div>
         </div>
@@ -251,15 +263,16 @@ a{color:var(--accent-blue);text-decoration:none}
 const state = {
   board: null,       // Current board object
   cards: [],         // All card objects
-  agents: [],        // All agent objects
+  sessions: [],      // All session objects
   selectedCard: null,// Currently selected card (shown in detail panel)
   ws: null,          // WebSocket connection
-  filterAgent: null, // Agent ID to filter by (null = no filter)
+  filterSession: null, // Session ID to filter by (null = no filter)
   draggedCardId: null, // ID of card being dragged
+  sessionChanges: {},  // sessionId → [{path, operation}]
 };
 
-// Agent color palette for avatars
-const AGENT_COLORS = [
+// Session color palette for avatars
+const SESSION_COLORS = [
   "#89b4fa","#a6e3a1","#f9e2af","#f38ba8","#cba6f7",
   "#fab387","#94e2d5","#f5c2e7","#74c7ec","#b4befe"
 ];
@@ -269,6 +282,7 @@ const COLUMN_NAMES = {
   backlog: "Backlog",
   ready: "Ready",
   in_progress: "In Progress",
+  blocked: "Blocked",
   review: "Review",
   done: "Done"
 };
@@ -286,11 +300,11 @@ function initials(name) {
   return name.split(/[\s_-]+/).map(w => w[0]).join("").toUpperCase().slice(0, 2);
 }
 
-/** Get a consistent color for an agent based on index or id */
-function agentColor(agent) {
-  if (!agent) return AGENT_COLORS[0];
-  const idx = state.agents.indexOf(agent);
-  return AGENT_COLORS[(idx >= 0 ? idx : 0) % AGENT_COLORS.length];
+/** Get a consistent color for a session based on index */
+function sessionColor(session) {
+  if (!session) return SESSION_COLORS[0];
+  const idx = state.sessions.indexOf(session);
+  return SESSION_COLORS[(idx >= 0 ? idx : 0) % SESSION_COLORS.length];
 }
 
 /** Format elapsed time from a timestamp */
@@ -316,6 +330,20 @@ function esc(str) {
   const d = document.createElement("div");
   d.textContent = str;
   return d.innerHTML;
+}
+
+/** Normalize a card object from backend (column_id→column, depends_on→dependencies) */
+function normalizeCard(card) {
+  if (!card) return card;
+  if (card.column_id && !card.column) card.column = card.column_id;
+  if (!card.column_id && card.column) card.column_id = card.column;
+  return card;
+}
+
+/** Normalize an array of cards */
+function normalizeCards(cards) {
+  if (!Array.isArray(cards)) return cards;
+  return cards.map(normalizeCard);
 }
 
 // ---- API Client ----
@@ -347,21 +375,23 @@ const API = {
   },
 
   async getCards(boardId) {
-    return this.request("GET", "/boards/" + boardId + "/cards");
+    const cards = await this.request("GET", "/boards/" + boardId + "/cards");
+    return normalizeCards(cards);
   },
 
   async createCard(boardId, card) {
-    return this.request("POST", "/boards/" + boardId + "/cards", card);
+    const result = await this.request("POST", "/boards/" + boardId + "/cards", card);
+    return normalizeCard(result);
   },
 
   async moveCard(boardId, cardId, toColumn, position) {
-    return this.request("PUT", "/boards/" + boardId + "/cards/" + cardId + "/move", {
+    return this.request("POST", "/boards/" + boardId + "/cards/" + cardId + "/move", {
       column: toColumn, position: position
     });
   },
 
   async updateCard(boardId, cardId, updates) {
-    return this.request("PUT", "/boards/" + boardId + "/cards/" + cardId, updates);
+    return this.request("PATCH", "/boards/" + boardId + "/cards/" + cardId, updates);
   },
 
   async deleteCard(boardId, cardId) {
@@ -369,67 +399,114 @@ const API = {
   },
 
   async getAgents() {
-    return this.request("GET", "/agents");
+    return this.request("GET", "/sessions");
   },
 
   async createAgent(agent) {
-    return this.request("POST", "/agents", agent);
+    return this.request("POST", "/sessions", agent);
   },
 
   async assignCard(agentId, cardId) {
-    return this.request("POST", "/agents/" + agentId + "/assign", { card_id: cardId });
+    return this.request("POST", "/cards/" + cardId + "/submit", { session_id: agentId });
+  },
+
+  async getSessionChanges(sessionId) {
+    return this.request("GET", "/sessions/" + sessionId + "/changes");
   },
 };
 
 // ---- WebSocket ----
 
 function connectWebSocket() {
+  // The server uses SSE (Server-Sent Events) on /ws. Try EventSource first,
+  // fall back to WebSocket if a real WS server is available.
+  const sseUrl = location.origin + "/ws";
+
+  try {
+    const es = new EventSource(sseUrl);
+
+    es.onopen = () => {
+      console.log("[SSE] Connected to", sseUrl);
+      document.getElementById("connection-dot").classList.add("connected");
+      document.getElementById("connection-dot").title = "Connected (SSE)";
+    };
+
+    es.onerror = (e) => {
+      console.warn("[SSE] Error, reconnecting...", e);
+      document.getElementById("connection-dot").classList.remove("connected");
+      document.getElementById("connection-dot").title = "Disconnected";
+    };
+
+    es.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+      console.log("[SSE] Message:", msg.type);
+      handleWSMessage(msg);
+    };
+
+    // Store reference for cleanup
+    state.ws = es;
+  } catch (e) {
+    console.warn("[SSE] EventSource failed, trying WebSocket:", e);
+    connectWebSocketFallback();
+  }
+}
+
+function connectWebSocketFallback() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const wsPort = window.__WS_PORT__ || location.port || "7200";
   const wsUrl = protocol + "//" + location.hostname + ":" + wsPort + "/ws";
 
   try {
-    state.ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      console.log("[WS] Connected to", wsUrl);
+      document.getElementById("connection-dot").classList.add("connected");
+      document.getElementById("connection-dot").title = "Connected (WS)";
+    };
+
+    ws.onclose = () => {
+      console.log("[WS] Disconnected, reconnecting in 3s...");
+      document.getElementById("connection-dot").classList.remove("connected");
+      document.getElementById("connection-dot").title = "Disconnected";
+      state.ws = null;
+      setTimeout(connectWebSocket, 3000);
+    };
+
+    ws.onerror = (e) => {
+      console.warn("[WS] Error:", e);
+    };
+
+    ws.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+      handleWSMessage(msg);
+    };
+
+    state.ws = ws;
   } catch (e) {
-    console.warn("WebSocket connection failed:", e);
+    console.warn("[WS] WebSocket also failed:", e);
     setTimeout(connectWebSocket, 3000);
-    return;
   }
+}
 
-  state.ws.onopen = () => {
-    console.log("[WS] Connected to", wsUrl);
-    document.getElementById("connection-dot").classList.add("connected");
-    document.getElementById("connection-dot").title = "Connected";
-  };
-
-  state.ws.onclose = () => {
-    console.log("[WS] Disconnected, reconnecting in 3s...");
-    document.getElementById("connection-dot").classList.remove("connected");
-    document.getElementById("connection-dot").title = "Disconnected";
-    state.ws = null;
-    setTimeout(connectWebSocket, 3000);
-  };
-
-  state.ws.onerror = (e) => {
-    console.warn("[WS] Error:", e);
-  };
-
-  state.ws.onmessage = (event) => {
-    let msg;
-    try { msg = JSON.parse(event.data); } catch { return; }
-    console.log("[WS] Message:", msg.type, msg.data);
-
-    switch (msg.type) {
-      case "card.moved":    handleCardMoved(msg.data); break;
-      case "card.updated":  handleCardUpdated(msg.data); break;
-      case "card.created":  handleCardCreated(msg.data); break;
-      case "card.deleted":  handleCardDeleted(msg.data); break;
-      case "agent.status":  handleAgentStatus(msg.data); break;
-      case "agent.progress":handleAgentProgress(msg.data); break;
-      case "workflow.step": handleWorkflowStep(msg.data); break;
-      case "board.sync":    handleFullSync(msg.data); break;
-    }
-  };
+function handleWSMessage(msg) {
+  switch (msg.type) {
+    case "card.moved":         handleCardMoved(msg.data); break;
+    case "card.updated":       handleCardUpdated(msg.data); break;
+    case "card.created":       handleCardCreated(msg.data); break;
+    case "card.deleted":       handleCardDeleted(msg.data); break;
+    case "agent.status":       handleAgentStatus(msg.data); break;
+    case "agent.progress":     handleAgentProgress(msg.data); break;
+    case "workflow.step":      handleWorkflowStep(msg.data); break;
+    case "workflow.started":   handleWorkflowStarted(msg.data); break;
+    case "workflow.failed":    handleWorkflowFailed(msg.data); break;
+    case "workflow.checkpoint": handleWorkflowCheckpoint(msg.data); break;
+    case "workspace.changed":  handleWorkspaceChanged(msg.data); break;
+    case "session.created":    handleSessionCreated(msg.data); break;
+    case "board.sync":         handleFullSync(msg.data); break;
+  }
 }
 
 // ---- WebSocket event handlers ----
@@ -447,6 +524,7 @@ function handleCardMoved(data) {
 }
 
 function handleCardUpdated(data) {
+  normalizeCard(data);
   const idx = state.cards.findIndex(c => c.id === data.id);
   if (idx >= 0) {
     state.cards[idx] = { ...state.cards[idx], ...data };
@@ -458,6 +536,7 @@ function handleCardUpdated(data) {
 }
 
 function handleCardCreated(data) {
+  normalizeCard(data);
   if (!state.cards.find(c => c.id === data.id)) {
     state.cards.push(data);
     renderBoard();
@@ -473,12 +552,12 @@ function handleCardDeleted(data) {
 }
 
 function handleAgentStatus(data) {
-  const agent = state.agents.find(a => a.id === data.agent_id);
-  if (agent) {
-    agent.status = data.status;
-    if (data.current_task) agent.current_task = data.current_task;
-    if (data.started_at) agent.started_at = data.started_at;
-    renderAgentBar();
+  const sess = state.sessions.find(a => a.id === data.session_id || a.id === data.agent_id);
+  if (sess) {
+    sess.status = data.status;
+    if (data.current_task) sess.current_task = data.current_task;
+    if (data.started_at) sess.started_at = data.started_at;
+    renderSessionBar();
   }
 }
 
@@ -508,12 +587,77 @@ function handleWorkflowStep(data) {
   }
 }
 
+function handleWorkflowStarted(data) {
+  const card = state.cards.find(c => c.id === data.card_id);
+  if (card) {
+    card.workflow_step = "started";
+    card.progress = 0;
+    renderBoard();
+  }
+}
+
+function handleWorkflowFailed(data) {
+  const card = state.cards.find(c => c.id === data.card_id);
+  if (card) {
+    card.workflow_step = "failed";
+    card.error = data.error;
+    renderBoard();
+    if (state.selectedCard && state.selectedCard.id === card.id) {
+      openDetailPanel(card);
+    }
+  }
+}
+
+function handleWorkflowCheckpoint(data) {
+  const card = state.cards.find(c => c.id === data.card_id);
+  if (card) {
+    card.workflow_step = data.step || "checkpoint";
+    card.progress = data.progress;
+    renderBoard();
+  }
+}
+
+function handleWorkspaceChanged(data) {
+  const sessionId = data.session_id;
+  if (!sessionId) return;
+  if (!state.sessionChanges[sessionId]) {
+    state.sessionChanges[sessionId] = [];
+  }
+  if (data.changes) {
+    state.sessionChanges[sessionId] = data.changes;
+  } else if (data.path) {
+    // Single change event
+    const existing = state.sessionChanges[sessionId];
+    const idx = existing.findIndex(c => c.path === data.path);
+    if (idx >= 0) {
+      existing[idx] = { path: data.path, operation: data.operation || "modified" };
+    } else {
+      existing.push({ path: data.path, operation: data.operation || "modified" });
+    }
+  }
+  // Re-render changes if this session's card is open in detail panel
+  if (state.selectedCard) {
+    const cardSessionId = state.selectedCard.session_id || state.selectedCard.assignee_id;
+    if (cardSessionId === sessionId) {
+      renderSessionChanges(sessionId);
+    }
+  }
+}
+
+function handleSessionCreated(data) {
+  if (data && data.id && !state.sessions.find(s => s.id === data.id)) {
+    state.sessions.push(data);
+    renderSessionBar();
+  }
+}
+
 function handleFullSync(data) {
-  if (data.cards) state.cards = data.cards;
-  if (data.agents) state.agents = data.agents;
+  if (data.cards) state.cards = normalizeCards(data.cards);
+  if (data.sessions) state.sessions = data.sessions;
+  if (data.agents) state.sessions = data.agents; // backward compat
   if (data.board) state.board = data.board;
   renderBoard();
-  renderAgentBar();
+  renderSessionBar();
 }
 
 
@@ -521,7 +665,8 @@ function handleFullSync(data) {
 
 /** Render a single card element */
 function renderCard(card) {
-  const agent = card.assignee_id ? state.agents.find(a => a.id === card.assignee_id) : null;
+  const session = card.assignee_id ? state.sessions.find(a => a.id === card.assignee_id) :
+                  card.session_id ? state.sessions.find(a => a.id === card.session_id) : null;
   const isBlocked = card.status === "blocked";
   const isSelected = state.selectedCard && state.selectedCard.id === card.id;
   const pClass = "p" + (card.priority != null ? card.priority : 3);
@@ -534,11 +679,11 @@ function renderCard(card) {
   }
 
   let assigneeHtml = "";
-  if (agent) {
-    const color = agentColor(agent);
+  if (session) {
+    const color = sessionColor(session);
     assigneeHtml = "<div class=\"card-assignee\">" +
-      "<span class=\"avatar\" style=\"background:" + color + "\">" + initials(agent.name) + "</span>" +
-      "<span>" + esc(agent.name) + "</span></div>";
+      "<span class=\"avatar\" style=\"background:" + color + "\">" + initials(session.name) + "</span>" +
+      "<span>" + esc(session.name) + "</span></div>";
   }
 
   let iconsHtml = "";
@@ -569,7 +714,7 @@ function renderBoard() {
     const body = col.querySelector(".column-body");
     const count = col.querySelector(".column-count");
     let cards = state.cards.filter(c => c.column === colName);
-    if (state.filterAgent) cards = cards.filter(c => c.assignee_id === state.filterAgent);
+    if (state.filterSession) cards = cards.filter(c => c.assignee_id === state.filterSession || c.session_id === state.filterSession);
     cards.sort((a, b) => (a.position || 0) - (b.position || 0));
     count.textContent = cards.length;
     if (cards.length === 0) {
@@ -588,21 +733,21 @@ function renderBoard() {
   setupDragAndDrop();
 }
 
-/** Render agent bar */
-function renderAgentBar() {
+/** Render session bar */
+function renderSessionBar() {
   const bar = document.getElementById("agent-bar");
-  if (!state.agents.length) {
-    bar.innerHTML = "<span style=\"color:var(--text-muted);font-size:12px\">No agents connected</span>";
+  if (!state.sessions.length) {
+    bar.innerHTML = "<span style=\"color:var(--text-muted);font-size:12px\">No sessions</span>";
     return;
   }
-  bar.innerHTML = state.agents.map(agent => {
-    const isActive = state.filterAgent === agent.id;
-    const taskCard = agent.current_task ? state.cards.find(c => c.id === agent.current_task) : null;
+  bar.innerHTML = state.sessions.map(sess => {
+    const isActive = state.filterSession === sess.id;
+    const taskCard = sess.current_task ? state.cards.find(c => c.id === sess.current_task) : null;
     const taskTitle = taskCard ? esc(taskCard.title) : "";
-    const time = agent.started_at ? elapsed(agent.started_at) : "";
-    return "<div class=\"agent-chip" + (isActive ? " active" : "") + "\" data-agent-id=\"" + agent.id + "\">" +
-      "<span class=\"agent-dot " + (agent.status || "idle") + "\"></span>" +
-      "<span>" + esc(agent.name) + "</span>" +
+    const time = sess.started_at ? elapsed(sess.started_at) : "";
+    return "<div class=\"agent-chip" + (isActive ? " active" : "") + "\" data-session-id=\"" + sess.id + "\">" +
+      "<span class=\"agent-dot " + (sess.status || "idle") + "\"></span>" +
+      "<span>" + esc(sess.name) + "</span>" +
       (taskTitle ? "<span class=\"agent-task\">" + taskTitle + "</span>" : "") +
       (time ? "<span class=\"agent-time\">" + time + "</span>" : "") +
       "</div>";
@@ -610,24 +755,24 @@ function renderAgentBar() {
 
   bar.querySelectorAll(".agent-chip").forEach(chip => {
     chip.addEventListener("click", () => {
-      const agentId = chip.dataset.agentId;
-      if (state.filterAgent === agentId) {
-        state.filterAgent = null;
+      const sessionId = chip.dataset.sessionId;
+      if (state.filterSession === sessionId) {
+        state.filterSession = null;
       } else {
-        state.filterAgent = agentId;
+        state.filterSession = sessionId;
       }
       updateFilterIndicator();
       renderBoard();
-      renderAgentBar();
+      renderSessionBar();
     });
   });
 }
 
 function updateFilterIndicator() {
   const el = document.getElementById("filter-indicator");
-  if (state.filterAgent) {
-    const agent = state.agents.find(a => a.id === state.filterAgent);
-    el.querySelector(".filter-text").textContent = "Filtered: " + (agent ? agent.name : state.filterAgent);
+  if (state.filterSession) {
+    const sess = state.sessions.find(a => a.id === state.filterSession);
+    el.querySelector(".filter-text").textContent = "Filtered: " + (sess ? sess.name : state.filterSession);
     el.classList.add("active");
   } else {
     el.classList.remove("active");
@@ -708,9 +853,9 @@ function setupDragAndDrop() {
         if (e.clientY > rect.top + rect.height / 2) position++;
       }
 
-      // If moving to in_progress and no assignee, show agent popup
-      if (toColumn === "in_progress" && !card.assignee_id && state.agents.length > 0) {
-        showAgentPopup(e.clientX, e.clientY, card, toColumn, position);
+      // If moving to in_progress and no assignee, show session popup
+      if (toColumn === "in_progress" && !card.assignee_id && !card.session_id && state.sessions.length > 0) {
+        showSessionPopup(e.clientX, e.clientY, card, toColumn, position);
         return;
       }
 
@@ -726,24 +871,24 @@ function setupDragAndDrop() {
   });
 }
 
-// ---- Agent Selection Popup ----
+// ---- Session Selection Popup ----
 
-function showAgentPopup(x, y, card, toColumn, position) {
-  removeAgentPopup();
+function showSessionPopup(x, y, card, toColumn, position) {
+  removeSessionPopup();
   const popup = document.createElement("div");
   popup.className = "agent-popup";
-  popup.id = "agent-popup";
+  popup.id = "session-popup";
   popup.style.left = x + "px";
   popup.style.top = y + "px";
 
-  let html = "<div style=\"padding:8px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em\">Assign Agent</div>";
-  state.agents.forEach(agent => {
-    html += "<div class=\"agent-popup-item\" data-agent-id=\"" + agent.id + "\">" +
-      "<span class=\"agent-dot " + (agent.status || "idle") + "\"></span>" +
-      "<span>" + esc(agent.name) + "</span></div>";
+  let html = "<div style=\"padding:8px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em\">Assign Session</div>";
+  state.sessions.forEach(sess => {
+    html += "<div class=\"agent-popup-item\" data-session-id=\"" + sess.id + "\">" +
+      "<span class=\"agent-dot " + (sess.status || "idle") + "\"></span>" +
+      "<span>" + esc(sess.name) + "</span></div>";
   });
-  html += "<div class=\"agent-popup-item\" data-agent-id=\"\">" +
-    "<span style=\"color:var(--text-muted)\">Skip (no assignee)</span></div>";
+  html += "<div class=\"agent-popup-item\" data-session-id=\"\">" +
+    "<span style=\"color:var(--text-muted)\">Skip (no session)</span></div>";
 
   popup.innerHTML = html;
   document.body.appendChild(popup);
@@ -755,38 +900,39 @@ function showAgentPopup(x, y, card, toColumn, position) {
 
   popup.querySelectorAll(".agent-popup-item").forEach(item => {
     item.addEventListener("click", () => {
-      const agentId = item.dataset.agentId;
-      if (agentId) {
-        card.assignee_id = agentId;
-        const boardId = state.board ? state.board.id : "default";
-        API.assignCard(agentId, card.id);
+      const sessionId = item.dataset.sessionId;
+      if (sessionId) {
+        card.session_id = sessionId;
+        card.assignee_id = sessionId;
+        // Submit the card to the session for execution
+        API.assignCard(sessionId, card.id);
       }
       card.column = toColumn;
       card.position = position;
       renderBoard();
       const boardId = state.board ? state.board.id : "default";
       API.moveCard(boardId, card.id, toColumn, position);
-      removeAgentPopup();
+      removeSessionPopup();
     });
   });
 
   // Close on outside click
   setTimeout(() => {
-    document.addEventListener("click", closeAgentPopupOnOutside);
+    document.addEventListener("click", closeSessionPopupOnOutside);
   }, 10);
 }
 
-function closeAgentPopupOnOutside(e) {
-  const popup = document.getElementById("agent-popup");
+function closeSessionPopupOnOutside(e) {
+  const popup = document.getElementById("session-popup");
   if (popup && !popup.contains(e.target)) {
-    removeAgentPopup();
+    removeSessionPopup();
   }
 }
 
-function removeAgentPopup() {
-  const popup = document.getElementById("agent-popup");
+function removeSessionPopup() {
+  const popup = document.getElementById("session-popup");
   if (popup) popup.remove();
-  document.removeEventListener("click", closeAgentPopupOnOutside);
+  document.removeEventListener("click", closeSessionPopupOnOutside);
 }
 
 // ---- Detail Panel ----
@@ -801,14 +947,14 @@ function openDetailPanel(card) {
   document.getElementById("detail-priority").value = card.priority != null ? card.priority : 2;
   document.getElementById("detail-column").value = card.column || "backlog";
 
-  // Populate assignee dropdown
+  // Populate assignee dropdown with sessions
   const assigneeSel = document.getElementById("detail-assignee");
   assigneeSel.innerHTML = "<option value=\"\">Unassigned</option>";
-  state.agents.forEach(a => {
+  state.sessions.forEach(a => {
     const opt = document.createElement("option");
     opt.value = a.id;
     opt.textContent = a.name;
-    if (card.assignee_id === a.id) opt.selected = true;
+    if (card.assignee_id === a.id || card.session_id === a.id) opt.selected = true;
     assigneeSel.appendChild(opt);
   });
 
@@ -859,9 +1005,18 @@ function openDetailPanel(card) {
       li.textContent = fp;
       filesEl.appendChild(li);
     });
+  } else if (card.files && card.files.length) {
+    card.files.forEach(fp => {
+      const li = document.createElement("li");
+      li.textContent = fp;
+      filesEl.appendChild(li);
+    });
   } else {
     filesEl.innerHTML = "<li style=\"color:var(--text-muted);font-style:italic\">No files</li>";
   }
+
+  // Session changes — fetch and display workspace changes for the card's session
+  renderSessionChanges(card);
 
   // Workflow log
   renderWorkflowLog(card);
@@ -887,6 +1042,41 @@ function renderWorkflowLog(card) {
     return "<div class=\"log-entry " + cls + "\">[" + (entry.step || "?") + "] " + esc(entry.message || "") + "</div>";
   }).join("");
   logEl.scrollTop = logEl.scrollHeight;
+}
+
+/** Fetch and render workspace changes for the card's bound session */
+async function renderSessionChanges(card) {
+  const changesEl = document.getElementById("detail-session-changes");
+  if (!changesEl) return;
+
+  const sessionId = card.session_id || card.assignee_id;
+  if (!sessionId) {
+    changesEl.innerHTML = "<span style=\"color:var(--text-muted);font-style:italic\">No session bound</span>";
+    return;
+  }
+
+  changesEl.innerHTML = "<span style=\"color:var(--text-muted)\">Loading...</span>";
+
+  const changes = await API.getSessionChanges(sessionId);
+  if (!changes || !changes.length) {
+    changesEl.innerHTML = "<span style=\"color:var(--text-muted);font-style:italic\">No changes</span>";
+    return;
+  }
+
+  // Cache for later use
+  state.sessionChanges[sessionId] = changes;
+
+  const opIcon = { created: "&#43;", modified: "&#9998;", deleted: "&#10005;" };
+  const opColor = { created: "var(--accent-green)", modified: "var(--accent-yellow)", deleted: "var(--accent-red)" };
+
+  changesEl.innerHTML = changes.map(c => {
+    const icon = opIcon[c.operation] || "?";
+    const color = opColor[c.operation] || "var(--text-muted)";
+    return "<div class=\"change-entry\">" +
+      "<span style=\"color:" + color + ";font-weight:700;margin-right:6px\">" + icon + "</span>" +
+      "<span class=\"change-path\">" + esc(c.path) + "</span>" +
+      "<span class=\"change-op\" style=\"color:" + color + "\">" + esc(c.operation) + "</span></div>";
+  }).join("");
 }
 
 function closeDetailPanel() {
@@ -978,34 +1168,23 @@ function showNewCardModal() {
 
 function showNewAgentModal() {
   const body =
-    "<div><label>Name</label><input type=\"text\" id=\"na-name\" placeholder=\"Agent name...\"></div>" +
-    "<div><label>Role</label><select id=\"na-role\">" +
-      "<option value=\"fullstack\">Full Stack</option>" +
-      "<option value=\"backend\">Backend</option>" +
-      "<option value=\"frontend\">Frontend</option>" +
-      "<option value=\"test\">Test / QA</option>" +
-    "</select></div>" +
-    "<div><label>Provider</label><input type=\"text\" id=\"na-provider\" placeholder=\"e.g. openai, anthropic...\"></div>" +
-    "<div><label>Model</label><input type=\"text\" id=\"na-model\" placeholder=\"e.g. gpt-4, claude-3...\"></div>";
+    "<div><label>Session Name</label><input type=\"text\" id=\"na-name\" placeholder=\"Session name...\"></div>";
 
-  showModal("New Agent", body, (overlay) => {
+  showModal("New Session", body, (overlay) => {
     const name = overlay.querySelector("#na-name").value.trim();
     if (!name) { overlay.querySelector("#na-name").style.borderColor = "var(--accent-red)"; return false; }
 
-    const agent = {
+    const session = {
       id: uid(),
       name: name,
-      role: overlay.querySelector("#na-role").value,
-      provider: overlay.querySelector("#na-provider").value.trim(),
-      model: overlay.querySelector("#na-model").value.trim(),
       status: "idle",
       current_task: null,
       started_at: null,
     };
 
-    state.agents.push(agent);
-    renderAgentBar();
-    API.createAgent(agent);
+    state.sessions.push(session);
+    renderSessionBar();
+    API.createAgent(session);
     return true;
   });
 }
@@ -1034,6 +1213,7 @@ function setupDetailPanelEvents() {
     const newAssignee = document.getElementById("detail-assignee").value || null;
     if (newAssignee !== card.assignee_id) {
       card.assignee_id = newAssignee;
+      card.session_id = newAssignee;
       if (newAssignee) API.assignCard(newAssignee, card.id);
     }
 
@@ -1099,23 +1279,23 @@ function setupDetailPanelEvents() {
 function setupFilterButton() {
   const btn = document.getElementById("btn-filter");
   btn.addEventListener("click", () => {
-    if (state.filterAgent) {
+    if (state.filterSession) {
       // Clear filter
-      state.filterAgent = null;
-    } else if (state.agents.length) {
-      // Show a quick agent picker
-      const body = state.agents.map(a =>
+      state.filterSession = null;
+    } else if (state.sessions.length) {
+      // Show a quick session picker
+      const body = state.sessions.map(a =>
         "<div><label style=\"display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 0\">" +
-        "<input type=\"radio\" name=\"filter-agent\" value=\"" + a.id + "\"> " + esc(a.name) +
+        "<input type=\"radio\" name=\"filter-session\" value=\"" + a.id + "\"> " + esc(a.name) +
         "</label></div>"
       ).join("");
-      showModal("Filter by Agent", body, (overlay) => {
-        const checked = overlay.querySelector("input[name=\"filter-agent\"]:checked");
+      showModal("Filter by Session", body, (overlay) => {
+        const checked = overlay.querySelector("input[name=\"filter-session\"]:checked");
         if (checked) {
-          state.filterAgent = checked.value;
+          state.filterSession = checked.value;
           updateFilterIndicator();
           renderBoard();
-          renderAgentBar();
+          renderSessionBar();
         }
         return true;
       });
@@ -1123,15 +1303,15 @@ function setupFilterButton() {
     }
     updateFilterIndicator();
     renderBoard();
-    renderAgentBar();
+    renderSessionBar();
   });
 
   // Clear filter button
   document.querySelector("#filter-indicator .clear-filter").addEventListener("click", () => {
-    state.filterAgent = null;
+    state.filterSession = null;
     updateFilterIndicator();
     renderBoard();
-    renderAgentBar();
+    renderSessionBar();
   });
 }
 
@@ -1143,8 +1323,8 @@ function startTimers() {
     let needsRender = false;
     document.querySelectorAll(".card-elapsed").forEach(() => { needsRender = true; });
     if (needsRender) renderBoard();
-    // Update agent bar times
-    renderAgentBar();
+    // Update session bar times
+    renderSessionBar();
   }, 10000); // every 10 seconds
 }
 
@@ -1167,12 +1347,12 @@ async function init() {
     if (cards) state.cards = Array.isArray(cards) ? cards : (cards.cards || []);
   }
 
-  const agents = await API.getAgents();
-  if (agents) state.agents = Array.isArray(agents) ? agents : (agents.agents || []);
+  const sessions = await API.getAgents();
+  if (sessions) state.sessions = Array.isArray(sessions) ? sessions : (sessions.sessions || []);
 
   // Render
   renderBoard();
-  renderAgentBar();
+  renderSessionBar();
 
   // Connect WebSocket
   connectWebSocket();
@@ -1180,7 +1360,7 @@ async function init() {
   // Start elapsed-time timers
   startTimers();
 
-  console.log("[CodeN Kanban] Ready. Cards:", state.cards.length, "Agents:", state.agents.length);
+  console.log("[CodeN Kanban] Ready. Cards:", state.cards.length, "Sessions:", state.sessions.length);
 }
 
 // Keyboard shortcut: Escape closes detail panel & modals
@@ -1189,8 +1369,8 @@ document.addEventListener("keydown", (e) => {
     // Close modal if open
     const modal = document.querySelector(".modal-overlay");
     if (modal) { modal.remove(); return; }
-    // Close agent popup if open
-    removeAgentPopup();
+    // Close session popup if open
+    removeSessionPopup();
     // Close detail panel if open
     if (state.selectedCard) closeDetailPanel();
   }
