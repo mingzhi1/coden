@@ -167,3 +167,94 @@ func isErrorType[T error](err error, target *T) bool {
 		return ok
 	}()
 }
+
+func TestLLMServerClient_SideQuery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	addr := fakeLLMServer(t, ctx, "side query reply")
+	client := NewLLMServerClient(addr)
+	defer client.Close()
+
+	reply, err := client.SideQuery(ctx, SideQueryOpts{
+		System:   "You are helpful.",
+		Messages: []Message{{Role: "user", Content: "summarize"}},
+		Purpose:  "test-sidequery",
+		Timeout:  3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("SideQuery: %v", err)
+	}
+	if reply != "side query reply" {
+		t.Errorf("expected 'side query reply', got %q", reply)
+	}
+}
+
+func TestLLMServerClient_SideQuery_Truncated(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Set up a server that returns truncation errors
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				codec := transport.NewCodec(c)
+				defer codec.Close()
+				for {
+					raw, err := codec.ReadMessage()
+					if err != nil {
+						return
+					}
+					var req protocol.Request
+					_ = json.Unmarshal(raw, &req)
+
+					data, _ := json.Marshal(map[string]any{
+						"partial":   "partial side query",
+						"retryable": true,
+					})
+					resp := protocol.Response{
+						JSONRPC: protocol.Version,
+						ID:      req.ID,
+						Error: &protocol.Error{
+							Code:    -32001,
+							Message: "truncated",
+							Data:    data,
+						},
+					}
+					_ = codec.WriteMessage(resp)
+				}
+			}(conn)
+		}
+	}()
+	go func() { <-ctx.Done(); ln.Close() }()
+
+	client := NewLLMServerClient(ln.Addr().String())
+	defer client.Close()
+
+	reply, err := client.SideQuery(ctx, SideQueryOpts{
+		Messages: []Message{{Role: "user", Content: "test"}},
+		Purpose:  "test-truncation",
+		Timeout:  3 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected truncation error")
+	}
+
+	var te *provider.TruncatedError
+	if !isErrorType(err, &te) {
+		t.Fatalf("expected TruncatedError, got %T: %v", err, err)
+	}
+	if reply != "partial side query" {
+		t.Errorf("expected partial='partial side query', got %q", reply)
+	}
+}

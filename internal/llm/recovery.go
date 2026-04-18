@@ -30,6 +30,13 @@ type Chatter interface {
 	Chat(ctx context.Context, role string, messages []Message) (string, error)
 }
 
+// SideQuerier is an optional interface for lightweight LLM calls.
+// Both Broker and LLMServerClient implement this. Callers should
+// type-assert from Chatter when needed.
+type SideQuerier interface {
+	SideQuery(ctx context.Context, opts SideQueryOpts) (string, error)
+}
+
 // RecoverableChat wraps a Chatter with multi-layer error recovery.
 //
 // Layer 1 – prompt-too-long recovery:

@@ -1,6 +1,8 @@
 package toolruntime
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -188,4 +190,71 @@ func TestToolRegistry_ReadOnlyClassification(t *testing.T) {
 			t.Errorf("tool %q: ReadOnly=%v, want %v", name, tool.ReadOnly, expectedReadOnly)
 		}
 	}
+}
+
+// TestToolRegistry_ConcurrentRegisterAndSearch verifies that concurrent
+// Register() calls and read operations do not race (T-01 fix).
+func TestToolRegistry_ConcurrentRegisterAndSearch(t *testing.T) {
+	r := NewToolRegistry()
+
+	const goroutines = 20
+	const opsEach = 50
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+
+	// Writers: register new tools concurrently.
+	for i := 0; i < goroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			for j := 0; j < opsEach; j++ {
+				r.Register(ToolMeta{
+					Name:        fmt.Sprintf("mcp_tool_%d_%d", i, j),
+					Description: "concurrent mcp tool",
+					Deferred:    true,
+					SearchHints: []string{"mcp", "concurrent"},
+				})
+			}
+		}()
+	}
+
+	// Readers: query the registry concurrently with writers.
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < opsEach; j++ {
+				_ = r.ListCore()
+				_ = r.SearchDeferred("mcp")
+				_ = r.All()
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestToolRegistry_ConcurrentRegisterAndGet verifies that Get() is safe
+// alongside concurrent Register() calls.
+func TestToolRegistry_ConcurrentRegisterAndGet(t *testing.T) {
+	r := NewToolRegistry()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			r.Register(ToolMeta{Name: fmt.Sprintf("race_tool_%d", i), Deferred: true})
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			_, _ = r.Get("write_file")
+		}
+	}()
+
+	wg.Wait()
 }

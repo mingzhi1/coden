@@ -72,19 +72,6 @@ func (s *SQLiteStore) Init() error {
 			to_card   TEXT NOT NULL,
 			type      TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS agents (
-			id           TEXT PRIMARY KEY,
-			name         TEXT NOT NULL,
-			role         TEXT NOT NULL DEFAULT '',
-			status       TEXT NOT NULL DEFAULT 'idle',
-			session_id   TEXT NOT NULL DEFAULT '',
-			current_card TEXT NOT NULL DEFAULT '',
-			provider     TEXT NOT NULL DEFAULT '',
-			model        TEXT NOT NULL DEFAULT '',
-			stats        TEXT NOT NULL DEFAULT '{}',
-			created_at   TEXT NOT NULL,
-			updated_at   TEXT NOT NULL
-		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cards_board_id    ON cards(board_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_cards_column_id   ON cards(column_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_cards_assignee_id ON cards(assignee_id)`,
@@ -473,94 +460,4 @@ func (s *SQLiteStore) GetLinks(cardID string) ([]*Link, error) {
 	return links, rows.Err()
 }
 
-// ---- Agent CRUD ----
-
-func (s *SQLiteStore) CreateAgent(a *Agent) error {
-	_, err := s.db.Exec(
-		`INSERT INTO agents (id, name, role, status, session_id, current_card, provider, model, stats, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.Name, a.Role, string(a.Status), a.SessionID, a.CurrentCard,
-		a.Provider, a.Model, marshalJSON(a.Stats),
-		formatTime(a.CreatedAt), formatTime(a.UpdatedAt),
-	)
-	return err
-}
-
-func scanAgent(row *sql.Row) (*Agent, error) {
-	var a Agent
-	var status, statsJSON, createdAt, updatedAt string
-	if err := row.Scan(
-		&a.ID, &a.Name, &a.Role, &status, &a.SessionID, &a.CurrentCard,
-		&a.Provider, &a.Model, &statsJSON, &createdAt, &updatedAt,
-	); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("agent not found")
-		}
-		return nil, err
-	}
-	a.Status = AgentStatus(status)
-	_ = json.Unmarshal([]byte(statsJSON), &a.Stats)
-	a.CreatedAt = parseTime(createdAt)
-	a.UpdatedAt = parseTime(updatedAt)
-	return &a, nil
-}
-
-func (s *SQLiteStore) GetAgent(id string) (*Agent, error) {
-	row := s.db.QueryRow(
-		`SELECT id, name, role, status, session_id, current_card, provider, model, stats, created_at, updated_at
-		 FROM agents WHERE id = ?`, id,
-	)
-	return scanAgent(row)
-}
-
-func (s *SQLiteStore) ListAgents() ([]*Agent, error) {
-	rows, err := s.db.Query(
-		`SELECT id, name, role, status, session_id, current_card, provider, model, stats, created_at, updated_at
-		 FROM agents ORDER BY created_at`,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var agents []*Agent
-	for rows.Next() {
-		var a Agent
-		var status, statsJSON, createdAt, updatedAt string
-		if err := rows.Scan(
-			&a.ID, &a.Name, &a.Role, &status, &a.SessionID, &a.CurrentCard,
-			&a.Provider, &a.Model, &statsJSON, &createdAt, &updatedAt,
-		); err != nil {
-			return nil, err
-		}
-		a.Status = AgentStatus(status)
-		_ = json.Unmarshal([]byte(statsJSON), &a.Stats)
-		a.CreatedAt = parseTime(createdAt)
-		a.UpdatedAt = parseTime(updatedAt)
-		agents = append(agents, &a)
-	}
-	return agents, rows.Err()
-}
-
-func (s *SQLiteStore) UpdateAgent(a *Agent) error {
-	res, err := s.db.Exec(
-		`UPDATE agents SET name=?, role=?, status=?, session_id=?, current_card=?,
-		 provider=?, model=?, stats=?, updated_at=?
-		 WHERE id=?`,
-		a.Name, a.Role, string(a.Status), a.SessionID, a.CurrentCard,
-		a.Provider, a.Model, marshalJSON(a.Stats),
-		formatTime(a.UpdatedAt), a.ID,
-	)
-	if err != nil {
-		return err
-	}
-	return checkRowsAffected(res, "agent")
-}
-
-func (s *SQLiteStore) DeleteAgent(id string) error {
-	res, err := s.db.Exec(`DELETE FROM agents WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	return checkRowsAffected(res, "agent")
-}
 

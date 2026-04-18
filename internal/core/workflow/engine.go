@@ -55,6 +55,21 @@ func (e *Engine) Plan(ctx context.Context, workflowID string, intent model.Inten
 	return e.planner.Plan(ctx, workflowID, intent)
 }
 
+func (e *Engine) Critique(ctx context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (model.CritiqueResult, error) {
+	c := e.critic
+	if c == nil {
+		c = NewLocalCritic()
+	}
+	return c.Critique(ctx, workflowID, intent, tasks)
+}
+
+func (e *Engine) RePlan(ctx context.Context, intent model.IntentSpec, tasks []model.Task, snippets []model.FileSnippet) ([]model.Task, error) {
+	if e.replanner == nil {
+		return tasks, nil
+	}
+	return e.replanner.RePlan(ctx, intent, tasks, snippets)
+}
+
 func (e *Engine) Code(ctx context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (CodePlan, error) {
 	return e.coder.Build(ctx, workflowID, intent, tasks)
 }
@@ -83,12 +98,23 @@ func (e *Engine) Critic() Critic {
 	return e.critic
 }
 
+func (e *Engine) CriticWorker() Worker {
+	if e.critic == nil {
+		return NewCriticWorker(NewLocalCritic())
+	}
+	return NewCriticWorker(e.critic)
+}
+
 func (e *Engine) Searcher() Searcher {
 	return e.searcher
 }
 
 func (e *Engine) Replanner() Replanner {
 	return e.replanner
+}
+
+func (e *Engine) ReplannerWorker() Worker {
+	return NewReplannerWorker(e.replanner)
 }
 
 func (e *Engine) Coder() Coder {

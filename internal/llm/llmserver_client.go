@@ -60,7 +60,7 @@ func (c *LLMServerClient) Chat(ctx context.Context, roleHint string, messages []
 	}
 
 	id := c.idSeq.Add(1)
-	req, err := protocol.NewRequest(id, "llm/chat", map[string]any{
+	req, err := protocol.NewRequest(id, protocol.MethodLLMChat, map[string]any{
 		"role_hint": roleHint,
 		"messages":  messages,
 	})
@@ -159,3 +159,73 @@ func (c *LLMServerClient) Close() error {
 
 // IsConfigured returns true (always configured if addr is set).
 func (c *LLMServerClient) IsConfigured() bool { return c.addr != "" }
+
+// SideQuery executes a lightweight LLM call via the llm-server sidecar.
+// This is the server-mode equivalent of Broker.SideQuery().
+func (c *LLMServerClient) SideQuery(ctx context.Context, opts SideQueryOpts) (string, error) {
+	opts.applyDefaults()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	codec, err := c.ensureConnLocked()
+	if err != nil {
+		return "", err
+	}
+
+	id := c.idSeq.Add(1)
+	timeoutMs := int(opts.Timeout.Milliseconds())
+	req, err := protocol.NewRequest(id, protocol.MethodLLMSideQuery, map[string]any{
+		"system":     opts.System,
+		"messages":   opts.Messages,
+		"purpose":    opts.Purpose,
+		"timeout_ms": timeoutMs,
+	})
+	if err != nil {
+		return "", fmt.Errorf("llm-server: build sidequery request: %w", err)
+	}
+
+	if err := codec.WriteMessage(req); err != nil {
+		c.resetConnLocked()
+		return "", fmt.Errorf("llm-server: write sidequery: %w", err)
+	}
+
+	type readResult struct {
+		raw []byte
+		err error
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		raw, err := codec.ReadMessage()
+		ch <- readResult{raw, err}
+	}()
+
+	var raw []byte
+	select {
+	case <-ctx.Done():
+		c.resetConnLocked()
+		return "", fmt.Errorf("llm-server: sidequery %w", ctx.Err())
+	case r := <-ch:
+		if r.err != nil {
+			c.resetConnLocked()
+			return "", fmt.Errorf("llm-server: read sidequery: %w", r.err)
+		}
+		raw = r.raw
+	}
+
+	var resp protocol.Response
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("llm-server: parse sidequery response: %w", err)
+	}
+	if resp.Error != nil {
+		return c.handleRPCError(resp.Error)
+	}
+
+	var result struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return "", fmt.Errorf("llm-server: parse sidequery result: %w", err)
+	}
+	return result.Text, nil
+}

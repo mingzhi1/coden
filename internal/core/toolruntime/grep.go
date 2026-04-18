@@ -120,7 +120,6 @@ func executeRipgrep(ctx context.Context, opts SearchOptions) ([]GrepHit, error) 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("rg start: %w", err)
 	}
-	defer cmd.Wait() // Ensure process is cleaned up
 
 	var hits []GrepHit
 	var currentMatch *GrepHit
@@ -183,8 +182,25 @@ func executeRipgrep(ctx context.Context, opts SearchOptions) ([]GrepHit, error) 
 		hits = append(hits, *currentMatch)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return hits, fmt.Errorf("rg output scan: %w", err)
+	if scanErr := scanner.Err(); scanErr != nil {
+		// Best effort: reap the child even on scan failure.
+		_ = cmd.Wait()
+		return hits, fmt.Errorf("rg output scan: %w", scanErr)
+	}
+
+	// Wait for rg to exit and surface real errors.
+	// rg exits 0 on success, 1 when no matches were found (not an error for
+	// us), and 2 on a genuine error (bad regex, permission denied, etc.).
+	if waitErr := cmd.Wait(); waitErr != nil {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			// Exit code 1 = no matches; return whatever hits we collected.
+			return hits, nil
+		}
+		// Exit code 2 or signal: only propagate if we have no results, so
+		// partial results from a cancelled context are still returned.
+		if len(hits) == 0 {
+			return nil, fmt.Errorf("rg: %w", waitErr)
+		}
 	}
 
 	return hits, nil

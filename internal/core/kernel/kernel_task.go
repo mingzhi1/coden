@@ -339,6 +339,13 @@ func (k *Kernel) runOneTask(
 				}
 			}
 			finalCheckpoint = *acceptResult.Checkpoint
+			// Guard against acceptor returning an empty status (bug in acceptor
+			// implementation). Treat it as a fail so evidence is propagated.
+			if finalCheckpoint.Status != "pass" && finalCheckpoint.Status != "fail" {
+				finalCheckpoint.Status = "fail"
+				finalCheckpoint.Evidence = append(finalCheckpoint.Evidence,
+					fmt.Sprintf("acceptor returned invalid checkpoint status %q; treated as fail", acceptResult.Checkpoint.Status))
+			}
 			k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
 				WorkflowID: workflowID,
 				Step:       "accept",
@@ -566,7 +573,7 @@ func (k *Kernel) runTasksConcurrent(
 		// M11-02: Sync final task states back to the queue after each level.
 		for _, taskIdx := range levelTaskIdxs {
 			t := shared.get(taskIdx)
-			queue.SetStatus(t.ID, t.Status)
+			queue.SetTask(t)
 		}
 	}
 
@@ -618,7 +625,7 @@ func (k *Kernel) runTasksConcurrent(
 			if res.artifact.Path != "" || res.artifact.Summary != "" {
 				finalArtifact = res.artifact
 			}
-			queue.SetStatus(rt.ID, shared.get(taskIdx).Status)
+			queue.SetTask(shared.get(taskIdx))
 			if res.err != nil {
 				return finalCheckpoint, finalArtifact, llmOut.String(), res.err
 			}
@@ -635,7 +642,7 @@ func (k *Kernel) abandonRemainingTasks(shared *sharedTasks, queue *taskqueue.Que
 			snap := shared.setStatus(taskIdx, model.TaskStatusAbandoned)
 			// M11-02: Sync abandoned status to queue.
 			t := shared.get(taskIdx)
-			queue.SetStatus(t.ID, model.TaskStatusAbandoned)
+			queue.SetTask(t)
 			k.emitTasksUpdated(sessionID, workflowID, snap)
 		}
 	}

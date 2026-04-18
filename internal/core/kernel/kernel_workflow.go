@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mingzhi1/coden/internal/core/discovery"
 	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/taskqueue"
@@ -214,7 +215,47 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		return
 	}
 
-	// T3-03: Start Discovery prefetch — runs in parallel with Plan.
+	// SA-08: Fast grep-only macro context for Planner.
+	// Run synchronously before Plan starts so the Planner's contextSummary
+	// includes real code context. Grep-only keeps this under ~200ms on typical
+	// repos; RAG/LSP layers are left to the full parallel prefetch below.
+	{
+		macroOrch := discovery.NewToolOrchestrator(k.tools)
+		t0Macro := time.Now()
+		k.events.Emit(sessionID, model.EventSearchStarted, model.SearchStartedPayload{
+			WorkflowID: workflowID,
+			Query:      intentSpec.Goal,
+			QueryID:    workflowID + ":macro",
+		})
+		macroHits, macroErr := macroOrch.Search(ctx, discovery.SearchParams{
+			Query:     intentSpec.Goal,
+			Kinds:     []string{"grep"},
+			Workspace: k.workspace.Root(),
+		})
+		if macroErr == nil && len(macroHits) > 0 {
+			macroSnippets := snippetsFromEvidence(ctx, k, macroHits)
+			if len(macroSnippets) > 0 {
+				wfCtx.DiscoveryContext = macroSnippets
+				wfCtx.Discovery = model.DiscoveryContext{
+					Query:      intentSpec.Goal,
+					QueryID:    workflowID + ":macro",
+					Snippets:   macroSnippets,
+					Confidence: discoveryConfidence(macroSnippets),
+				}
+				ctx = model.WithWorkflowContext(ctx, wfCtx)
+				k.events.Emit(sessionID, model.EventSearchFinished, model.SearchFinishedPayload{
+					WorkflowID:   workflowID,
+					QueryID:      workflowID + ":macro",
+					SnippetCount: len(macroSnippets),
+					Layers:       []string{"grep"},
+					DurationMs:   time.Since(t0Macro).Milliseconds(),
+				})
+			}
+		}
+	}
+
+	// T3-03: Start full 3-layer Discovery prefetch — runs in parallel with Plan.
+	// The Planner already has macro grep context; this enriches RePlan/Coder.
 	type discoveryPrefetch struct {
 		discovery model.DiscoveryContext
 		err       error

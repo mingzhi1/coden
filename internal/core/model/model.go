@@ -612,14 +612,29 @@ type CritiqueResult struct {
 	Summary string `json:"summary,omitempty"`
 }
 
+// SymbolInfo holds structured information about a code symbol (function, type,
+// variable, etc.) extracted from LSP or grep-based symbol analysis.
+type SymbolInfo struct {
+	Name      string   `json:"name"`
+	Kind      string   `json:"kind"`       // "func" | "type" | "var" | "const" | "method" | "field"
+	Path      string   `json:"path"`       // file path where the symbol is defined
+	Line      int      `json:"line"`       // 1-based line number of the definition
+	Signature string   `json:"signature"`  // e.g. "func Foo(x int) error"
+	Package   string   `json:"package"`    // Go package name or equivalent
+	Exported  bool     `json:"exported"`   // whether the symbol is exported/public
+	Refs      []string `json:"refs,omitempty"` // paths of files that reference this symbol
+}
+
 // DiscoveryContext stores the structured result of the Discovery/Search phase.
 // Snippets are kept for prompt injection compatibility; Evidence carries the
 // richer source-aware retrieval metadata for future Search Agent integration.
+// Symbols carries structured symbol information extracted from LSP analysis.
 type DiscoveryContext struct {
 	Query      string              `json:"query"`
 	QueryID    string              `json:"query_id"`
 	Evidence   []DiscoveryEvidence `json:"evidence"`
 	Snippets   []FileSnippet       `json:"snippets"`
+	Symbols    []SymbolInfo        `json:"symbols,omitempty"` // G5: structured symbol info from LSP
 	Confidence float64             `json:"confidence"`
 }
 

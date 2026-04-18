@@ -11,6 +11,12 @@ import (
 	"github.com/mingzhi1/coden/internal/core/workflow"
 )
 
+// toolCtx enriches ctx with workflow/session IDs so the tool runtime can
+// attach them to artifact auto-saves and other per-execution tracking.
+func toolCtx(ctx context.Context, workflowID, sessionID string) context.Context {
+	return toolruntime.ContextWithIDs(ctx, workflowID, sessionID)
+}
+
 // executeToolPlan 执行 Coder 的工具计划并收集结果 artifact。
 // allowedPaths 限制 mutation 调用（write_file/edit_file）可针对的工作区路径。
 // 空切片表示无限制。返回 artifact 和 beforeState 快照（路径→原始字节），
@@ -87,7 +93,9 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 				}
 			}
 			var err error
-			result, err = k.tools.Execute(ctx, call.Request)
+			// Inject workflow/session IDs so the tool runtime can tag artifact
+			// auto-saves with the correct execution context (avoids "unknown" IDs).
+			result, err = k.tools.Execute(toolCtx(ctx, workflowID, sessionID), call.Request)
 			if err != nil {
 				status := "failed"
 				artifactPath := call.Request.Path

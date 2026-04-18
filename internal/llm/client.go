@@ -111,6 +111,13 @@ func (p *Pool) AddLight(cfg Config) {
 	}
 }
 
+// AddWithProvider appends a client wrapping a pre-constructed ChatProvider
+// to the primary pool. Useful for testing or when a provider is obtained
+// outside the standard factory path.
+func (p *Pool) AddWithProvider(backend provider.ChatProvider, model string) {
+	p.primary = append(p.primary, &Client{model: model, name: backend.Name(), backend: backend})
+}
+
 // Chat tries primary clients in order. Returns the first success.
 func (p *Pool) Chat(ctx context.Context, messages []Message) (string, error) {
 	return p.chatFromTier(ctx, p.primary, messages)

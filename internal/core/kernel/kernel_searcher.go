@@ -15,14 +15,25 @@ import (
 // LocalSearcher is the minimal in-process Searcher implementation.
 // It preserves the current Discovery behavior while exposing it through the
 // workflow.Searcher boundary so kernel no longer owns the long-term contract.
+//
+// It owns a DirtyTracker (G4) that consolidates workspace dirty-paths,
+// change-log, and RAG-dirty tracking for the Search layer.  Before each
+// Search/Refine call the tracker is synced from workspace.Service so that
+// cache invalidation fires for any files written since the last sync.
 type LocalSearcher struct {
 	k          *Kernel
 	sessionID  string
 	workflowID string
+	dirty      *discovery.DirtyTracker
 }
 
 func NewLocalSearcher(k *Kernel, sessionID, workflowID string) *LocalSearcher {
-	return &LocalSearcher{k: k, sessionID: sessionID, workflowID: workflowID}
+	return &LocalSearcher{
+		k:          k,
+		sessionID:  sessionID,
+		workflowID: workflowID,
+		dirty:      discovery.NewDirtyTracker(),
+	}
 }
 
 func (s *LocalSearcher) Search(ctx context.Context, intent model.IntentSpec, tasks []model.Task) (model.DiscoveryContext, error) {
@@ -35,14 +46,19 @@ func (s *LocalSearcher) Search(ctx context.Context, intent model.IntentSpec, tas
 		query = tasks[0].Title
 	}
 
+	// G4: sync workspace dirty set into unified tracker before searching.
+	// This invalidates any orchestratorCache entries for recently written files.
+	s.dirty.SyncFrom(s.k.workspace.DirtyPaths())
+	dirtyPaths := s.dirty.DirtyPaths()
+
 	targetFiles := declaredTaskFiles(tasks)
-	dirtyPaths := s.k.workspace.DirtyPaths()
 	orch := discovery.NewToolOrchestrator(s.k.tools)
 	hits, err := orch.Search(ctx, discovery.SearchParams{
 		Query:       query,
 		TargetFiles: targetFiles,
 		Mode:        discoveryMode(query, targetFiles),
 		DirtyPaths:  dirtyPaths,
+		Workspace:   s.k.workspace.Root(),
 	})
 	if err != nil {
 		return model.DiscoveryContext{}, err
@@ -62,7 +78,7 @@ func (s *LocalSearcher) Search(ctx context.Context, intent model.IntentSpec, tas
 				Path:        sn.Path,
 				Snippet:     sn.Content,
 				Verified:    false,
-				Stale:       s.k.workspace.IsDirty(sn.Path),
+				Stale:       s.dirty.IsDirty(sn.Path),
 				Explanation: "prefetched by LocalSearcher from legacy discovery fallback",
 			})
 		}
@@ -81,8 +97,10 @@ func (s *LocalSearcher) Refine(ctx context.Context, current model.DiscoveryConte
 	if s == nil || s.k == nil {
 		return model.DiscoveryContext{}, fmt.Errorf("searcher is not configured")
 	}
+	// G4: sync before refine for the same cache-invalidation guarantee.
+	s.dirty.SyncFrom(s.k.workspace.DirtyPaths())
+	dirtyPaths := s.dirty.DirtyPaths()
 	orch := discovery.NewToolOrchestrator(s.k.tools)
-	dirtyPaths := s.k.workspace.DirtyPaths()
 	hits, err := orch.Refine(ctx, discovery.RefineParams{
 		Query:       current.Query,
 		QueryID:     current.QueryID,
@@ -90,6 +108,7 @@ func (s *LocalSearcher) Refine(ctx context.Context, current model.DiscoveryConte
 		TargetFiles: pathsFromDiscoveryEvidence(current.Evidence),
 		Mode:        discoveryMode(current.Query, pathsFromDiscoveryEvidence(current.Evidence)),
 		DirtyPaths:  dirtyPaths,
+		Workspace:   s.k.workspace.Root(),
 	})
 	if err != nil {
 		return model.DiscoveryContext{}, err
@@ -229,6 +248,9 @@ func discoveryHints(tasks []model.Task, goal string) []string {
 		if title != "" && !seen[title] {
 			seen[title] = true
 			hints = append(hints, title)
+			if len(hints) >= 6 {
+				return hints
+			}
 		}
 		for _, file := range task.Files {
 			file = stringsTrim(file)
@@ -245,6 +267,29 @@ func discoveryHints(tasks []model.Task, goal string) []string {
 		}
 	}
 	return hints
+}
+
+// MarkDirty records a file modification in the unified DirtyTracker (G4).
+// Callers: kernel workflow write operations.
+func (s *LocalSearcher) MarkDirty(path, op string) {
+	if s != nil && s.dirty != nil {
+		s.dirty.MarkDirty(path, op)
+	}
+}
+
+// ClearDirty resets the tracker's dirty state after a successful checkpoint.
+func (s *LocalSearcher) ClearDirty() {
+	if s != nil && s.dirty != nil {
+		s.dirty.ClearDirty()
+	}
+}
+
+// DirtyTracker returns the underlying tracker, useful for tests and diagnostics.
+func (s *LocalSearcher) DirtyTracker() *discovery.DirtyTracker {
+	if s == nil {
+		return nil
+	}
+	return s.dirty
 }
 
 var _ workflow.Searcher = (*LocalSearcher)(nil)

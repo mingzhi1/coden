@@ -23,11 +23,4 @@ type Store interface {
 	AddLink(l *Link) error
 	RemoveLink(id string) error
 	GetLinks(cardID string) ([]*Link, error)
-
-	// Agent CRUD
-	CreateAgent(a *Agent) error
-	GetAgent(id string) (*Agent, error)
-	ListAgents() ([]*Agent, error)
-	UpdateAgent(a *Agent) error
-	DeleteAgent(id string) error
 }
