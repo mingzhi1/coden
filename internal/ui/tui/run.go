@@ -103,7 +103,7 @@ func RunWithRuntimeInfo(ctx context.Context, client api.ClientAPI, sessionID, pr
 	taskSkipper := func(taskID string) tea.Cmd {
 		return func() tea.Msg {
 			if err := client.SkipTask(sessionCtx, sessionID, taskID); err != nil {
-				return ErrMsg{Err: fmt.Errorf("skip task: %w", err)}
+				return TaskSkipResultMsg{TaskID: taskID, Err: err}
 			}
 			return TaskSkipResultMsg{TaskID: taskID}
 		}
@@ -113,7 +113,7 @@ func RunWithRuntimeInfo(ctx context.Context, client api.ClientAPI, sessionID, pr
 		return func() tea.Msg {
 			restored, err := client.UndoTask(sessionCtx, sessionID)
 			if err != nil {
-				return ErrMsg{Err: fmt.Errorf("undo task: %w", err)}
+				return TaskUndoResultMsg{Err: err}
 			}
 			return TaskUndoResultMsg{RestoredTaskID: restored}
 		}

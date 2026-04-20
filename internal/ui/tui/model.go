@@ -61,10 +61,12 @@ type WorkflowAcceptedMsg struct {
 // M11-05: Result messages for task management slash commands.
 type TaskSkipResultMsg struct {
 	TaskID string
+	Err    error
 }
 
 type TaskUndoResultMsg struct {
 	RestoredTaskID string
+	Err            error
 }
 
 type SessionRenameResultMsg struct {

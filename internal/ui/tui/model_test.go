@@ -622,7 +622,7 @@ func TestModelShowsDeniedShellToolWithoutPath(t *testing.T) {
 	for _, want := range []string{
 		"run_shell requires explicit approval",
 		"tool: run_shell",
-		"restart coden with --allow-shell",
+		"coden --allow-shell",
 		"Permission Required",
 	} {
 		if !strings.Contains(view, want) {

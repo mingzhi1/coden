@@ -1,6 +1,6 @@
 module github.com/mingzhi1/coden
 
-go 1.23
+go 1.25.0
 
 require (
 	charm.land/bubbles/v2 v2.1.0

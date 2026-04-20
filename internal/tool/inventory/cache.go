@@ -30,7 +30,7 @@ func OpenCache(workspaceRoot string) (*Cache, error) {
 		return nil, fmt.Errorf("create .coden dir: %w", err)
 	}
 	dbPath := filepath.Join(dir, "tool_cache.db")
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=3000")
+	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=3000")
 	if err != nil {
 		return nil, fmt.Errorf("open tool cache: %w", err)
 	}

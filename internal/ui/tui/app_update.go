@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -16,6 +19,25 @@ func (app *AppModel) Init() tea.Cmd {
 // Update routes messages: global keys → EventMsg by SessionID → active session.
 func (app *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+
+	// App-level overlay intercepts key events first.
+	if app.appAlert != nil {
+		if kp, ok := msg.(tea.KeyPressMsg); ok {
+			switch {
+			case kp.Code == tea.KeyEsc:
+				app.appAlert = nil
+			case kp.Code == tea.KeyUp, kp.Text == "k":
+				app.moveAppOverlayCursor(-1)
+			case kp.Code == tea.KeyDown, kp.Text == "j":
+				app.moveAppOverlayCursor(1)
+			case kp.Code == tea.KeyEnter:
+				if cmd := app.activateAppOverlayAction(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+			return app, tea.Batch(cmds...)
+		}
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -168,10 +190,94 @@ func (app *AppModel) handleGlobalKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 
-	// Alt+s: session picker (TODO: Phase 2 — overlay list)
+	// Alt+s: session picker overlay
+	case msg.Code == 's':
+		app.appAlert = app.buildSessionPickerOverlay()
+		return true, nil
 	}
 
 	return false, nil // not handled — will be delegated
+}
+
+// buildSessionPickerOverlay constructs the session list overlay for Alt+s.
+func (app *AppModel) buildSessionPickerOverlay() *alertState {
+	items := []overlayItem{
+		{kind: "section", text: "SESSIONS"},
+	}
+	for i, s := range app.sessions {
+		marker := "  "
+		if i == app.activeIdx {
+			marker = "▶ "
+		}
+		status := s.status
+		if status == "" {
+			status = "idle"
+		}
+		label := fmt.Sprintf("%s%d: %s  [%s]", marker, i+1, s.sessionID, status)
+		items = append(items, overlayItem{
+			kind:   "action",
+			text:   label,
+			action: fmt.Sprintf("switch_session:%d", i),
+		})
+	}
+	items = append(items,
+		overlayItem{kind: "spacer"},
+		overlayItem{kind: "action", text: "[n] new session", action: "new_session"},
+	)
+	return &alertState{
+		level:  "info",
+		title:  "Sessions",
+		items:  items,
+		footer: "j/k move  enter select  esc dismiss",
+	}
+}
+
+// moveAppOverlayCursor moves the cursor in the app-level overlay.
+func (app *AppModel) moveAppOverlayCursor(delta int) {
+	if app.appAlert == nil {
+		return
+	}
+	var indices []int
+	for i, item := range app.appAlert.items {
+		if strings.TrimSpace(item.action) != "" {
+			indices = append(indices, i)
+		}
+	}
+	if len(indices) == 0 {
+		return
+	}
+	app.appAlert.cursor = clamp(app.appAlert.cursor+delta, 0, len(indices)-1)
+}
+
+// activateAppOverlayAction dispatches the currently selected app overlay action.
+func (app *AppModel) activateAppOverlayAction() tea.Cmd {
+	if app.appAlert == nil {
+		return nil
+	}
+	var indices []int
+	for i, item := range app.appAlert.items {
+		if strings.TrimSpace(item.action) != "" {
+			indices = append(indices, i)
+		}
+	}
+	if len(indices) == 0 || app.appAlert.cursor >= len(indices) {
+		app.appAlert = nil
+		return nil
+	}
+	action := app.appAlert.items[indices[app.appAlert.cursor]].action
+	app.appAlert = nil
+
+	if strings.HasPrefix(action, "switch_session:") {
+		var idx int
+		fmt.Sscanf(strings.TrimPrefix(action, "switch_session:"), "%d", &idx)
+		app.switchToSession(idx)
+		return nil
+	}
+	switch action {
+	case "new_session":
+		return app.CreateNewSession()
+	}
+	return nil
 }
 
 // switchToSession changes the active session index, clamped to valid range.

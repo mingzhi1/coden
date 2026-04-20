@@ -541,9 +541,9 @@ func (m *Model) markToolFinished(event model.Event) {
 		if strings.Contains(detail, "--allow-shell") {
 			items = append(items,
 				overlayItem{kind: "spacer"},
-				overlayItem{kind: "section", text: "NEXT"},
-				overlayItem{kind: "action", text: "[do] restart coden with --allow-shell"},
-				overlayItem{kind: "action", text: "[do] rerun the task after reconnecting"},
+				overlayItem{kind: "section", text: "NEXT STEPS"},
+				overlayItem{kind: "kv", text: "1. restart: coden --allow-shell"},
+				overlayItem{kind: "kv", text: "2. reconnect to this session and rerun"},
 			)
 		}
 		items = append(items,
@@ -656,6 +656,7 @@ func (m *Model) applyWorkflowTerminated(workflowID string) {
 	m.status = "idle"
 	m.spinnerActive = false
 	m.currentStep = ""
+	m.activeToolName = ""
 	for i := range m.workers {
 		if m.workers[i].Status == "running" {
 			m.workers[i].Status = "done"

@@ -327,8 +327,7 @@ func (m *Model) overlaySelectableIndices() []int {
 	}
 	indices := make([]int, 0, len(m.alert.items))
 	for i, item := range m.alert.items {
-		// action: 可执行, disabled: 不可见但可选（用于展示不可用动作）
-		if strings.TrimSpace(item.action) != "" || item.kind == "disabled" {
+		if strings.TrimSpace(item.action) != "" {
 			indices = append(indices, i)
 		}
 	}

@@ -25,18 +25,85 @@ func (app *AppModel) View() tea.View {
 	var content string
 	if len(app.sessions) > 1 {
 		tabBar := app.renderTabBar(width)
-		// Session gets height minus tab bar line
 		sessionContent := active.RenderContent(width, height-1)
 		content = lipgloss.JoinVertical(lipgloss.Top, tabBar, sessionContent)
 	} else {
-		// Single session: no tab bar, full height
 		content = active.RenderContent(width, height)
+	}
+
+	if app.appAlert != nil {
+		content = overlayCenter(width, height, content, app.renderAppAlertBox(min(72, max(42, width-12))))
 	}
 
 	v := tea.NewView(content)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+// renderAppAlertBox renders the app-level overlay box (session picker, system errors).
+func (app *AppModel) renderAppAlertBox(width int) string {
+	if app.appAlert == nil {
+		return ""
+	}
+	titleBarStyle := styles.PrimaryText.Background(styles.ColorBg).Bold(true).Padding(0, 1)
+	borderColor := styles.ColorPrimary
+	if app.appAlert.level == "error" {
+		borderColor = styles.ColorError
+		titleBarStyle = styles.ErrorText.Background(styles.ColorBg).Bold(true).Padding(0, 1)
+	}
+
+	bodyLines := []string{
+		titleBarStyle.Width(width - 4).Render(app.appAlert.title),
+		"",
+	}
+
+	// Compute selectable indices for cursor rendering
+	var selectable []int
+	for i, item := range app.appAlert.items {
+		if strings.TrimSpace(item.action) != "" {
+			selectable = append(selectable, i)
+		}
+	}
+	selectedItem := -1
+	if len(selectable) > 0 {
+		cursor := clamp(app.appAlert.cursor, 0, len(selectable)-1)
+		selectedItem = selectable[cursor]
+	}
+
+	for idx, item := range app.appAlert.items {
+		selected := idx == selectedItem
+		switch item.kind {
+		case "section":
+			bodyLines = append(bodyLines, styles.MutedText.Render("── "+item.text+" ──"))
+		case "spacer":
+			bodyLines = append(bodyLines, "")
+		case "kv":
+			bodyLines = append(bodyLines, styles.MutedText.Render(item.text))
+		case "action":
+			if selected {
+				bodyLines = append(bodyLines, styles.PrimaryText.Bold(true).Render("▶ "+item.text))
+			} else {
+				bodyLines = append(bodyLines, "  "+item.text)
+			}
+		default:
+			bodyLines = append(bodyLines, item.text)
+		}
+	}
+
+	footer := app.appAlert.footer
+	if strings.TrimSpace(footer) == "" {
+		footer = "esc dismiss"
+	}
+	bodyLines = append(bodyLines, "", styles.MutedText.Render(footer))
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.ThickBorder()).
+		BorderForeground(borderColor).
+		Background(styles.ColorBgElevated).
+		Padding(1, 2).
+		Width(width).
+		Render(strings.Join(bodyLines, "\n"))
 }
 
 // renderTabBar renders the session tab bar.

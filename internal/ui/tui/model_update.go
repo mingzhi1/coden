@@ -109,6 +109,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.String() == "ctrl+x":
 			if m.status == "running" && m.activeWorkflowID != "" && m.canceler != nil {
 				cmds = append(cmds, m.canceler(m.activeWorkflowID))
+			} else if m.status != "running" {
+				m.chatLines = append(m.chatLines, chatMetaLine("warn", "no active workflow to cancel"))
+				if m.followChat {
+					m.chatScroll = m.maxChatScroll()
+				}
 			}
 		case msg.Text == "q":
 			if m.focus != focusInput && m.status != "running" {
@@ -377,22 +382,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case TaskSkipResultMsg:
-		text := "task skipped"
-		if msg.TaskID != "" {
-			text += ": " + msg.TaskID
+		if msg.Err != nil {
+			m.chatLines = append(m.chatLines, chatMetaLine("warn", fmt.Sprintf("skip failed: %v", msg.Err)))
+		} else {
+			text := "task skipped"
+			if msg.TaskID != "" {
+				text += ": " + msg.TaskID
+			}
+			m.chatLines = append(m.chatLines, chatMetaLine("system", text))
 		}
-		m.chatLines = append(m.chatLines, chatMetaLine("system", text))
 		if m.followChat {
 			m.chatScroll = m.maxChatScroll()
 		}
 		return m, tea.Batch(cmds...)
 
 	case TaskUndoResultMsg:
-		text := "task undo completed"
-		if msg.RestoredTaskID != "" {
-			text += ": restored " + msg.RestoredTaskID
+		if msg.Err != nil {
+			m.chatLines = append(m.chatLines, chatMetaLine("warn", fmt.Sprintf("undo failed: %v", msg.Err)))
+		} else {
+			text := "task undo completed"
+			if msg.RestoredTaskID != "" {
+				text += ": restored " + msg.RestoredTaskID
+			}
+			m.chatLines = append(m.chatLines, chatMetaLine("system", text))
 		}
-		m.chatLines = append(m.chatLines, chatMetaLine("system", text))
 		if m.followChat {
 			m.chatScroll = m.maxChatScroll()
 		}

@@ -25,6 +25,7 @@ type AppModel struct {
 	sessions    []*SessionModel
 	activeIdx   int
 	mode        appMode
+	appAlert    *alertState // app-level overlay (session picker, system errors)
 	width       int
 	height      int
 	client      api.ClientAPI
@@ -188,7 +189,7 @@ func (app *AppModel) AddSessionFromEvent(msg NewSessionCreatedMsg) tea.Cmd {
 	taskSkipper := func(taskID string) tea.Cmd {
 		return func() tea.Msg {
 			if err := app.client.SkipTask(sessionCtx, sessionID, taskID); err != nil {
-				return ErrMsg{Err: fmt.Errorf("skip task: %w", err)}
+				return TaskSkipResultMsg{TaskID: taskID, Err: err}
 			}
 			return TaskSkipResultMsg{TaskID: taskID}
 		}
@@ -197,7 +198,7 @@ func (app *AppModel) AddSessionFromEvent(msg NewSessionCreatedMsg) tea.Cmd {
 		return func() tea.Msg {
 			restored, err := app.client.UndoTask(sessionCtx, sessionID)
 			if err != nil {
-				return ErrMsg{Err: fmt.Errorf("undo task: %w", err)}
+				return TaskUndoResultMsg{Err: err}
 			}
 			return TaskUndoResultMsg{RestoredTaskID: restored}
 		}
