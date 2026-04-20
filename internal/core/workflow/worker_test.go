@@ -60,7 +60,7 @@ func (stubCoder) Metadata() WorkerMetadata {
 
 type stubAcceptor struct{}
 
-func (stubAcceptor) Accept(_ context.Context, workflowID string, intent model.IntentSpec, _ model.Artifact) (model.CheckpointResult, error) {
+func (stubAcceptor) Accept(_ context.Context, workflowID string, intent model.IntentSpec, _ model.Artifact, _ []model.Task) (model.CheckpointResult, error) {
 	return model.CheckpointResult{WorkflowID: workflowID, SessionID: intent.SessionID, Status: "pass", CreatedAt: time.Now()}, nil
 }
 

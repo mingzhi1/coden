@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
@@ -58,6 +59,9 @@ func (c *LLMCoder) Build(ctx context.Context, workflowID string, intent model.In
 	taskList := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		entry := fmt.Sprintf("- %s", t.Title)
+		if t.SuccessCmd != "" {
+			entry += fmt.Sprintf(" [verify: %s]", t.SuccessCmd)
+		}
 		if len(t.Steps) > 0 {
 			for _, s := range t.Steps {
 				entry += fmt.Sprintf("\n  - %s", s)
@@ -71,6 +75,17 @@ func (c *LLMCoder) Build(ctx context.Context, workflowID string, intent model.In
 	ctxInfo := contextSummary(ctx)
 	userMsg := fmt.Sprintf("Goal: %s\n\nTasks:\n%s\n\nGenerate the implementation artifact plan.",
 		intent.Goal, strings.Join(taskList, "\n"))
+
+	// Inject critic feedback so the coder addresses flagged issues.
+	if len(wc.CritiqueIssues) > 0 {
+		var issues strings.Builder
+		issues.WriteString("\n\n## Critic Feedback (address in implementation)\n")
+		for _, issue := range wc.CritiqueIssues {
+			issues.WriteString("- " + issue + "\n")
+		}
+		userMsg += issues.String()
+	}
+
 	if wc.WorkspaceRoot != "" {
 		userMsg = fmt.Sprintf("Workspace root: %s\n\n%s", wc.WorkspaceRoot, userMsg)
 	}
@@ -140,11 +155,15 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 	// working when it stops before exhausting the output token budget.
 	// Budget set to availableTokens (conservative prompt budget).
 	contTracker := tokenbudget.NewContinuationTracker(30000)
+	cumulativeOutputTokens := 0 // cumulative output tokens across all rounds
 	// read_file results: cap each call at 25% of tool-history budget (in chars, 4 chars/token).
 	readBudgetChars := (toolHistoryBudget * 25 / 100) * 4 // = 12000 * 0.25 * 4 = 12000 chars, but cap at 3000
 	if readBudgetChars > 3000 {
 		readBudgetChars = 3000
 	}
+
+	degenerateCount := 0           // consecutive degenerate replies
+	const maxDegenerateRetries = 2 // max degenerate retries before giving up on round
 
 	for round := 0; round < maxCoderRounds; round++ {
 		prof.Checkpoint(fmt.Sprintf("round_%d_compress_start", round+1))
@@ -166,9 +185,42 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 		calls := parsePlanToolCalls(workflowID, reply)
 		slog.Info("[llm:coder] parsed tool calls from reply", "round", round+1, "total", len(calls), "reads", len(func() []workflow.ToolCall { r, _ := splitToolCalls(calls); return r }()), "mutations", len(func() []workflow.ToolCall { _, m := splitToolCalls(calls); return m }()))
 		if len(calls) == 0 {
+			// Check for degenerate response (rate-limit degradation).
+			// Degenerate replies are very short and contain no tool calls — they
+			// indicate the API is returning stub responses after rate limiting.
+			// Back off instead of nudging, to avoid wasting API quota.
+			if IsDegenerateReply(reply) {
+				degenerateCount++
+				slog.Warn("[llm:coder] degenerate response detected",
+					"round", round+1, "reply_len", len(reply),
+					"degenerate_count", degenerateCount)
+				c.push("warn", "coder", fmt.Sprintf("round %d: degenerate response (%d chars), backing off (%d/%d)",
+					round+1, len(reply), degenerateCount, maxDegenerateRetries))
+				if degenerateCount > maxDegenerateRetries {
+					slog.Warn("[llm:coder] too many degenerate responses, aborting",
+						"round", round+1, "degenerate_count", degenerateCount)
+					return workflow.CodePlan{}, fmt.Errorf(
+						"coder: %d consecutive degenerate responses (<%d chars) — API may be rate-limited or degraded",
+						degenerateCount, DegenerateReplyThreshold)
+				}
+				// Exponential backoff: 2s, 4s before retry
+				backoff := time.Duration(1<<uint(degenerateCount)) * time.Second
+				select {
+				case <-ctx.Done():
+					return workflow.CodePlan{}, ctx.Err()
+				case <-time.After(backoff):
+				}
+				round-- // degenerate retry does not consume a round
+				continue
+			}
+
+			// Reset degenerate counter on non-degenerate reply
+			degenerateCount = 0
+
 			// T1-02: Check if the model stopped prematurely — nudge to continue
 			// if the output token budget has not been sufficiently consumed.
-			decision := contTracker.Check(tokenbudget.EstimateTokens(reply))
+			cumulativeOutputTokens += tokenbudget.EstimateTokens(reply)
+			decision := contTracker.Check(cumulativeOutputTokens)
 			if decision.ShouldContinue {
 				slog.Info("[llm:coder] token budget continuation",
 					"round", round+1, "pct", decision.Pct, "tokens", decision.TurnTokens)
@@ -182,18 +234,31 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 			}
 
 			// LLM produced no more tool calls — finalize with accumulated mutations.
-			plan := parseCodePlanReply(workflowID, intent.ID, intent.Goal, reply)
-			plan.ToolCalls = append(allMutations, plan.ToolCalls...)
-			if len(plan.ToolCalls) > 0 {
-				plan.ToolCallID = plan.ToolCalls[0].ToolCallID
-				plan.Request = plan.ToolCalls[0].Request
+			if len(allMutations) > 0 {
+				// Agentic loop produced real mutations — return them directly
+				// without the parseCodePlanReply fallback which would append
+				// a spurious artifacts/intent-*.md write that overwrites the
+				// correct artifact path.
+				first := allMutations[0]
+				plan := workflow.CodePlan{
+					ToolCalls:  allMutations,
+					ToolCallID: first.ToolCallID,
+					Request:    first.Request,
+				}
+				plan = refineCodePlanWithContext(ctx, workflowID, plan)
+				c.push("info", "coder", fmt.Sprintf("round %d: final plan with %d mutation(s)", round+1, len(plan.Calls())))
+				return plan, nil
 			}
+			// No mutations accumulated — fall back to parsing reply for inline code.
+			plan := parseCodePlanReply(workflowID, intent.ID, intent.Goal, reply)
 			plan = refineCodePlanWithContext(ctx, workflowID, plan)
 			c.push("info", "coder", fmt.Sprintf("round %d: final plan with %d call(s)", round+1, len(plan.Calls())))
 			return plan, nil
 		}
 
 		reads, mutations := splitToolCalls(calls)
+		cumulativeOutputTokens += tokenbudget.EstimateTokens(reply)
+		degenerateCount = 0 // successful tool calls reset degenerate counter
 
 		prof.Checkpoint(fmt.Sprintf("round_%d_tool_exec_start", round+1))
 		// Execute reads and mutations immediately; feed all results back to LLM.

@@ -1,0 +1,46 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+
+	"github.com/mingzhi1/coden/internal/core/toolruntime"
+	"github.com/mingzhi1/coden/internal/core/workspace"
+	"github.com/mingzhi1/coden/internal/rpc/transport"
+	"github.com/mingzhi1/coden/internal/tool/writefile"
+)
+
+func main() {
+	serve := flag.String("serve", "", "serve write-file tool on this TCP address; default is stdio")
+	workspaceRoot := flag.String("workspace", filepath.Join(".", "workspace"), "workspace root")
+	flag.Parse()
+
+	srv := writefile.NewServer(toolruntime.NewLocalExecutor(workspace.New(*workspaceRoot)))
+	ctx := context.Background()
+
+	if *serve == "" {
+		srv.ServeConn(ctx, transport.Stdio())
+		return
+	}
+
+	ln, err := net.Listen("tcp", *serve)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listen failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer ln.Close()
+
+	fmt.Fprintf(os.Stderr, "CodeN write-file tool serving on %s\n", ln.Addr())
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "accept error: %v\n", err)
+			continue
+		}
+		go srv.ServeConn(ctx, conn)
+	}
+}

@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -29,6 +30,49 @@ type TruncatedError struct {
 
 func (e *TruncatedError) Error() string { return e.Err.Error() }
 func (e *TruncatedError) Unwrap() error { return e.Err }
+
+// ProviderError is a structured error from an LLM provider HTTP call.
+// It replaces string-based classification with machine-readable fields,
+// enabling errors.As/Is throughout the error chain.
+type ProviderError struct {
+	Provider   string // "openai", "anthropic", "copilot", etc.
+	StatusCode int    // HTTP status code (0 if not an HTTP error)
+	Message    string // human-readable description
+	Err        error  // underlying error (may be nil)
+}
+
+func (e *ProviderError) Error() string {
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("%s: API %d: %s", e.Provider, e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("%s: %s", e.Provider, e.Message)
+}
+
+func (e *ProviderError) Unwrap() error { return e.Err }
+
+// IsRateLimit returns true if this is a 429 rate-limit error.
+func (e *ProviderError) IsRateLimit() bool { return e.StatusCode == 429 }
+
+// IsOverloaded returns true if this is a 529 overloaded error.
+func (e *ProviderError) IsOverloaded() bool { return e.StatusCode == 529 }
+
+// IsServerError returns true if the status code indicates a retryable server error.
+func (e *ProviderError) IsServerError() bool {
+	return e.StatusCode >= 500 && e.StatusCode <= 599
+}
+
+// IsAuthError returns true if this is a 401/403 authentication error.
+func (e *ProviderError) IsAuthError() bool {
+	return e.StatusCode == 401 || e.StatusCode == 403
+}
+
+// IsPromptTooLong returns true if this is a 413 payload too large error.
+func (e *ProviderError) IsPromptTooLong() bool { return e.StatusCode == 413 }
+
+// IsRetryable returns true if the error is transient and the request should be retried.
+func (e *ProviderError) IsRetryable() bool {
+	return e.IsRateLimit() || e.IsOverloaded() || e.IsServerError()
+}
 
 // ChatProvider is the interface every LLM backend must implement.
 type ChatProvider interface {

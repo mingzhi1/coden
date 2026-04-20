@@ -223,6 +223,19 @@ func (q *Queue) SetStatus(taskID, status string) {
 	}
 }
 
+// SetTask replaces the full task struct in the queue, syncing all fields
+// (Status, Attempts, etc.) back from the execution layer.
+func (q *Queue) SetTask(task model.Task) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for i := range q.tasks {
+		if q.tasks[i].ID == task.ID {
+			q.tasks[i] = task
+			return
+		}
+	}
+}
+
 // isTerminal returns true if the status represents a final, unmodifiable state.
 func isTerminal(status string) bool {
 	switch status {

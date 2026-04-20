@@ -48,6 +48,16 @@ func (c *LLMCritic) Critique(ctx context.Context, workflowID string, intent mode
 	userMsg := fmt.Sprintf("## Goal\n%s\n\n## Success Criteria\n%s\n## Proposed Tasks\n%s",
 		intent.Goal, criteria.String(), taskList.String())
 
+	// Provide workspace file tree so the critic can validate file paths.
+	if wc := model.WorkflowContextFrom(ctx); len(wc.FileTree) > 0 {
+		const maxTreeFiles = 80
+		tree := wc.FileTree
+		if len(tree) > maxTreeFiles {
+			tree = tree[:maxTreeFiles]
+		}
+		userMsg += fmt.Sprintf("\n## Workspace Files\n%s", strings.Join(tree, "\n"))
+	}
+
 	reply, err := RecoverableChat(ctx, c.chatter, RoleCritic, []Message{
 		{Role: "system", Content: prompts.Critic()},
 		{Role: "user", Content: userMsg},

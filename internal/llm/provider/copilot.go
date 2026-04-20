@@ -37,6 +37,16 @@ func (p *Copilot) Chat(ctx context.Context, model string, messages []Message) (s
 		if errors.As(err, &te) {
 			return reply, &TruncatedError{Content: reply, Err: fmt.Errorf("copilot: %s", strings.TrimPrefix(te.Err.Error(), "openai: "))}
 		}
+		// Re-wrap ProviderError with correct provider name.
+		var pe *ProviderError
+		if errors.As(err, &pe) {
+			return "", &ProviderError{
+				Provider:   "copilot",
+				StatusCode: pe.StatusCode,
+				Message:    pe.Message,
+				Err:        pe.Err,
+			}
+		}
 		return "", fmt.Errorf("copilot: %s", strings.TrimPrefix(err.Error(), "openai: "))
 	}
 	return reply, nil

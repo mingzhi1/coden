@@ -39,6 +39,10 @@ func (s *Server) registerBuiltins() {
 	// M11-05: task management
 	s.handlers[protocol.MethodTaskSkip] = s.handleTaskSkip
 	s.handlers[protocol.MethodTaskUndo] = s.handleTaskUndo
+	// Hook management
+	s.handlers[protocol.MethodHookList] = s.handleHookList
+	s.handlers[protocol.MethodHookRegister] = s.handleHookRegister
+	s.handlers[protocol.MethodHookRemove] = s.handleHookRemove
 }
 
 func (s *Server) handleSessionCreate(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -579,4 +583,47 @@ func (s *Server) handleTaskUndo(ctx context.Context, raw json.RawMessage) (any, 
 		return nil, err
 	}
 	return protocol.TaskUndoResult{Status: "undone", Undone: undone}, nil
+}
+
+// ── Hook management handlers ────────────────────────────────────────────
+
+func (s *Server) handleHookList(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p protocol.HookListParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, protocol.InvalidParamsError(fmt.Sprintf("invalid params: %v", err))
+	}
+	hooks, err := s.kernel.ListHooks(ctx, p.Point)
+	if err != nil {
+		return nil, err
+	}
+	return protocol.HookListResult{Hooks: hooks}, nil
+}
+
+func (s *Server) handleHookRegister(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p protocol.HookRegisterParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, protocol.InvalidParamsError(fmt.Sprintf("invalid params: %v", err))
+	}
+	if p.Name == "" || p.Point == "" || p.Command == "" {
+		return nil, protocol.InvalidParamsError("name, point, and command are required")
+	}
+	if err := s.kernel.RegisterHook(ctx, p); err != nil {
+		return nil, err
+	}
+	return map[string]string{"status": "registered"}, nil
+}
+
+func (s *Server) handleHookRemove(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p protocol.HookRemoveParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, protocol.InvalidParamsError(fmt.Sprintf("invalid params: %v", err))
+	}
+	if p.Name == "" {
+		return nil, protocol.InvalidParamsError("name is required")
+	}
+	removed, err := s.kernel.RemoveHook(ctx, p.Name)
+	if err != nil {
+		return nil, err
+	}
+	return protocol.HookRemoveResult{Removed: removed}, nil
 }

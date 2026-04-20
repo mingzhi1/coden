@@ -201,6 +201,13 @@ type LocalExecutor struct {
 	searchConfig *config.SearchConfig // search tool configuration (nil = defaults)
 	registry     *ToolRegistry        // M12-02: tool metadata registry
 	artifactMgr  artifact.Manager     // M13: optional artifact manager
+
+	// lifecycleCtx is cancelled when the executor is closed. Background
+	// goroutines (e.g. RAG incremental update) should use this context so
+	// they are cancelled promptly on shutdown rather than using
+	// context.Background() which is never cancelled.
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
 }
 
 // SetArtifactManager injects an artifact Manager into the executor.
@@ -237,30 +244,49 @@ func (r *LocalExecutor) LSPManager(path string) interface{} {
 }
 
 func NewLocalExecutor(workspace *workspace.Service) *LocalExecutor {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &LocalExecutor{
-		workspace: workspace,
-		lspTools:  make(map[string]Executor),
-		registry:  NewToolRegistry(),
+		workspace:       workspace,
+		lspTools:        make(map[string]Executor),
+		webFetchTool:    NewWebFetchTool(),
+		registry:        NewToolRegistry(),
+		lifecycleCtx:    ctx,
+		lifecycleCancel: cancel,
 	}
 }
 
 // NewLocalExecutorWithLSP creates a LocalExecutor with LSP tools.
 func NewLocalExecutorWithLSP(workspace *workspace.Service, lspTools map[string]Executor) *LocalExecutor {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &LocalExecutor{
-		workspace: workspace,
-		lspTools:  lspTools,
-		registry:  NewToolRegistry(),
+		workspace:       workspace,
+		lspTools:        lspTools,
+		webFetchTool:    NewWebFetchTool(),
+		registry:        NewToolRegistry(),
+		lifecycleCtx:    ctx,
+		lifecycleCancel: cancel,
 	}
 }
 
 // NewLocalExecutorWithTools creates a LocalExecutor with LSP and RAG tools.
 func NewLocalExecutorWithTools(workspace *workspace.Service, lspTools map[string]Executor, ragTool Executor) *LocalExecutor {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &LocalExecutor{
-		workspace:    workspace,
-		lspTools:     lspTools,
-		ragTool:      ragTool,
-		webFetchTool: NewWebFetchTool(),
-		registry:     NewToolRegistry(),
+		workspace:       workspace,
+		lspTools:        lspTools,
+		ragTool:         ragTool,
+		webFetchTool:    NewWebFetchTool(),
+		registry:        NewToolRegistry(),
+		lifecycleCtx:    ctx,
+		lifecycleCancel: cancel,
+	}
+}
+
+// Close cancels background goroutines started by this executor (e.g. RAG
+// incremental updates). It is safe to call multiple times.
+func (r *LocalExecutor) Close() {
+	if r.lifecycleCancel != nil {
+		r.lifecycleCancel()
 	}
 }
 
@@ -275,8 +301,10 @@ func (r *LocalExecutor) NotifyCheckpointPassed(dirtyPaths []string) {
 		rt.index.MarkDirty(dirtyPaths)
 	}
 	// Fire RAG incremental update in background (non-blocking).
+	// Use the executor's lifecycle context so the goroutine is cancelled
+	// when Close() is called, rather than running until the 30s timeout.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(r.lifecycleCtx, 30*time.Second)
 		defer cancel()
 		res, err := r.ragTool.Execute(ctx, Request{Kind: "rag_index_update"})
 		if err != nil {
@@ -456,6 +484,9 @@ func (r *LocalExecutor) dispatch(ctx context.Context, req Request, start time.Ti
 		return res, err
 
 	case "web_fetch":
+		if r.webFetchTool == nil {
+			return Result{}, fmt.Errorf("web_fetch: tool not initialized")
+		}
 		res, err := r.webFetchTool.Execute(ctx, req)
 		dur := time.Since(start).Milliseconds()
 		if err != nil {
@@ -536,6 +567,10 @@ func workflowIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// WorkflowIDFromContext is the exported equivalent of workflowIDFromContext,
+// used by other packages (e.g. kernel tests) to verify context injection.
+func WorkflowIDFromContext(ctx context.Context) string { return workflowIDFromContext(ctx) }
+
 // sessionIDFromContext extracts the session ID from context if present.
 func sessionIDFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxKeySessionID).(string); ok {
@@ -543,6 +578,10 @@ func sessionIDFromContext(ctx context.Context) string {
 	}
 	return ""
 }
+
+// SessionIDFromContext is the exported equivalent of sessionIDFromContext,
+// used by other packages (e.g. kernel tests) to verify context injection.
+func SessionIDFromContext(ctx context.Context) string { return sessionIDFromContext(ctx) }
 
 type contextKey string
 
@@ -789,8 +828,8 @@ func (r *LocalExecutor) executeSearch(ctx context.Context, req Request) (Result,
 
 	hits, err := ExecuteRipgrep(ctx, opts)
 	if err != nil {
-		// Fallback to built-in search
-		return r.executeBuiltinSearch(req, query)
+		// Fallback to built-in search; propagate ctx so it is cancellable.
+		return r.executeBuiltinSearch(ctx, req, query)
 	}
 
 	// Strip the workspace root prefix from hit paths and normalise separators so
@@ -842,7 +881,7 @@ func (r *LocalExecutor) executeSearch(ctx context.Context, req Request) (Result,
 }
 
 // executeBuiltinSearch is the fallback when ripgrep is not available.
-func (r *LocalExecutor) executeBuiltinSearch(req Request, query string) (Result, error) {
+func (r *LocalExecutor) executeBuiltinSearch(ctx context.Context, req Request, query string) (Result, error) {
 	files, err := r.workspace.ListFiles(req.Dir, 200)
 	if err != nil {
 		return Result{}, fmt.Errorf("search: %w", err)
@@ -850,6 +889,12 @@ func (r *LocalExecutor) executeBuiltinSearch(req Request, query string) (Result,
 
 	var hits []string
 	for _, file := range files {
+		// Honour context cancellation so long-running fallback searches
+		// can be interrupted by caller timeouts.
+		if ctx.Err() != nil {
+			break
+		}
+
 		data, readErr := r.workspace.Read(file)
 		if readErr != nil {
 			continue
@@ -871,6 +916,13 @@ func (r *LocalExecutor) executeBuiltinSearch(req Request, query string) (Result,
 				break
 			}
 		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return Result{
+			Summary: fmt.Sprintf("search cancelled after %d match(es) for %q (builtin search)", len(hits), query),
+			Output:  strings.Join(hits, "\n"),
+		}, err
 	}
 
 	return Result{

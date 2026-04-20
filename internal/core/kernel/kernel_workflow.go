@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/mingzhi1/coden/internal/core/discovery"
 	"github.com/mingzhi1/coden/internal/core/insight"
+	"github.com/mingzhi1/coden/internal/hook"
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/taskqueue"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
@@ -173,6 +176,14 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	wfCtx := k.buildWorkflowContext(ctx, sessionID)
 	ctx = model.WithWorkflowContext(ctx, wfCtx)
 
+	// ── Hook: pre_intent ────────────────────────────────────────────────
+	if blocked := k.runHookPointWithContext(ctx, hook.PreIntent, &hook.Context{
+		SessionID: sessionID, WorkflowID: workflowID, Prompt: prompt,
+	}); blocked {
+		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("pre_intent hook blocked"))
+		return
+	}
+
 	k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
 		WorkflowID: workflowID,
 		Step:       "intent",
@@ -202,6 +213,14 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		Status:     "done",
 	})
 
+	// ── Hook: post_intent ───────────────────────────────────────────────
+	if blocked := k.runHookPointWithContext(ctx, hook.PostIntent, &hook.Context{
+		SessionID: sessionID, WorkflowID: workflowID, Prompt: prompt,
+	}); blocked {
+		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("post_intent hook blocked"))
+		return
+	}
+
 	// V1-01c: Route based on intent kind.
 	// Questions skip Plan/Code/Accept and get a direct LLM answer.
 	if intentSpec.IsQuestion() {
@@ -214,7 +233,47 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		return
 	}
 
-	// T3-03: Start Discovery prefetch — runs in parallel with Plan.
+	// SA-08: Fast grep-only macro context for Planner.
+	// Run synchronously before Plan starts so the Planner's contextSummary
+	// includes real code context. Grep-only keeps this under ~200ms on typical
+	// repos; RAG/LSP layers are left to the full parallel prefetch below.
+	{
+		macroOrch := discovery.NewToolOrchestrator(k.tools)
+		t0Macro := time.Now()
+		k.events.Emit(sessionID, model.EventSearchStarted, model.SearchStartedPayload{
+			WorkflowID: workflowID,
+			Query:      intentSpec.Goal,
+			QueryID:    workflowID + ":macro",
+		})
+		macroHits, macroErr := macroOrch.Search(ctx, discovery.SearchParams{
+			Query:     intentSpec.Goal,
+			Kinds:     []string{"grep"},
+			Workspace: k.workspace.Root(),
+		})
+		if macroErr == nil && len(macroHits) > 0 {
+			macroSnippets := snippetsFromEvidence(ctx, k, macroHits)
+			if len(macroSnippets) > 0 {
+				wfCtx.DiscoveryContext = macroSnippets
+				wfCtx.Discovery = model.DiscoveryContext{
+					Query:      intentSpec.Goal,
+					QueryID:    workflowID + ":macro",
+					Snippets:   macroSnippets,
+					Confidence: discoveryConfidence(macroSnippets),
+				}
+				ctx = model.WithWorkflowContext(ctx, wfCtx)
+				k.events.Emit(sessionID, model.EventSearchFinished, model.SearchFinishedPayload{
+					WorkflowID:   workflowID,
+					QueryID:      workflowID + ":macro",
+					SnippetCount: len(macroSnippets),
+					Layers:       []string{"grep"},
+					DurationMs:   time.Since(t0Macro).Milliseconds(),
+				})
+			}
+		}
+	}
+
+	// T3-03: Start full 3-layer Discovery prefetch — runs in parallel with Plan.
+	// The Planner already has macro grep context; this enriches RePlan/Coder.
 	type discoveryPrefetch struct {
 		discovery model.DiscoveryContext
 		err       error
@@ -284,6 +343,12 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	}
 	if err := validateTaskDAG(tasks); err != nil {
 		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("invalid task graph: %w", err))
+		return
+	}
+
+	// ── Hook: post_plan ─────────────────────────────────────────────────
+	if blocked := k.runHookPoint(ctx, hook.PostPlan, sessionID, workflowID, "", "", 0); blocked {
+		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("post_plan hook blocked"))
 		return
 	}
 
@@ -435,7 +500,87 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	// N-08: Execute tasks concurrently using DAG-level scheduling.
 	checkpointResult, artifact, llmOutputStr, taskErr := k.runTasksConcurrent(
 		ctx, sessionID, workflowID, intentSpec, queue, discoverySnippets)
+
+	// Handle "replan" failure policy: re-plan abandoned tasks and retry once.
+	if re, ok := taskErr.(*replanRequestedError); ok && k.workflow.Replanner() != nil {
+		clog.Session(sessionID).Info("replan policy triggered, re-planning remaining tasks",
+			"workflow_id", workflowID,
+			"evidence", re.evidence)
+
+		// Collect abandoned tasks from the queue.
+		var abandonedTasks []model.Task
+		for _, t := range queue.Snapshot() {
+			if t.Status == model.TaskStatusAbandoned {
+				t.Status = model.TaskStatusPlanned
+				abandonedTasks = append(abandonedTasks, t)
+			}
+		}
+
+		if len(abandonedTasks) > 0 {
+			// Inject failure evidence into the intent for the Replanner.
+			replanIntent := intentSpec
+			replanIntent.Goal = fmt.Sprintf("%s\n\n[REPLAN] Previous task failed: %s",
+				intentSpec.Goal, strings.Join(re.evidence, "; "))
+
+			k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
+				WorkflowID: workflowID,
+				Step:       "replan",
+				Status:     "running",
+			})
+
+			refined, rpErr := k.workflow.Replanner().RePlan(ctx, replanIntent, abandonedTasks, discoverySnippets)
+			if rpErr != nil {
+				slog.Warn("replan-on-failure failed, treating as hard failure",
+					"workflow", workflowID, "error", rpErr)
+				k.handleWorkflowError(sessionID, workflowID, taskErr)
+				return
+			}
+
+			k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
+				WorkflowID: workflowID,
+				Step:       "replan",
+				Status:     "done",
+			})
+
+			if len(refined) > 0 {
+				if dagErr := validateTaskDAG(refined); dagErr != nil {
+					k.handleWorkflowError(sessionID, workflowID,
+						fmt.Errorf("replan-on-failure produced invalid DAG: %w", dagErr))
+					return
+				}
+				// Replace queue with re-planned tasks and re-run.
+				replanQueue := taskqueue.New(refined)
+				k.emitTasksUpdated(sessionID, workflowID, refined)
+				cp2, art2, llm2, err2 := k.runTasksConcurrent(
+					ctx, sessionID, workflowID, intentSpec, replanQueue, discoverySnippets)
+				// Merge results: use replan results if available.
+				if cp2.Status != "" {
+					checkpointResult = cp2
+				}
+				if art2.Path != "" || art2.Summary != "" {
+					artifact = art2
+				}
+				llmOutputStr += llm2
+				taskErr = err2
+				queue = replanQueue
+			}
+		}
+	}
+
 	if taskErr != nil {
+		// Persist a partial turn summary even for failed workflows so that
+		// subsequent turns in the same session have context about what was
+		// attempted and what went wrong.
+		tasks = queue.Snapshot()
+		failedCP := checkpointResult
+		if failedCP.Status == "" {
+			failedCP.Status = "fail"
+		}
+		failedTS := k.buildTurnSummary(sessionID, workflowID, intentSpec, tasks, failedCP)
+		if saveErr := k.turnSummaries.Save(failedTS); saveErr != nil {
+			clog.Session(sessionID).Warn("failed to save partial turn summary",
+				"workflow_id", workflowID, "error", saveErr)
+		}
 		k.handleWorkflowError(sessionID, workflowID, taskErr)
 		return
 	}
@@ -470,8 +615,16 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		"status", checkpointResult.Status,
 		"tasks", len(tasks))
 
-	// Post-saga: clear workspace dirty set and notify tools (RAG incremental update).
+	// ── Hook: post_workflow (non-blocking, fire-and-forget) ─────────────
 	dirtyPaths := k.workspace.DirtyPaths()
+	k.runHookPointWithContext(ctx, hook.PostWorkflow, &hook.Context{
+		SessionID:    sessionID,
+		WorkflowID:   workflowID,
+		FinalStatus:  checkpointResult.Status,
+		ChangedFiles: dirtyPaths,
+	})
+
+	// Post-saga: clear workspace dirty set and notify tools (RAG incremental update).
 	k.workspace.ClearAllDirty()
 	k.tools.NotifyCheckpointPassed(dirtyPaths)
 

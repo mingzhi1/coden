@@ -160,3 +160,27 @@ done:
 		t.Fatalf("expected 1 summary in session, got %d", len(list))
 	}
 }
+
+func TestReplanRequestedError(t *testing.T) {
+	t.Parallel()
+
+	evidence := []string{"build failed: missing import", "test timeout"}
+	err := &replanRequestedError{evidence: evidence}
+
+	if err.Error() == "" {
+		t.Fatal("expected non-empty error message")
+	}
+	if !contains(err.Error(), "replan requested") {
+		t.Fatalf("expected error to contain 'replan requested', got %q", err.Error())
+	}
+
+	// Verify type assertion works (used in kernel_workflow.go).
+	var taskErr error = err
+	re, ok := taskErr.(*replanRequestedError)
+	if !ok {
+		t.Fatal("expected type assertion to succeed")
+	}
+	if len(re.evidence) != 2 {
+		t.Fatalf("expected 2 evidence items, got %d", len(re.evidence))
+	}
+}

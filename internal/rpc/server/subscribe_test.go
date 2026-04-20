@@ -121,6 +121,18 @@ func (k *subscribeKernel) UndoTask(_ context.Context, _ string) (string, error) 
 	return "", nil
 }
 
+func (k *subscribeKernel) ListHooks(_ context.Context, _ string) ([]protocol.HookInfo, error) {
+	return nil, nil
+}
+
+func (k *subscribeKernel) RegisterHook(_ context.Context, _ protocol.HookRegisterParams) error {
+	return nil
+}
+
+func (k *subscribeKernel) RemoveHook(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
 func (k *subscribeKernel) Snapshot(_ context.Context, sessionID string, _ int) (model.SessionSnapshot, error) {
 	return model.SessionSnapshot{SessionID: sessionID}, nil
 }

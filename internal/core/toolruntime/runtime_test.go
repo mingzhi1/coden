@@ -282,3 +282,61 @@ func TestReadFileNoSpillUnderThreshold(t *testing.T) {
 	}
 }
 
+// TestNewLocalExecutor_WebFetchToolInitialized verifies that the basic
+// NewLocalExecutor constructor initialises webFetchTool (T-02 fix).
+// Without the fix, dispatching "web_fetch" would panic with a nil dereference.
+func TestNewLocalExecutor_WebFetchToolInitialized(t *testing.T) {
+	exec := NewLocalExecutor(workspace.New(t.TempDir()))
+	if exec.webFetchTool == nil {
+		t.Fatal("webFetchTool must be initialized by NewLocalExecutor")
+	}
+}
+
+// TestNewLocalExecutorWithLSP_WebFetchToolInitialized performs the same check
+// for the LSP constructor variant (T-02 fix).
+func TestNewLocalExecutorWithLSP_WebFetchToolInitialized(t *testing.T) {
+	exec := NewLocalExecutorWithLSP(workspace.New(t.TempDir()), nil)
+	if exec.webFetchTool == nil {
+		t.Fatal("webFetchTool must be initialized by NewLocalExecutorWithLSP")
+	}
+}
+
+// TestLocalExecutor_Close_CancelsLifecycleCtx verifies that Close() cancels
+// the executor's lifecycle context, which stops background goroutines (T-04 fix).
+func TestLocalExecutor_Close_CancelsLifecycleCtx(t *testing.T) {
+	exec := NewLocalExecutor(workspace.New(t.TempDir()))
+	if exec.lifecycleCtx == nil {
+		t.Fatal("lifecycleCtx must be set")
+	}
+	// Context must be live before Close.
+	select {
+	case <-exec.lifecycleCtx.Done():
+		t.Fatal("lifecycleCtx should not be done before Close()")
+	default:
+	}
+	exec.Close()
+	// Context must be cancelled after Close.
+	select {
+	case <-exec.lifecycleCtx.Done():
+		// expected
+	default:
+		t.Fatal("lifecycleCtx should be done after Close()")
+	}
+}
+
+// TestWebFetchDispatch_NilGuard ensures the nil guard in dispatch returns a
+// clean error rather than panicking when webFetchTool is nil (T-02 defensive).
+func TestWebFetchDispatch_NilGuard(t *testing.T) {
+	exec := &LocalExecutor{
+		workspace:    workspace.New(t.TempDir()),
+		lspTools:     make(map[string]Executor),
+		registry:     NewToolRegistry(),
+		lifecycleCtx: context.Background(),
+		// webFetchTool intentionally left nil
+	}
+	_, err := exec.Execute(context.Background(), Request{Kind: "web_fetch", Path: "http://example.com"})
+	if err == nil {
+		t.Fatal("expected error when webFetchTool is nil, got nil")
+	}
+}
+

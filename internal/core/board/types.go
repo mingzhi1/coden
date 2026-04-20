@@ -108,57 +108,6 @@ type Link struct {
 	Type     LinkType `json:"type"`
 }
 
-// ── Agent ──
-
-type AgentStatus string
-
-const (
-	AgentIdle     AgentStatus = "idle"
-	AgentThinking AgentStatus = "thinking"
-	AgentCoding   AgentStatus = "coding"
-	AgentDone     AgentStatus = "done"
-	AgentWaiting  AgentStatus = "waiting"
-	AgentError    AgentStatus = "error"
-)
-
-// StatusColor returns the display color for the agent status.
-func (s AgentStatus) StatusColor() string {
-	switch s {
-	case AgentThinking:
-		return "#F59E0B" // yellow
-	case AgentCoding:
-		return "#3B82F6" // blue
-	case AgentDone, AgentIdle:
-		return "#10B981" // green
-	case AgentWaiting, AgentError:
-		return "#EF4444" // red
-	default:
-		return "#6B7280" // gray
-	}
-}
-
-type Agent struct {
-	ID          string      `json:"id"`
-	Name        string      `json:"name"`
-	Role        string      `json:"role"`         // "fullstack", "backend", "frontend", "test", "devops"
-	Status      AgentStatus `json:"status"`
-	SessionID   string      `json:"session_id"`
-	CurrentCard string      `json:"current_card"` // card ID
-	Provider    string      `json:"provider"`     // LLM provider
-	Model       string      `json:"model"`
-	Stats       AgentStats  `json:"stats"`
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
-}
-
-type AgentStats struct {
-	TasksCompleted int       `json:"tasks_completed"`
-	TasksFailed    int       `json:"tasks_failed"`
-	TotalTokens    int64     `json:"total_tokens"`
-	ActiveSince    time.Time `json:"active_since"`
-	TotalCodingMs  int64     `json:"total_coding_ms"`
-}
-
 // ── Card ID Generation ──
 
 // GenerateCardID creates a hash-based card ID like "cn-a1b2c3".

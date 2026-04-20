@@ -129,3 +129,15 @@ func TestLoaderToolsOnlyBackcompat(t *testing.T) {
 		t.Fatal("expected RAG to be enabled by default")
 	}
 }
+
+func TestConfigValidateAcceptsReplan(t *testing.T) {
+	for _, policy := range []string{"stop", "skip", "replan"} {
+		t.Run(policy, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Core.Workflow.FailurePolicy = policy
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("failure_policy=%q should be valid: %v", policy, err)
+			}
+		})
+	}
+}

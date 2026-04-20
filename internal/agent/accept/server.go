@@ -105,7 +105,7 @@ func (s *Server) handleExecute(ctx context.Context, raw json.RawMessage) (protoc
 		return protocol.WorkerExecuteResult{}, protocol.InvalidParamsError(fmt.Sprintf("invalid accept input: %v", err))
 	}
 
-	checkpoint, err := s.acceptor.Accept(ctx, params.WorkflowID, input.Intent, input.Artifact)
+	checkpoint, err := s.acceptor.Accept(ctx, params.WorkflowID, input.Intent, input.Artifact, input.Tasks)
 	if err != nil {
 		return protocol.WorkerExecuteResult{}, err
 	}

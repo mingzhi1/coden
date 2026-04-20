@@ -10,10 +10,13 @@ import (
 type Role string
 
 const (
-	RoleInput    Role = "input"
-	RolePlanner  Role = "planner"
-	RoleCoder    Role = "coder"
-	RoleAcceptor Role = "acceptor"
+	RoleInput     Role = "input"
+	RolePlanner   Role = "planner"
+	RoleCritic    Role = "critic"       // Reviews plan quality (anti-narcissism)
+	RoleSearcher  Role = "searcher"     // SA-10: Search phase as a first-class worker role
+	RoleReplanner Role = "replanner"    // Refines tasks with concrete steps after discovery
+	RoleCoder     Role = "coder"
+	RoleAcceptor  Role = "acceptor"
 )
 
 type WorkerMetadata struct {
@@ -30,11 +33,15 @@ type WorkerInput struct {
 	Tasks         []model.Task
 	Artifact      model.Artifact
 	RetryFeedback string // non-empty when retrying after acceptor rejection
+	Critique      *model.CritiqueResult // critic feedback for replanner
+	Snippets      []model.FileSnippet   // discovery snippets for replanner
 }
 
 type WorkerOutput struct {
 	Intent     *model.IntentSpec
 	Tasks      []model.Task
+	Discovery  *model.DiscoveryContext  // populated by SearcherWorker (SA-10)
+	Critique   *model.CritiqueResult    // populated by CriticWorker
 	CodePlan   *CodePlan
 	Checkpoint *model.CheckpointResult
 	Messages   []model.WorkerMessage
@@ -69,6 +76,14 @@ type acceptorWorker struct {
 	acceptor Acceptor
 }
 
+type criticWorker struct {
+	critic Critic
+}
+
+type replannerWorker struct {
+	replanner Replanner
+}
+
 func NewInputterWorker(inputter Inputter) Worker {
 	return inputterWorker{inputter: inputter}
 }
@@ -83,6 +98,14 @@ func NewCoderWorker(coder Coder) Worker {
 
 func NewAcceptorWorker(acceptor Acceptor) Worker {
 	return acceptorWorker{acceptor: acceptor}
+}
+
+func NewCriticWorker(critic Critic) Worker {
+	return criticWorker{critic: critic}
+}
+
+func NewReplannerWorker(replanner Replanner) Worker {
+	return replannerWorker{replanner: replanner}
 }
 
 func (w inputterWorker) Execute(ctx context.Context, input WorkerInput) (WorkerOutput, error) {
@@ -122,7 +145,7 @@ func (w coderWorker) Execute(ctx context.Context, input WorkerInput) (WorkerOutp
 }
 
 func (w acceptorWorker) Execute(ctx context.Context, input WorkerInput) (WorkerOutput, error) {
-	checkpoint, err := w.acceptor.Accept(ctx, input.WorkflowID, input.Intent, input.Artifact)
+	checkpoint, err := w.acceptor.Accept(ctx, input.WorkflowID, input.Intent, input.Artifact, input.Tasks)
 	if err != nil {
 		return WorkerOutput{}, err
 	}
@@ -130,6 +153,30 @@ func (w acceptorWorker) Execute(ctx context.Context, input WorkerInput) (WorkerO
 		Checkpoint: &checkpoint,
 		Messages:   takeMessages(w.acceptor),
 		Metadata:   metadataFor(RoleAcceptor, w.acceptor),
+	}, nil
+}
+
+func (w criticWorker) Execute(ctx context.Context, input WorkerInput) (WorkerOutput, error) {
+	result, err := w.critic.Critique(ctx, input.WorkflowID, input.Intent, input.Tasks)
+	if err != nil {
+		return WorkerOutput{}, err
+	}
+	return WorkerOutput{
+		Critique: &result,
+		Messages: takeMessages(w.critic),
+		Metadata: metadataFor(RoleCritic, w.critic),
+	}, nil
+}
+
+func (w replannerWorker) Execute(ctx context.Context, input WorkerInput) (WorkerOutput, error) {
+	tasks, err := w.replanner.RePlan(ctx, input.Intent, input.Tasks, input.Snippets)
+	if err != nil {
+		return WorkerOutput{}, err
+	}
+	return WorkerOutput{
+		Tasks:    tasks,
+		Messages: takeMessages(w.replanner),
+		Metadata: metadataFor(RoleReplanner, w.replanner),
 	}, nil
 }
 

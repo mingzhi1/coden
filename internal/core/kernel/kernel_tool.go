@@ -9,7 +9,14 @@ import (
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
 	"github.com/mingzhi1/coden/internal/core/workflow"
+	"github.com/mingzhi1/coden/internal/hook"
 )
+
+// toolCtx enriches ctx with workflow/session IDs so the tool runtime can
+// attach them to artifact auto-saves and other per-execution tracking.
+func toolCtx(ctx context.Context, workflowID, sessionID string) context.Context {
+	return toolruntime.ContextWithIDs(ctx, workflowID, sessionID)
+}
 
 // executeToolPlan 执行 Coder 的工具计划并收集结果 artifact。
 // allowedPaths 限制 mutation 调用（write_file/edit_file）可针对的工作区路径。
@@ -17,6 +24,7 @@ import (
 // 用于失败时回滚。
 func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, workerID string, allowedPaths []string, calls []workflow.ToolCall) (model.Artifact, map[string][]byte, error) {
 	var artifact model.Artifact
+	var evidence []string
 	beforeState := make(map[string][]byte)
 
 	for _, call := range calls {
@@ -66,6 +74,20 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 			return model.Artifact{}, beforeState, err
 		}
 
+		// ── Hook: pre_tool_use ──────────────────────────────────────────
+		if blocked := k.runHookPointWithContext(ctx, hook.PreToolUse, &hook.Context{
+			SessionID: sessionID, WorkflowID: workflowID,
+			ToolName: call.Request.Kind, ToolInput: toolInputSummary(call.Request),
+		}); blocked {
+			k.events.Emit(sessionID, model.EventToolFinished, model.ToolFinishedPayload{
+				WorkflowID: workflowID, ToolCallID: call.ToolCallID, WorkerID: workerID,
+				Tool: call.Request.Kind, Path: call.Request.Path,
+				Status: "blocked", Summary: "pre_tool_use hook blocked",
+				DurationMS: durationMillis(toolStarted),
+			})
+			return model.Artifact{}, beforeState, fmt.Errorf("tool %q blocked by pre_tool_use hook", call.Request.Kind)
+		}
+
 		var result toolruntime.Result
 		if call.Executed {
 			result = call.ExecResult
@@ -75,6 +97,21 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 				if _, already := beforeState[call.Request.Path]; !already {
 					beforeState[call.Request.Path] = []byte(call.ExecResult.Before)
 				}
+			}
+			// Collect execution evidence from pre-executed mutations for the acceptor.
+			if call.Request.Kind == "run_shell" && call.Request.Command != "" {
+				evLine := fmt.Sprintf("%s → exit %d", call.Request.Command, result.ExitCode)
+				// Include truncated stdout so the acceptor can verify output content.
+				if out := strings.TrimSpace(result.Output); out != "" {
+					const maxEvOutput = 1000
+					if len(out) > maxEvOutput {
+						out = out[:maxEvOutput] + "…"
+					}
+					evLine += "\nOutput: " + out
+				}
+				evidence = append(evidence, evLine)
+			} else if (call.Request.Kind == "edit_file" || call.Request.Kind == "write_file") && call.Request.Path != "" {
+				evidence = append(evidence, fmt.Sprintf("%s %s", call.Request.Kind, call.Request.Path))
 			}
 		} else {
 			if (call.Request.Kind == "write_file" || call.Request.Kind == "edit_file") && call.Request.Path != "" {
@@ -87,7 +124,9 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 				}
 			}
 			var err error
-			result, err = k.tools.Execute(ctx, call.Request)
+			// Inject workflow/session IDs so the tool runtime can tag artifact
+			// auto-saves with the correct execution context (avoids "unknown" IDs).
+			result, err = k.tools.Execute(toolCtx(ctx, workflowID, sessionID), call.Request)
 			if err != nil {
 				status := "failed"
 				artifactPath := call.Request.Path
@@ -151,6 +190,12 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 			DurationMS: durationMillis(toolStarted),
 		})
 
+		// ── Hook: post_tool_use ─────────────────────────────────────────
+		k.runHookPointWithContext(ctx, hook.PostToolUse, &hook.Context{
+			SessionID: sessionID, WorkflowID: workflowID,
+			ToolName: call.Request.Kind, ToolInput: toolInputSummary(call.Request),
+		})
+
 		if _, err := k.objects.SaveModify(workflowID, artifactPath, k.mainDBPath, toolAuditPayload(call, result, status, "", "")); err != nil {
 			return model.Artifact{}, beforeState, fmt.Errorf("save object: %w", err)
 		}
@@ -169,6 +214,7 @@ func (k *Kernel) executeToolPlan(ctx context.Context, sessionID, workflowID, wor
 		}
 	}
 
+	artifact.Evidence = evidence
 	return artifact, beforeState, nil
 }
 
@@ -376,5 +422,24 @@ func toolStatus(kind string) string {
 		return "executed"
 	default:
 		return "ok"
+	}
+}
+
+// toolInputSummary builds a concise summary of a tool request for hook env vars.
+func toolInputSummary(req toolruntime.Request) string {
+	switch req.Kind {
+	case "run_shell":
+		return req.Command
+	case "write_file", "read_file", "edit_file":
+		return req.Path
+	case "search":
+		return req.Query
+	case "list_dir":
+		if req.Dir != "" {
+			return req.Dir
+		}
+		return req.Path
+	default:
+		return req.Path
 	}
 }

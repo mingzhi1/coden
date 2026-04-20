@@ -2,6 +2,7 @@ package toolruntime
 
 import (
 	"strings"
+	"sync"
 )
 
 // M12-02: ToolRegistry catalogs all available tools with metadata about their
@@ -11,16 +12,18 @@ import (
 type ToolMeta struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
-	Parameters  string   `json:"parameters"`          // compact parameter spec
-	Deferred    bool     `json:"deferred"`             // true = not injected into system prompt
-	ReadOnly    bool     `json:"read_only"`            // true = no side effects
-	Concurrent  bool     `json:"concurrent"`           // true = safe to run in parallel
-	SearchHints []string `json:"search_hints"`         // keywords for tool_search matching
-	Category    string   `json:"category,omitempty"`   // "core" | "lsp" | "rag" | "search" | "meta"
+	Parameters  string   `json:"parameters"`        // compact parameter spec
+	Deferred    bool     `json:"deferred"`           // true = not injected into system prompt
+	ReadOnly    bool     `json:"read_only"`          // true = no side effects
+	Concurrent  bool     `json:"concurrent"`         // true = safe to run in parallel
+	SearchHints []string `json:"search_hints"`       // keywords for tool_search matching
+	Category    string   `json:"category,omitempty"` // "core" | "lsp" | "rag" | "search" | "meta"
 }
 
 // ToolRegistry holds all known tools and provides queries for core vs deferred.
+// All methods are safe for concurrent use.
 type ToolRegistry struct {
+	mu    sync.RWMutex
 	tools map[string]ToolMeta
 }
 
@@ -33,6 +36,8 @@ func NewToolRegistry() *ToolRegistry {
 
 // Get returns a tool's metadata by name.
 func (r *ToolRegistry) Get(name string) (ToolMeta, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
 	return t, ok
 }
@@ -40,6 +45,8 @@ func (r *ToolRegistry) Get(name string) (ToolMeta, bool) {
 // ListCore returns all non-deferred (core) tools that should be injected
 // into the system prompt.
 func (r *ToolRegistry) ListCore() []ToolMeta {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	var out []ToolMeta
 	for _, t := range r.tools {
 		if !t.Deferred {
@@ -51,6 +58,8 @@ func (r *ToolRegistry) ListCore() []ToolMeta {
 
 // ListDeferred returns all deferred tools.
 func (r *ToolRegistry) ListDeferred() []ToolMeta {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	var out []ToolMeta
 	for _, t := range r.tools {
 		if t.Deferred {
@@ -64,6 +73,8 @@ func (r *ToolRegistry) ListDeferred() []ToolMeta {
 // against name and search hints (case-insensitive substring match).
 func (r *ToolRegistry) SearchDeferred(query string) []ToolMeta {
 	q := strings.ToLower(query)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	var out []ToolMeta
 	for _, t := range r.tools {
 		if !t.Deferred {
@@ -79,6 +90,8 @@ func (r *ToolRegistry) SearchDeferred(query string) []ToolMeta {
 // SearchAll searches all tools by query (both core and deferred).
 func (r *ToolRegistry) SearchAll(query string) []ToolMeta {
 	q := strings.ToLower(query)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	var out []ToolMeta
 	for _, t := range r.tools {
 		if matchToolQuery(t, q) {
@@ -90,6 +103,8 @@ func (r *ToolRegistry) SearchAll(query string) []ToolMeta {
 
 // All returns all registered tools.
 func (r *ToolRegistry) All() []ToolMeta {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]ToolMeta, 0, len(r.tools))
 	for _, t := range r.tools {
 		out = append(out, t)
@@ -97,8 +112,11 @@ func (r *ToolRegistry) All() []ToolMeta {
 	return out
 }
 
-// Register adds a tool to the registry (used for MCP/plugin tools).
+// Register adds or replaces a tool in the registry (used for MCP/plugin tools).
+// Safe for concurrent use alongside read operations.
 func (r *ToolRegistry) Register(meta ToolMeta) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.tools[meta.Name] = meta
 }
 

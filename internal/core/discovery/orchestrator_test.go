@@ -36,9 +36,17 @@ func (m *mockExecutor) Execute(_ context.Context, req toolruntime.Request) (tool
 }
 
 func clearCache() {
-	orchestratorCache.mu.Lock()
-	orchestratorCache.items = make(map[string]cacheEntry)
-	orchestratorCache.mu.Unlock()
+	sharedCache.mu.Lock()
+	sharedCache.items = make(map[string]cacheEntry)
+	sharedCache.mu.Unlock()
+}
+
+// newIsolatedOrchestrator creates a ToolOrchestrator backed by a fresh per-test
+// cacheStore.  Use this in parallel tests to prevent clearCache() interference.
+// Returns the orchestrator and the underlying cacheStore for direct inspection.
+func newIsolatedOrchestrator(rt *toolruntime.Runtime) (*ToolOrchestrator, *cacheStore) {
+	c := newCacheStore()
+	return newToolOrchestratorWithCache(rt, c), c
 }
 
 // ---------------------------------------------------------------------------
@@ -46,9 +54,6 @@ func clearCache() {
 // ---------------------------------------------------------------------------
 
 func TestSearchReturnsGrepResults(t *testing.T) {
-	t.Cleanup(clearCache)
-	clearCache()
-
 	exec := &mockExecutor{
 		results: map[string]toolruntime.Result{
 			"search": {
@@ -57,7 +62,7 @@ func TestSearchReturnsGrepResults(t *testing.T) {
 		},
 	}
 
-	orch := NewToolOrchestrator(newMockRuntime(exec))
+	orch, _ := newIsolatedOrchestrator(newMockRuntime(exec))
 	hits, err := orch.Search(context.Background(), SearchParams{
 		Query: "func",
 		Kinds: []string{"grep"},
@@ -100,9 +105,6 @@ func TestSearchReturnsGrepResults(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSearchWithStructuredRAGData(t *testing.T) {
-	t.Cleanup(clearCache)
-	clearCache()
-
 	structured := []retrieval.RetrievalEvidence{
 		{
 			Source:  "rag",
@@ -129,7 +131,7 @@ func TestSearchWithStructuredRAGData(t *testing.T) {
 		},
 	}
 
-	orch := NewToolOrchestrator(newMockRuntime(exec))
+	orch, _ := newIsolatedOrchestrator(newMockRuntime(exec))
 	hits, err := orch.Search(context.Background(), SearchParams{
 		Query: "start server",
 		Kinds: []string{"rag"},
@@ -161,9 +163,6 @@ func TestSearchWithStructuredRAGData(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSearchFallsBackToTextParsing(t *testing.T) {
-	t.Cleanup(clearCache)
-	clearCache()
-
 	// Return RAG output with NO StructuredData — the orchestrator must fall
 	// back to parseRAGOutput.
 	exec := &mockExecutor{
@@ -174,7 +173,7 @@ func TestSearchFallsBackToTextParsing(t *testing.T) {
 		},
 	}
 
-	orch := NewToolOrchestrator(newMockRuntime(exec))
+	orch, _ := newIsolatedOrchestrator(newMockRuntime(exec))
 	hits, err := orch.Search(context.Background(), SearchParams{
 		Query: "database connection",
 		Kinds: []string{"rag"},
@@ -218,19 +217,20 @@ func TestSearchFallsBackToTextParsing(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCacheTTLExpiry(t *testing.T) {
-	t.Cleanup(clearCache)
-	clearCache()
+	t.Parallel()
 
+	c := newCacheStore()
+	orch := newToolOrchestratorWithCache(nil, c)
 	key := "ttl-test-key"
 	evidence := []retrieval.RetrievalEvidence{
 		{Source: "grep", Path: "a.go", Line: 1, Snippet: "hello"},
 	}
 
-	// Insert an entry via cachePut.
-	cachePut(key, evidence)
+	// Insert an entry via the instance method.
+	orch.cachePut(key, evidence)
 
 	// Immediately it should be found.
-	hits, ok := cacheGet(key)
+	hits, ok := orch.cacheGet(key)
 	if !ok {
 		t.Fatal("expected cache hit immediately after put")
 	}
@@ -239,14 +239,14 @@ func TestCacheTTLExpiry(t *testing.T) {
 	}
 
 	// Manually backdate the entry so that it appears to have expired.
-	orchestratorCache.mu.Lock()
-	entry := orchestratorCache.items[key]
+	c.mu.Lock()
+	entry := c.items[key]
 	entry.createdAt = time.Now().Add(-(cacheTTL + time.Second))
-	orchestratorCache.items[key] = entry
-	orchestratorCache.mu.Unlock()
+	c.items[key] = entry
+	c.mu.Unlock()
 
 	// Now cacheGet should treat it as a miss.
-	_, ok = cacheGet(key)
+	_, ok = orch.cacheGet(key)
 	if ok {
 		t.Fatal("expected cache miss after TTL expiry, but got a hit")
 	}
@@ -257,33 +257,34 @@ func TestCacheTTLExpiry(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCacheEviction(t *testing.T) {
-	t.Cleanup(clearCache)
-	clearCache()
+	t.Parallel()
 
+	c := newCacheStore()
+	orch := newToolOrchestratorWithCache(nil, c)
 	evidence := []retrieval.RetrievalEvidence{
 		{Source: "grep", Path: "x.go", Line: 1, Snippet: "x"},
 	}
 
 	// Fill the cache to exactly cacheMaxEntries.
 	for i := 0; i < cacheMaxEntries; i++ {
-		cachePut(fmt.Sprintf("evict-key-%d", i), evidence)
+		orch.cachePut(fmt.Sprintf("evict-key-%d", i), evidence)
 	}
 
 	// Verify the cache is full.
-	orchestratorCache.mu.RLock()
-	sizeBeforeOverflow := len(orchestratorCache.items)
-	orchestratorCache.mu.RUnlock()
+	c.mu.RLock()
+	sizeBeforeOverflow := len(c.items)
+	c.mu.RUnlock()
 
 	if sizeBeforeOverflow != cacheMaxEntries {
 		t.Fatalf("expected cache size %d, got %d", cacheMaxEntries, sizeBeforeOverflow)
 	}
 
 	// Insert one more — this must trigger eviction inside cachePut.
-	cachePut("evict-key-overflow", evidence)
+	orch.cachePut("evict-key-overflow", evidence)
 
-	orchestratorCache.mu.RLock()
-	sizeAfterOverflow := len(orchestratorCache.items)
-	orchestratorCache.mu.RUnlock()
+	c.mu.RLock()
+	sizeAfterOverflow := len(c.items)
+	c.mu.RUnlock()
 
 	// After eviction the cache should be strictly smaller than
 	// cacheMaxEntries + 1 (i.e. eviction actually happened).
@@ -292,14 +293,14 @@ func TestCacheEviction(t *testing.T) {
 	}
 
 	// The newly-inserted key should still be present.
-	if _, ok := cacheGet("evict-key-overflow"); !ok {
+	if _, ok := orch.cacheGet("evict-key-overflow"); !ok {
 		t.Fatal("newly inserted key should survive eviction")
 	}
 
 	// At least some of the old keys should have been removed.
 	evictedCount := 0
 	for i := 0; i < cacheMaxEntries; i++ {
-		if _, ok := cacheGet(fmt.Sprintf("evict-key-%d", i)); !ok {
+		if _, ok := orch.cacheGet(fmt.Sprintf("evict-key-%d", i)); !ok {
 			evictedCount++
 		}
 	}

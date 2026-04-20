@@ -1,6 +1,7 @@
 package events
 
 import (
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,9 @@ type Bus struct {
 	ring      [ringCap]model.Event
 	ringHead  int // index of the oldest slot
 	ringCount int // number of valid entries (0..ringCap)
+	// dropped counts events lost because a subscriber channel was full.
+	// Exposed via DroppedCount() for monitoring.
+	dropped uint64
 }
 
 type subscriber struct {
@@ -38,6 +42,13 @@ func NewBus() *Bus {
 // Zero means no events have been emitted yet.
 func (b *Bus) Seq() uint64 {
 	return atomic.LoadUint64(&b.seq)
+}
+
+// DroppedCount returns the total number of events dropped due to full
+// subscriber channels since the bus was created. Non-zero values indicate
+// slow consumers and potential UI state drift.
+func (b *Bus) DroppedCount() uint64 {
+	return atomic.LoadUint64(&b.dropped)
 }
 
 func (b *Bus) Subscribe(sessionID string) (<-chan model.Event, func()) {
@@ -91,6 +102,14 @@ func (b *Bus) Emit(sessionID, topic string, payload any) model.Event {
 		select {
 		case sub.ch <- event:
 		default:
+			// Channel full: increment drop counter and log so operators can
+			// detect slow consumers. The subscriber is not removed — it may
+			// catch up once it drains its backlog.
+			dropped := atomic.AddUint64(&b.dropped, 1)
+			slog.Warn("[events] subscriber channel full, event dropped",
+				"topic", event.Topic,
+				"session", event.SessionID,
+				"total_dropped", dropped)
 		}
 	}
 	b.mu.Unlock()

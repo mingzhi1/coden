@@ -79,7 +79,7 @@ func (e testExecutor) Execute(_ context.Context, req toolruntime.Request) (toolr
 // testAcceptor always passes.
 type testAcceptor struct{}
 
-func (a testAcceptor) Accept(_ context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact) (model.CheckpointResult, error) {
+func (a testAcceptor) Accept(_ context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact, _ []model.Task) (model.CheckpointResult, error) {
 	return model.CheckpointResult{
 		WorkflowID:    workflowID,
 		SessionID:     intent.SessionID,

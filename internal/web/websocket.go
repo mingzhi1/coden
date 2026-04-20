@@ -117,6 +117,18 @@ func mapEventToWSMessage(ev model.Event) *WSMessage {
 		return makeWSMsg("card.updated", ev.Payload)
 	case model.EventWorkspaceChanged:
 		return makeWSMsg("workspace.changed", ev.Payload)
+	case model.EventSessionCreated:
+		return makeWSMsg("session.created", ev.Payload)
+	case model.EventSessionAttached:
+		return makeWSMsg("session.attached", ev.Payload)
+	case model.EventSessionDetached:
+		return makeWSMsg("session.detached", ev.Payload)
+	case model.EventWorkflowCanceled:
+		return makeWSMsg("workflow.canceled", ev.Payload)
+	case model.EventWorkflowRetry:
+		return makeWSMsg("workflow.retry", ev.Payload)
+	case model.EventWorkerMessage:
+		return makeWSMsg("worker.message", ev.Payload)
 	default:
 		return nil
 	}
@@ -207,18 +219,25 @@ func (s *Server) sendBoardSync(client *WSClient) {
 	b := boards[0]
 	cards, _ := s.store.ListCards(b.ID)
 
-	var agents []*board.Agent
-	if s.pool != nil {
-		agents = s.pool.ListAgents()
-	}
-
 	type syncData struct {
-		Board  *board.Board  `json:"board"`
-		Cards  []*board.Card `json:"cards"`
-		Agents []*board.Agent `json:"agents"`
+		Board    *board.Board  `json:"board"`
+		Cards    []*board.Card `json:"cards"`
+		Sessions []any         `json:"sessions,omitempty"`
 	}
 
-	data, _ := json.Marshal(syncData{Board: b, Cards: cards, Agents: agents})
+	sd := syncData{Board: b, Cards: cards}
+
+	// Include sessions if ClientAPI is available
+	if s.clientAPI != nil {
+		if sessions, err := s.clientAPI.ListSessions(context.Background(), 50); err == nil {
+			sd.Sessions = make([]any, len(sessions))
+			for i, sess := range sessions {
+				sd.Sessions[i] = sess
+			}
+		}
+	}
+
+	data, _ := json.Marshal(sd)
 	msg := WSMessage{Type: "board.sync", Data: data}
 	msgBytes, _ := json.Marshal(msg)
 	select {

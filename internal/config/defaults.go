@@ -90,8 +90,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("core.workflow.timeout must be >= 0")
 	}
 	fp := c.Core.Workflow.FailurePolicy
-	if fp != "" && fp != "stop" && fp != "skip" {
-		return fmt.Errorf("core.workflow.failure_policy must be 'stop' or 'skip'")
+	if fp != "" && fp != "stop" && fp != "skip" && fp != "replan" {
+		return fmt.Errorf("core.workflow.failure_policy must be 'stop', 'skip', or 'replan'")
 	}
 	if c.Core.Context.MaxHistoryTurns < 0 {
 		return fmt.Errorf("core.context.max_history_turns must be >= 0")

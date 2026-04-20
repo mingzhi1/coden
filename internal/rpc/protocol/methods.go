@@ -37,6 +37,13 @@ const (
 	// M11-05: task management commands from TUI.
 	MethodTaskSkip = "task.skip"
 	MethodTaskUndo = "task.undo"
+	// LLM server sidecar methods (Kernel → llm-server).
+	MethodLLMChat      = "llm/chat"
+	MethodLLMSideQuery = "llm/sidequery"
+	// Hook management (Client → Kernel).
+	MethodHookList     = "hook.list"
+	MethodHookRegister = "hook.register"
+	MethodHookRemove   = "hook.remove"
 )
 
 // MethodCategory groups protocol methods by responsibility boundary.
@@ -55,6 +62,8 @@ const (
 	CategoryWorker     MethodCategory = "worker"
 	CategoryTool       MethodCategory = "tool"
 	CategoryTask       MethodCategory = "task"
+	CategoryLLM        MethodCategory = "llm"
+	CategoryHook       MethodCategory = "hook"
 )
 
 // MethodPlane describes which RPC boundary a method belongs to.
@@ -66,6 +75,7 @@ const (
 	PlaneClientToKernel MethodPlane = "client_to_kernel"
 	PlaneKernelToWorker MethodPlane = "kernel_to_worker"
 	PlaneKernelToTool   MethodPlane = "kernel_to_tool"
+	PlaneKernelToLLM    MethodPlane = "kernel_to_llm"
 	PlaneServerPush     MethodPlane = "server_push"
 )
 
@@ -95,6 +105,10 @@ func CategoryOf(method string) MethodCategory {
 		return CategoryTool
 	case MethodTaskSkip, MethodTaskUndo:
 		return CategoryTask
+	case MethodLLMChat, MethodLLMSideQuery:
+		return CategoryLLM
+	case MethodHookList, MethodHookRegister, MethodHookRemove:
+		return CategoryHook
 	default:
 		return CategoryUnknown
 	}
@@ -131,10 +145,14 @@ func PlaneOf(method string) MethodPlane {
 		return PlaneClientToKernel
 	case MethodTaskSkip, MethodTaskUndo:
 		return PlaneClientToKernel
+	case MethodHookList, MethodHookRegister, MethodHookRemove:
+		return PlaneClientToKernel
 	case MethodWorkerDescribe, MethodWorkerExecute, MethodWorkerCancel:
 		return PlaneKernelToWorker
 	case MethodToolDescribe, MethodToolExec, MethodToolCancel:
 		return PlaneKernelToTool
+	case MethodLLMChat, MethodLLMSideQuery:
+		return PlaneKernelToLLM
 	case MethodEventPush:
 		return PlaneServerPush
 	default:
@@ -163,6 +181,15 @@ func SupportsWorkerServer(method string) bool {
 func SupportsToolServer(method string) bool {
 	switch PlaneOf(method) {
 	case PlaneShared, PlaneKernelToTool:
+		return true
+	default:
+		return false
+	}
+}
+
+func SupportsLLMServer(method string) bool {
+	switch PlaneOf(method) {
+	case PlaneShared, PlaneKernelToLLM:
 		return true
 	default:
 		return false

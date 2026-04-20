@@ -6,6 +6,10 @@ import "fmt"
 
 // Inputter returns the system prompt for the Intent Parser (LLMInputter).
 func Inputter(prevIntentHint string) string {
+	hint := ""
+	if prevIntentHint != "" {
+		hint = "\n\n" + prevIntentHint
+	}
 	return `You are an intent parser. Given a user request, output a JSON object matching this schema:
 
 {
@@ -26,14 +30,17 @@ Rules for "kind":
 
 Rules:
 - Focus on the user's real requested outcome, not implementation mechanics
-- Keep success criteria observable and testable
+- Keep success criteria observable and testable — mention specific commands, files, or behaviors
 - If the user says "continue", "fix", "retry" referencing a previous turn, incorporate that context into the goal
 - goal must be under 200 characters
 - success_criteria must have 2-4 items, each under 80 characters
-- Reply ONLY with valid JSON, no markdown fences, no explanations
+- Reply ONLY with valid JSON, no markdown fences, no explanations` + hint + `
 
-Example output:
-{"goal": "Add JWT authentication middleware", "kind": "code_gen", "success_criteria": ["middleware.go compiles", "go build ./... passes", "unit tests pass"]}` + prevIntentHint
+Example for debug:
+{"goal": "Fix Add function returning wrong result in calc.go", "kind": "debug", "success_criteria": ["calc.go uses + instead of -", "go test ./... passes", "Add(2,3) returns 5"]}
+
+Example for code_gen:
+{"goal": "Add JWT authentication middleware", "kind": "code_gen", "success_criteria": ["middleware.go compiles", "go build ./... passes", "unit tests pass"]}`
 }
 
 // Planner returns the system prompt for the Task Planner (LLMPlanner).
@@ -67,7 +74,7 @@ Planning philosophy — minimum viable approach:
 - Three similar lines of code is better than a premature abstraction.
 - If fixing a bug, prefer a single focused task over a multi-file refactoring.
 
-success_cmd is the ONLY build/lint verification that runs. Choose the right command for the project:
+success_cmd is the ONLY deterministic verification that runs. It MUST be set for every task that writes code:
 - Go: "go build ./..." or "go test ./..."
 - Node/TS: "npm run build --if-present" or "npx tsc --noEmit"
 - Rust: "cargo check" or "cargo test"
@@ -76,6 +83,7 @@ success_cmd is the ONLY build/lint verification that runs. Choose the right comm
 - Zig: "zig build"
 - Android: "gradle assembleDebug -q"
 - General: "test -f <file>" for file existence checks
+- If the user mentions a specific test command, use that exact command
 
 Kind-specific guidance:
 - "debug": prefer a single focused task; include diagnostic reads before the fix
@@ -153,7 +161,6 @@ Given a goal and task list, produce a JSON tool plan matching this schema:
 - Use run_shell for project initialization (go mod init, npm init), builds, and tests
 - run_shell commands execute in the workspace root directory by default
 - For regex search, Go syntax: "func\s+\w+\(" matches function definitions
-- When the target path is unclear, write under artifacts/
 - Keep tool calls ordered: discover first, then mutate
 - Reply ONLY with valid JSON, no markdown fences, no explanations` +
 		coderSafetyRules() + coderStyleRules()
@@ -214,6 +221,7 @@ func coderStyleRules() string {
 - Do not add error handling or validation for scenarios that cannot happen.
 - Do not create helpers or abstractions for one-time operations.
 - Prefer editing existing files over creating new ones to prevent file bloat.
+- edit_file old_content must match the file EXACTLY — preserve indentation (tabs vs spaces), trailing spaces, and line endings. Read the file first to see the exact text.
 - Only add comments when the WHY is non-obvious (hidden constraint, workaround, subtle invariant).
 - Three similar lines of code is better than a premature abstraction.
 - If an approach fails, diagnose why before switching tactics. Do not retry blindly, but do not abandon a viable approach after one failure either.
@@ -256,6 +264,7 @@ Rules:
 - fix_guidance must be non-empty when status is "fail", empty string when status is "pass"
 - Be strict: if any success criterion is not met, return "fail"
 - Build verification (success_cmd) runs separately before this review and is NOT included here. Focus on code correctness and completeness.
+- If "Coder execution results (verified)" are provided, these are actual tool execution outcomes — trust them as ground truth. Do not contradict verified results.
 - Reply ONLY with valid JSON, no markdown fences, no explanations
 
 Faithful reporting:
@@ -307,6 +316,8 @@ Focus on:
 3. Incorrect dependency ordering
 4. Security vulnerabilities that will be introduced
 5. Steps that are impossible given the stated constraints
+6. File paths that don't exist in the workspace (if workspace files are provided)
+7. Missing success_cmd on code-writing tasks
 
 Example output for a good plan:
 {"score": 0.9, "approved": true, "issues": [], "suggestions": ["Consider adding a rollback task"], "summary": "Plan covers the main path; rollback handling is optional but recommended"}

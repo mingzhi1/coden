@@ -2,9 +2,12 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+
+	"github.com/mingzhi1/coden/internal/llm/provider"
 )
 
 // RecoveryConfig controls which recovery layers are active.
@@ -30,6 +33,13 @@ type Chatter interface {
 	Chat(ctx context.Context, role string, messages []Message) (string, error)
 }
 
+// SideQuerier is an optional interface for lightweight LLM calls.
+// Both Broker and LLMServerClient implement this. Callers should
+// type-assert from Chatter when needed.
+type SideQuerier interface {
+	SideQuery(ctx context.Context, opts SideQueryOpts) (string, error)
+}
+
 // RecoverableChat wraps a Chatter with multi-layer error recovery.
 //
 // Layer 1 – prompt-too-long recovery:
@@ -53,6 +63,23 @@ func RecoverableChat(ctx context.Context, chatter Chatter, role string, messages
 	reply, err := chatter.Chat(ctx, role, messages)
 	if err == nil {
 		return reply, nil
+	}
+
+	// Circuit breaker tripped — don't retry, propagate immediately.
+	var cbe *CircuitBreakerOpenError
+	if errors.As(err, &cbe) {
+		return reply, err
+	}
+
+	// Context cancelled — don't retry.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return reply, err
+	}
+
+	// Auth error — don't retry (fatal).
+	var pe *provider.ProviderError
+	if errors.As(err, &pe) && pe.IsAuthError() {
+		return reply, err
 	}
 
 	// --- Layer 1: prompt-too-long → emergency compress → retry ----------
@@ -103,12 +130,7 @@ func RecoverableChat(ctx context.Context, chatter Chatter, role string, messages
 		// subsequent calls go through the normal pool routing.
 		broker.SetRole(role, Config{Model: config.FallbackModel})
 		defer func() {
-			// Remove the temporary override by setting an unconfigured
-			// client (empty API key → IsConfigured() == false → SetRole
-			// is a no-op). We need to clear the map entry directly.
-			broker.mu.Lock()
-			delete(broker.roleOverrides, role)
-			broker.mu.Unlock()
+			broker.ClearRoleOverride(role)
 			slog.Info("[llm:recovery] restored original model routing", "role", role)
 		}()
 
@@ -173,15 +195,18 @@ func emergencyCompress(messages []Message, keepLast int) []Message {
 // isPromptTooLongError returns true when the error indicates the prompt
 // exceeded the model's maximum context length.
 func isPromptTooLongError(err error) bool {
+	// Check typed ProviderError first.
+	var pe *provider.ProviderError
+	if errors.As(err, &pe) {
+		if pe.IsPromptTooLong() {
+			return true
+		}
+	}
+	// Fallback: string-based check for non-typed errors or ambiguous status codes.
 	s := strings.ToLower(err.Error())
 	if strings.Contains(s, "prompt is too long") {
 		return true
 	}
-	// HTTP 413 Payload Too Large — some providers return this for oversized prompts.
-	if strings.Contains(s, "413") && (strings.Contains(s, "too large") || strings.Contains(s, "too long") || strings.Contains(s, "payload") || strings.Contains(s, "request entity")) {
-		return true
-	}
-	// Generic context-length errors seen across providers.
 	if strings.Contains(s, "context length") || strings.Contains(s, "maximum context") || strings.Contains(s, "token limit") {
 		return true
 	}
@@ -200,19 +225,16 @@ func defaultRecoveryConfig() RecoveryConfig {
 // isModelOverloadedError returns true when the error indicates the model is
 // temporarily unavailable due to overload or rate limiting.
 func isModelOverloadedError(err error) bool {
+	// Check typed ProviderError first.
+	var pe *provider.ProviderError
+	if errors.As(err, &pe) {
+		if pe.IsRateLimit() || pe.IsOverloaded() {
+			return true
+		}
+	}
+	// Fallback: string-based check for non-typed errors.
 	s := strings.ToLower(err.Error())
-	if strings.Contains(s, "overloaded") {
-		return true
-	}
-	if strings.Contains(s, "rate limit") || strings.Contains(s, "rate_limit") || strings.Contains(s, "ratelimit") {
-		return true
-	}
-	// HTTP 529 — Anthropic's overloaded status.
-	if strings.Contains(s, "529") {
-		return true
-	}
-	// HTTP 429 — standard rate limit status.
-	if strings.Contains(s, "429") {
+	if strings.Contains(s, "overloaded") || strings.Contains(s, "rate limit") || strings.Contains(s, "rate_limit") {
 		return true
 	}
 	return false

@@ -1,3 +1,6 @@
+// Deprecated: This file contains the legacy post-code hook implementation.
+// All callers have been migrated to the unified hook framework in internal/hook/.
+// This file is retained temporarily for reference and will be removed in a future release.
 package kernel
 
 import (

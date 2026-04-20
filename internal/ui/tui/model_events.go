@@ -62,6 +62,9 @@ func (m *Model) beginSubmit(prompt string) tea.Cmd {
 	m.changed = nil
 	m.activeToolName = ""
 	m.toolCallCount = 0
+	m.activeWorkflowID = ""
+	m.latestRun = nil
+	m.pendingCheckpointWorkflowID = ""
 	m.lastSubmittedPrompt = prompt
 	m.workflowStartedAt = time.Now()
 	// Record prompt in history for up-arrow recall.
@@ -278,6 +281,62 @@ func (m *Model) applyEvent(event model.Event) {
 						m.workers[i].Status = p.Kind // "warn" or "error" as terminal badge
 						break
 					}
+				}
+			}
+		}
+	case model.EventSearchStarted:
+		if p, ok := decodeEventPayload[model.SearchStartedPayload](event); ok {
+			m.currentStep = "search"
+			id := "search-" + p.QueryID
+			query := p.Query
+			if len(query) > 40 {
+				query = query[:40] + "…"
+			}
+			idx := -1
+			for i := range m.workers {
+				if m.workers[i].ID == id {
+					idx = i
+					break
+				}
+			}
+			if idx == -1 {
+				m.workers = append(m.workers, workerItem{ID: id, Role: "search", Step: query, Status: "running"})
+			} else {
+				m.workers[idx].Status = "running"
+				m.workers[idx].Step = query
+			}
+		}
+	case model.EventSearchFinished:
+		if p, ok := decodeEventPayload[model.SearchFinishedPayload](event); ok {
+			if m.currentStep == "search" {
+				m.currentStep = ""
+			}
+			id := "search-" + p.QueryID
+			layerSummary := strings.Join(p.Layers, "+")
+			if layerSummary == "" {
+				layerSummary = "grep"
+			}
+			step := fmt.Sprintf("%d snippets  %s", p.SnippetCount, layerSummary)
+			for i := range m.workers {
+				if m.workers[i].ID == id {
+					m.workers[i].Status = "done"
+					m.workers[i].Step = step
+					m.workers[i].DurationMS = p.DurationMs
+					m.workers[i].HasDuration = true
+					break
+				}
+			}
+		}
+	case model.EventSearchRefined:
+		if p, ok := decodeEventPayload[model.SearchRefinedPayload](event); ok {
+			id := "search-" + p.QueryID
+			step := fmt.Sprintf("refined → %d snippets", p.SnippetsAfter)
+			for i := range m.workers {
+				if m.workers[i].ID == id {
+					m.workers[i].Step = step
+					m.workers[i].DurationMS = p.DurationMs
+					m.workers[i].HasDuration = true
+					break
 				}
 			}
 		}

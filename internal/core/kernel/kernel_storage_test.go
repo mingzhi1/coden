@@ -333,3 +333,18 @@ func TestProjectMetadataForSessionUsesWorkspaceRootInMVP(t *testing.T) {
 		t.Fatalf("unexpected project root: %q", projectRoot)
 	}
 }
+
+// TestToolCtxInjectsWorkflowAndSessionIDs verifies that toolCtx() produces a
+// context that the tool runtime can read back via workflowIDFromContext and
+// sessionIDFromContext (Fix 1 — context injection).
+func TestToolCtxInjectsWorkflowAndSessionIDs(t *testing.T) {
+	ctx := toolCtx(context.Background(), "wf-123", "sess-456")
+	gotWF := toolruntime.WorkflowIDFromContext(ctx)
+	gotSess := toolruntime.SessionIDFromContext(ctx)
+	if gotWF != "wf-123" {
+		t.Errorf("workflowID = %q, want %q", gotWF, "wf-123")
+	}
+	if gotSess != "sess-456" {
+		t.Errorf("sessionID = %q, want %q", gotSess, "sess-456")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -30,7 +31,7 @@ func NewInformedAcceptor(chatter Chatter, executor toolruntime.Executor) *LLMAcc
 	return &LLMAcceptor{chatter: chatter, executor: executor}
 }
 
-func (a *LLMAcceptor) Accept(ctx context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact) (model.CheckpointResult, error) {
+func (a *LLMAcceptor) Accept(ctx context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact, tasks []model.Task) (model.CheckpointResult, error) {
 	wc := model.WorkflowContextFrom(ctx)
 	_ = wc // used for reading files below
 
@@ -109,28 +110,57 @@ func (a *LLMAcceptor) Accept(ctx context.Context, workflowID string, intent mode
 		}
 	}
 
+	// Build execution evidence section from the coder's tool results.
+	var evidenceSection string
+	if len(artifact.Evidence) > 0 {
+		evidenceSection = "\n\nCoder execution results (verified):\n" + bulletList(artifact.Evidence)
+	}
+
+	// Build task-level context so the acceptor evaluates the specific task, not the whole intent.
+	var taskSection string
+	if len(tasks) > 0 {
+		t := tasks[0]
+		taskSection = fmt.Sprintf("\n\nCurrent task: %s", t.Title)
+		if t.SuccessCmd != "" {
+			taskSection += fmt.Sprintf("\nTask verification command: %s", t.SuccessCmd)
+		}
+		if len(t.Files) > 0 {
+			taskSection += fmt.Sprintf("\nExpected files: %s", strings.Join(t.Files, ", "))
+		}
+	}
+
 	var userMsg string
 	extraContent := additionalFiles.String()
 	if artifactContent != "" {
 		userMsg = fmt.Sprintf(
-			"Goal: %s\n\nSuccess criteria:\n%s\n\nArtifact path: %s\nArtifact summary: %s\n\nArtifact content:\n```\n%s\n```%s",
+			"Goal: %s%s\n\nSuccess criteria:\n%s\n\nArtifact path: %s\nArtifact summary: %s%s\n\nArtifact content:\n```\n%s\n```%s",
 			intent.Goal,
+			taskSection,
 			bulletList(intent.SuccessCriteria),
 			artifact.Path,
 			artifact.Summary,
+			evidenceSection,
 			artifactContent,
 			extraContent,
 		)
 	} else {
 		userMsg = fmt.Sprintf(
-			"Goal: %s\n\nSuccess criteria:\n%s\n\nArtifact path: %s\nArtifact summary: %s%s",
+			"Goal: %s%s\n\nSuccess criteria:\n%s\n\nArtifact path: %s\nArtifact summary: %s%s%s",
 			intent.Goal,
+			taskSection,
 			bulletList(intent.SuccessCriteria),
 			artifact.Path,
 			artifact.Summary,
+			evidenceSection,
 			extraContent,
 		)
 	}
+
+	slog.Info("[llm:acceptor] user message built",
+		"evidence_count", len(artifact.Evidence),
+		"has_task_section", taskSection != "",
+		"artifact_path", artifact.Path,
+		"user_msg_len", len(userMsg))
 
 	reply, err := RecoverableChat(ctx, a.chatter, RoleAcceptor, []Message{
 		{Role: "system", Content: systemPrompt},

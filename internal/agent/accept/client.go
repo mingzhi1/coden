@@ -15,6 +15,7 @@ import (
 type acceptInput struct {
 	Intent   model.IntentSpec `json:"intent"`
 	Artifact model.Artifact   `json:"artifact"`
+	Tasks    []model.Task     `json:"tasks,omitempty"`
 }
 
 // RPCAcceptor is a workflow acceptor backed by a JSON-RPC worker.
@@ -36,8 +37,8 @@ func (a *RPCAcceptor) Describe(ctx context.Context) (protocol.WorkerDescribeResu
 	return a.client.DescribeWorker(ctx)
 }
 
-func (a *RPCAcceptor) Accept(ctx context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact) (model.CheckpointResult, error) {
-	input, err := protocol.MarshalRaw(acceptInput{Intent: intent, Artifact: artifact})
+func (a *RPCAcceptor) Accept(ctx context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact, tasks []model.Task) (model.CheckpointResult, error) {
+	input, err := protocol.MarshalRaw(acceptInput{Intent: intent, Artifact: artifact, Tasks: tasks})
 	if err != nil {
 		return model.CheckpointResult{}, err
 	}
