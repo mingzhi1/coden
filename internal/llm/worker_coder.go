@@ -15,6 +15,7 @@ import (
 	"github.com/mingzhi1/coden/internal/llm/prompts"
 	"github.com/mingzhi1/coden/internal/llm/provider"
 	"github.com/mingzhi1/coden/internal/llm/tokenbudget"
+	"github.com/mingzhi1/coden/internal/outputcompressor"
 )
 
 // LLMCoder uses an LLM to generate a structured tool plan.
@@ -24,9 +25,10 @@ import (
 // Mutation calls (write_file, edit_file, run_shell) are collected and
 // returned in the final CodePlan for the kernel to execute.
 type LLMCoder struct {
-	chatter  Chatter
-	executor toolruntime.Executor // optional; enables agentic read loop
-	deps     *CoderDeps           // optional; nil = use production defaults
+	chatter          Chatter
+	executor         toolruntime.Executor // optional; enables agentic read loop
+	deps             *CoderDeps           // optional; nil = use production defaults
+	outputCompressor *outputcompressor.Compressor
 	msgBuffer
 }
 
@@ -38,12 +40,12 @@ const (
 )
 
 func NewLLMCoder(chatter Chatter) *LLMCoder {
-	return &LLMCoder{chatter: chatter}
+	return &LLMCoder{chatter: chatter, outputCompressor: outputcompressor.New()}
 }
 
 // NewAgenticCoder creates a coder with tool-use loop capability.
 func NewAgenticCoder(chatter Chatter, executor toolruntime.Executor) *LLMCoder {
-	return &LLMCoder{chatter: chatter, executor: executor}
+	return &LLMCoder{chatter: chatter, executor: executor, outputCompressor: outputcompressor.New()}
 }
 
 // SetDeps overrides the I/O dependencies used by the agentic loop.
@@ -264,7 +266,7 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 		// Execute reads and mutations immediately; feed all results back to LLM.
 		var resultSummary strings.Builder
 
-		resultSummary.WriteString(executeReadsParallel(ctx, c.executor, reads, readBudgetChars, round+1, c.push))
+		resultSummary.WriteString(executeReadsParallel(ctx, c.executor, reads, readBudgetChars, round+1, c.push, c.outputCompressor))
 
 		for _, call := range mutations {
 			slog.Info("[llm:coder] executing mutation tool call", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call))
@@ -283,7 +285,7 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 			call.Executed = true
 			call.ExecResult = result
 			allMutations = append(allMutations, call)
-			resultSummary.WriteString(mutationResultLine(call, result))
+			resultSummary.WriteString(mutationResultLine(call, result, c.outputCompressor))
 			slog.Info("[llm:coder] mutation tool call completed", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call), "summary", result.Summary)
 			c.push("info", "coder", fmt.Sprintf("round %d: %s %s → %s",
 				round+1, call.Request.Kind, toolCallTarget(call), result.Summary))
@@ -322,7 +324,7 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 // the same order as the input slice so that LLM feedback is deterministic.
 // If an individual read fails, a warning is logged and an error entry is
 // included in the output — other reads are not affected.
-func executeReadsParallel(ctx context.Context, executor toolruntime.Executor, reads []workflow.ToolCall, readBudgetChars int, round int, pushFn func(string, string, string)) string {
+func executeReadsParallel(ctx context.Context, executor toolruntime.Executor, reads []workflow.ToolCall, readBudgetChars int, round int, pushFn func(string, string, string), oc *outputcompressor.Compressor) string {
 	if len(reads) == 0 {
 		return ""
 	}
@@ -354,9 +356,9 @@ func executeReadsParallel(ctx context.Context, executor toolruntime.Executor, re
 					"\n### %s %s\nResult spilled to disk (%d bytes). Preview (first lines):\n%s\nUse read_file to access specific sections if needed.\n",
 					call.Request.Kind, toolCallTarget(call), len(result.Output), result.Preview)
 			} else {
-				// M8-07: Truncate read output to fit within per-call budget.
+				// M8-07: Compress read output to fit within per-call budget.
 				results[i] = fmt.Sprintf("\n### %s %s\n%s\n",
-					call.Request.Kind, toolCallTarget(call), truncateOutput(result.Output, readBudgetChars))
+					call.Request.Kind, toolCallTarget(call), oc.Compress(call.Request.Kind, "", result.Output, readBudgetChars, ""))
 			}
 			slog.Info("[llm:coder] read tool call completed", "round", round, "kind", call.Request.Kind, "target", toolCallTarget(call), "output_len", len(result.Output), "spilled", result.SpilledPath != "")
 			pushFn("info", "coder", fmt.Sprintf("round %d: %s %s → %s",
@@ -495,7 +497,7 @@ func splitToolCalls(calls []workflow.ToolCall) (reads, mutations []workflow.Tool
 }
 
 // mutationResultLine formats a successful mutation result for LLM feedback.
-func mutationResultLine(call workflow.ToolCall, result toolruntime.Result) string {
+func mutationResultLine(call workflow.ToolCall, result toolruntime.Result, oc *outputcompressor.Compressor) string {
 	target := toolCallTarget(call)
 	switch call.Request.Kind {
 	case "write_file":
@@ -504,9 +506,10 @@ func mutationResultLine(call workflow.ToolCall, result toolruntime.Result) strin
 	case "edit_file":
 		return fmt.Sprintf("\n### edit_file %s\n%s\n", target, result.Summary)
 	case "run_shell":
-		output := truncateOutput(result.Output, 2000)
+		ec := string(result.ErrorClass)
+		output := oc.Compress("run_shell", call.Request.Command, result.Output, 2000, ec)
 		if result.Stderr != "" {
-			output += "\nstderr: " + truncateOutput(result.Stderr, 1000)
+			output += "\nstderr: " + oc.Compress("run_shell", call.Request.Command, result.Stderr, 1000, ec)
 		}
 		return fmt.Sprintf("\n### run_shell (exit %d)\n%s\n", result.ExitCode, output)
 	default:

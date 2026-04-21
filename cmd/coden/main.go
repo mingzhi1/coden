@@ -523,6 +523,10 @@ func newKernel(ctx context.Context, workspaceRoot, stateDBPath string, opts laun
 		// Critic reviews plan before execution for structural anti-narcissism.
 		k.SetCritic(llm.NewLLMCritic(chatter))
 	}
+	// SA-10: Wire optional Searcher dependency from the launcher.
+	if deps.Searcher != nil {
+		k.SetSearcher(deps.Searcher)
+	}
 	if deps.MCPToolPrompt != "" {
 		k.SetMCPToolPrompt(deps.MCPToolPrompt)
 	}

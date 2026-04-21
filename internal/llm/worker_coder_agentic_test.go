@@ -5,7 +5,10 @@ import (
 
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
 	"github.com/mingzhi1/coden/internal/core/workflow"
+	"github.com/mingzhi1/coden/internal/outputcompressor"
 )
+
+var testOutputCompressor = outputcompressor.New()
 
 // TestMutationResultLine_WriteFile verifies the write_file feedback format.
 func TestMutationResultLine_WriteFile(t *testing.T) {
@@ -19,7 +22,7 @@ func TestMutationResultLine_WriteFile(t *testing.T) {
 		After:   "hello world\n",
 		Summary: "wrote artifact to artifacts/out.md",
 	}
-	got := mutationResultLine(call, result)
+	got := mutationResultLine(call, result, testOutputCompressor)
 	for _, want := range []string{"write_file", "artifacts/out.md", "written", "12 bytes"} {
 		if !containsStr(got, want) {
 			t.Errorf("mutationResultLine WriteFile: want %q in %q", want, got)
@@ -38,7 +41,7 @@ func TestMutationResultLine_EditFile(t *testing.T) {
 	result := toolruntime.Result{
 		Summary: "edited internal/foo.go (replaced 10 chars)",
 	}
-	got := mutationResultLine(call, result)
+	got := mutationResultLine(call, result, testOutputCompressor)
 	for _, want := range []string{"edit_file", "internal/foo.go", "replaced"} {
 		if !containsStr(got, want) {
 			t.Errorf("mutationResultLine EditFile: want %q in %q", want, got)
@@ -61,7 +64,7 @@ func TestMutationResultLine_RunShell(t *testing.T) {
 		ExitCode: 0,
 		Summary:  "executed shell command",
 	}
-	got := mutationResultLine(call, result)
+	got := mutationResultLine(call, result, testOutputCompressor)
 	for _, want := range []string{"run_shell", "exit 0", "build output here", "stderr", "some warning"} {
 		if !containsStr(got, want) {
 			t.Errorf("mutationResultLine RunShell: want %q in %q", want, got)
@@ -81,7 +84,7 @@ func TestMutationResultLine_RunShellNonZeroExit(t *testing.T) {
 		Output:   "FAIL",
 		ExitCode: 1,
 	}
-	got := mutationResultLine(call, result)
+	got := mutationResultLine(call, result, testOutputCompressor)
 	if !containsStr(got, "exit 1") {
 		t.Errorf("expected 'exit 1' in run_shell result, got %q", got)
 	}

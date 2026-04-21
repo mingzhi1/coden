@@ -103,18 +103,18 @@ Clients: TUI / CLI / Web
 全系统统一使用 **JSON-RPC 2.0**，只有两个合法 RPC 方向：
 
 ```
-TUI / CLI / Web
-    │  Pattern A: client → kernel
-    │  session.attach · workflow.submit · event.subscribe
-    v
-┌─────────────────────────────────────┐
-│           coden-kernel              │  ← 唯一状态写入者
-│  (Session · Turn · Task · Event Bus)│
-└──────────────┬──────────────────────┘
-               │  Pattern B: kernel → worker / tool
-               │  worker.execute · tool.exec · tool.cancel
-    ┌──────────┼──────────────────────┐
-    v          v                      v
+                    TUI / CLI / Web
+                        │  Pattern A: client → kernel
+                        │  session.attach · workflow.submit · event.subscribe
+                        v
+         ┌─────────────────────────────────────┐
+         │           coden-kernel              │  ← 唯一状态写入者
+         │  (Session · Turn · Task · Event Bus)│
+         └──────────────┬──────────────────────┘
+                        │  Pattern B: kernel → worker / tool
+                        │  worker.execute · tool.exec · tool.cancel
+    ┌───────────────────┼─────────────┐
+    v                   v             v
 coden-agent-plan   coden-agent-code   coden-agent-accept
                         │
                ┌────────┼────────┐

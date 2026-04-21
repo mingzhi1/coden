@@ -88,5 +88,6 @@ type WorkerExecuteResult struct {
 	Artifacts     []ArtifactRef        `json:"artifacts,omitempty"`
 	Intent        *IntentProposal      `json:"intent,omitempty"`
 	Checkpoint    *CheckpointProposal  `json:"checkpoint,omitempty"`
+	Discovery     json.RawMessage      `json:"discovery,omitempty"` // SA-10: searcher worker output (model.DiscoveryContext JSON)
 	Metadata      *WorkerExecutionMeta `json:"metadata,omitempty"`
 }

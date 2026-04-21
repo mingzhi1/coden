@@ -12,6 +12,7 @@ import (
 	"github.com/mingzhi1/coden/internal/agent/code"
 	"github.com/mingzhi1/coden/internal/agent/input"
 	"github.com/mingzhi1/coden/internal/agent/plan"
+	"github.com/mingzhi1/coden/internal/agent/search"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
 	"github.com/mingzhi1/coden/internal/core/workflow"
 	"github.com/mingzhi1/coden/internal/core/workspace"
@@ -30,14 +31,20 @@ type CoderFactory func(ctx context.Context, moduleRoot string) (workflow.Coder, 
 type AcceptorFactory func(ctx context.Context, moduleRoot string) (workflow.Acceptor, func(), error)
 type ExecutorFactory func(ctx context.Context, moduleRoot, workspaceRoot string) (toolruntime.Executor, func(), error)
 
+// SearcherFactory builds a workflow.Searcher (SA-10).  Returning a nil
+// searcher is valid and indicates that the kernel should fall back to its
+// built-in LocalSearcher.
+type SearcherFactory func(ctx context.Context, moduleRoot, workspaceRoot string) (workflow.Searcher, func(), error)
+
 type Registry struct {
 	Inputs    map[string]InputterFactory
 	Planners  map[string]PlannerFactory
 	Coders    map[string]CoderFactory
 	Acceptors map[string]AcceptorFactory
 	Executors map[string]ExecutorFactory
-	broker    *llm.Broker // shared across all LLM workers (may be nil in server mode)
-	chatter   llm.Chatter // LLM backend: *Broker or *LLMServerClient
+	Searchers map[string]SearcherFactory // SA-10: optional Search worker factories
+	broker    *llm.Broker                // shared across all LLM workers (may be nil in server mode)
+	chatter   llm.Chatter                // LLM backend: *Broker or *LLMServerClient
 }
 
 // Pool returns the shared LLM pool (underlying the broker).
@@ -66,7 +73,8 @@ type Options struct {
 	Coder         string
 	Acceptor      string
 	Executor      string
-	Agentic       bool // enable multi-turn agentic loop for coder
+	Searcher      string // SA-10: "" (skip), "loopback", or "process"
+	Agentic       bool   // enable multi-turn agentic loop for coder
 }
 
 type Dependencies struct {
@@ -75,7 +83,8 @@ type Dependencies struct {
 	Coder         workflow.Coder
 	Acceptor      workflow.Acceptor
 	Executor      toolruntime.Executor
-	MCPToolPrompt string // formatted MCP tool descriptions for Coder prompt
+	Searcher      workflow.Searcher // SA-10: optional; nil means kernel falls back to LocalSearcher
+	MCPToolPrompt string            // formatted MCP tool descriptions for Coder prompt
 }
 
 func Default() Registry {
@@ -109,6 +118,7 @@ func Default() Registry {
 			"process":  newProcessToolExecutorFactory,
 			"loopback": writefile.NewLoopbackRPCExecutorAdapter,
 		},
+		Searchers: defaultSearcherFactories(),
 		broker:  broker,
 		chatter: broker,
 	}
@@ -146,6 +156,7 @@ func DefaultWithServer(addr string) Registry {
 			"process":  newProcessToolExecutorFactory,
 			"loopback": writefile.NewLoopbackRPCExecutorAdapter,
 		},
+		Searchers: defaultSearcherFactories(),
 		chatter: client,
 	}
 }
@@ -181,6 +192,7 @@ func DefaultWithOverride(providerName, modelName string) Registry {
 		Executors: map[string]ExecutorFactory{
 			"process": newProcessToolExecutorFactory, "loopback": writefile.NewLoopbackRPCExecutorAdapter,
 		},
+		Searchers: defaultSearcherFactories(),
 		broker:  broker,
 		chatter: broker,
 	}
@@ -303,7 +315,48 @@ func (r Registry) Start(ctx context.Context, opts Options) (Dependencies, func()
 		deps.Executor = executor
 	}
 
+	// SA-10: Searcher is optional. Empty string skips, leaving the kernel to
+	// fall back to its built-in LocalSearcher.
+	if opts.Searcher != "" {
+		searcherFactory, ok := r.Searchers[opts.Searcher]
+		if !ok {
+			cleanup()
+			return Dependencies{}, func() {}, fmt.Errorf("unknown searcher launcher: %s", opts.Searcher)
+		}
+		searcher, searcherCleanup, err := searcherFactory(ctx, opts.ModuleRoot, opts.WorkspaceRoot)
+		if err != nil {
+			cleanup()
+			return Dependencies{}, func() {}, err
+		}
+		cleanups = append(cleanups, searcherCleanup)
+		deps.Searcher = searcher
+	}
+
 	return deps, cleanup, nil
+}
+
+// defaultSearcherFactories returns the built-in SearcherFactory map shared by
+// every Registry constructor. The "loopback" entry wraps a kernel-free
+// WorkspaceSearcher in an in-memory RPC pipe; "process" launches the
+// coden-agent-search subprocess.
+func defaultSearcherFactories() map[string]SearcherFactory {
+	return map[string]SearcherFactory{
+		"loopback": func(ctx context.Context, _, workspaceRoot string) (workflow.Searcher, func(), error) {
+			if workspaceRoot == "" {
+				return nil, func() {}, fmt.Errorf("loopback searcher requires workspaceRoot")
+			}
+			ws := workspace.New(workspaceRoot)
+			rt, err := toolruntime.NewWithConfig(ws, workspaceRoot)
+			if err != nil {
+				rt = toolruntime.New(ws)
+			}
+			ws2 := search.NewWorkspaceSearcher(ws, rt, "loopback")
+			return search.NewLoopbackRPCSearcher(ctx, ws2)
+		},
+		"process": func(ctx context.Context, moduleRoot, workspaceRoot string) (workflow.Searcher, func(), error) {
+			return search.NewProcessRPCSearcher(ctx, moduleRoot, workspaceRoot)
+		},
+	}
 }
 
 // --- LLM factory helpers ---
