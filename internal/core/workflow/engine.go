@@ -16,6 +16,7 @@ type Engine struct {
 	coder     Coder
 	acceptor  Acceptor
 	responder Responder
+	analyzer  Analyzer
 }
 
 func New(planner Planner, coder Coder, acceptor ...Acceptor) *Engine {
@@ -49,6 +50,17 @@ func (e *Engine) SetCritic(c Critic) { e.critic = c }
 func (e *Engine) SetReplanner(r Replanner) { e.replanner = r }
 
 func (e *Engine) SetResponder(r Responder) { e.responder = r }
+
+func (e *Engine) SetAnalyzer(a Analyzer) { e.analyzer = a }
+
+// Analyzer returns the configured Analyzer, falling back to LocalAnalyzer when
+// none is wired (offline/loopback mode).
+func (e *Engine) Analyzer() Analyzer {
+	if e.analyzer == nil {
+		return NewLocalAnalyzer()
+	}
+	return e.analyzer
+}
 
 // Responder returns the configured Responder, falling back to LocalResponder
 // (deterministic summary) when none is wired.

@@ -306,6 +306,63 @@ Rules:
 - Match the user's language.`
 }
 
+// Analyzer returns the system prompt for the Analyzer — the read-only code
+// investigator used for analyze intents (code review, architecture
+// understanding, diagnosis). It reads code through tools but NEVER modifies it,
+// and produces its findings as prose. toolsPrompt is the dynamic tool inventory
+// (same as the Coder); when empty the default read-only tool list is used.
+func Analyzer(toolsPrompt string) string {
+	tools := toolsPrompt
+	if tools == "" {
+		tools = defaultAnalyzerTools()
+	}
+	return `You are a senior engineer performing READ-ONLY code analysis inside a workspace.
+Your job is to investigate the code and answer the user's analytical question
+(how something works, where a bug is, an architecture review, a diagnosis).
+
+You operate in an agentic loop (max 5 rounds). To investigate, reply with a JSON
+object requesting read-only tools:
+
+{
+  "tool_calls": [
+    {"kind": "<one of the read tools below>", "...": "<tool-specific fields>"}
+  ]
+}
+
+` + tools + `
+
+# Rules
+- READ-ONLY: you must NEVER write, edit, or run shell commands that modify state.
+  Only use read tools. Any mutation request will be refused and not executed.
+- Investigate before concluding: read the relevant files and search for the
+  symbols/patterns that matter. Do not guess about code you have not read.
+- Paths must be workspace-relative (e.g. "calc.go", NOT "workspace/calc.go").
+- Emit only the tool calls you need this round (1-10). Discover, then refine.
+- When you have gathered enough to answer, STOP issuing tool calls and reply with
+  your analysis as PLAIN PROSE (NOT JSON). That prose is the final answer shown
+  to the user.
+
+# Writing the analysis
+- Be specific and cite concrete evidence: file paths, function names, line refs.
+- Lead with the direct answer/diagnosis, then the supporting reasoning.
+- If you could not determine something, say so plainly — do not fabricate.
+- Match the user's language. No tool_calls, no JSON in the final answer.`
+}
+
+// defaultAnalyzerTools returns the read-only tool list used when no dynamic
+// inventory is provided. It is intentionally a subset of the coder tools — no
+// write_file/edit_file/run_shell.
+func defaultAnalyzerTools() string {
+	return `Available read-only tools and their required fields:
+- read_file: {"kind": "read_file", "path": "<workspace-relative path>"}
+- search: {"kind": "search", "dir": "<directory>", "query": "<search text>", "is_regex": <bool, optional>}
+- list_dir: {"kind": "list_dir", "dir": "<directory>"}
+- tool_search: {"kind": "tool_search", "query": "<describe what you want to do>"} — discover read-only navigation tools (LSP definition/references, symbol lists, semantic search, context grep)
+- read_artifact: {"kind": "read_artifact", "path": "<artifact ID>"} — read a previously saved tool result
+
+`
+}
+
 // Critic returns the system prompt for the Plan Critic worker (LLMCritic).
 // The Critic reviews a task plan for gaps, risks, and logical issues
 // BEFORE execution begins, catching problems that Acceptor would only detect post-hoc.

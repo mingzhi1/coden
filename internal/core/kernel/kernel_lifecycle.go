@@ -138,6 +138,12 @@ func (k *Kernel) SetResponder(r workflow.Responder) {
 	k.workflow.SetResponder(r)
 }
 
+// SetAnalyzer configures the Analyzer — the read-only investigator used for
+// analyze intents (Intent → Discovery → Analyzer → Responder).
+func (k *Kernel) SetAnalyzer(a workflow.Analyzer) {
+	k.workflow.SetAnalyzer(a)
+}
+
 // Start 执行一次性启动任务：
 //   - L4-08: 扫描孤儿 turns（状态=running）并标记为 "crashed"
 //

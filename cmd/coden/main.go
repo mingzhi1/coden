@@ -534,6 +534,9 @@ func newKernel(ctx context.Context, workspaceRoot, stateDBPath string, opts laun
 		k.SetCritic(llm.NewLLMCritic(chatter))
 		// Responder synthesizes the final user-facing reply (Light tier).
 		k.SetResponder(llm.NewLLMResponder(chatter))
+		// Analyzer performs read-only code investigation for analyze intents
+		// (Strong tier); shares the kernel's tool executor for its read loop.
+		k.SetAnalyzer(llm.NewLLMAnalyzer(chatter, deps.Executor))
 	}
 	// SA-10: Wire optional Searcher dependency from the launcher.
 	if deps.Searcher != nil {

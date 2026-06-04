@@ -222,12 +222,22 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	}
 
 	// Intent-adaptive routing — single source of truth: pipelinePolicy / policyForKind.
-	// Paths with no Plan stage (direct-answer kinds and read-only analyze) take the
-	// lightweight path: optional code investigation (Coder mode per policy) → Responder.
-	// analyze sets CoderMode=ReadOnly so the Coder reads code but never modifies it,
-	// fixing "I asked to analyze and it started changing files".
+	// Every path closes with the Responder.
 	policy := policyForKind(intentSpec.Kind)
+	if policy.Analyzer {
+		// analyze: read-only investigation via the Analyzer — reads code, never
+		// modifies it (fixing "I asked to analyze and it started changing files").
+		ctx = model.WithWorkflowContext(ctx, wfCtx)
+		k.emitTasksUpdated(sessionID, workflowID, []model.Task{{
+			ID:     "analyze",
+			Title:  intentSpec.Goal,
+			Status: model.TaskStatusCoding,
+		}})
+		k.runAnalyzeWorkflow(ctx, sessionID, workflowID, intentSpec)
+		return
+	}
 	if !policy.Plan {
+		// Direct answer (greeting / question / chat): Intent → Responder.
 		wfCtx.CoderMode = policy.CoderMode
 		ctx = model.WithWorkflowContext(ctx, wfCtx)
 		k.emitTasksUpdated(sessionID, workflowID, []model.Task{{

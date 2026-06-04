@@ -20,6 +20,7 @@ const (
 	RoleAcceptor  = "acceptor"
 	RoleReplanner = "replanner"
 	RoleResponder = "responder" // final user-facing response; Light tier (not in strongRoles)
+	RoleAnalyzer  = "analyzer"  // read-only code investigation & diagnosis; Strong tier
 )
 
 // strongRoles identifies which roles default to the primary (strong) pool tier.
@@ -29,6 +30,7 @@ var strongRoles = map[string]bool{
 	RoleCritic:    true, // cross-reviews the plan (anti-narcissism)
 	RoleAcceptor:  true, // decides whether the build is correct
 	RoleReplanner: true, // revises the plan based on critic + discovery
+	RoleAnalyzer:  true, // diagnoses code (analyze intent) — quality matters
 }
 
 // shortReplyRoles are free-text roles whose legitimate output is often shorter
