@@ -58,38 +58,11 @@ func (app *AppModel) renderAppAlertBox(width int) string {
 		"",
 	}
 
-	// Compute selectable indices for cursor rendering
-	var selectable []int
-	for i, item := range app.appAlert.items {
-		if strings.TrimSpace(item.action) != "" {
-			selectable = append(selectable, i)
-		}
-	}
-	selectedItem := -1
-	if len(selectable) > 0 {
-		cursor := clamp(app.appAlert.cursor, 0, len(selectable)-1)
-		selectedItem = selectable[cursor]
-	}
-
-	for idx, item := range app.appAlert.items {
-		selected := idx == selectedItem
-		switch item.kind {
-		case "section":
-			bodyLines = append(bodyLines, styles.MutedText.Render("── "+item.text+" ──"))
-		case "spacer":
-			bodyLines = append(bodyLines, "")
-		case "kv":
-			bodyLines = append(bodyLines, styles.MutedText.Render(item.text))
-		case "action":
-			if selected {
-				bodyLines = append(bodyLines, styles.PrimaryText.Bold(true).Render("▶ "+item.text))
-			} else {
-				bodyLines = append(bodyLines, "  "+item.text)
-			}
-		default:
-			bodyLines = append(bodyLines, item.text)
-		}
-	}
+	// Render via the shared overlay helpers so the app-level overlay shares one
+	// visual language and one navigation rule with the model-level overlays
+	// (overlay_action_spec §23).
+	selectedItem := selectedOverlayIndex(app.appAlert.items, app.appAlert.cursor)
+	bodyLines = append(bodyLines, renderOverlayItemLines(app.appAlert.items, selectedItem)...)
 
 	footer := app.appAlert.footer
 	if strings.TrimSpace(footer) == "" {

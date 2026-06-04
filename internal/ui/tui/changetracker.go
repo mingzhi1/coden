@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -70,6 +71,51 @@ func (m *Model) removeChangedPlaceholder(toolCallID string) {
 	if m.changedSel >= idx && m.changedSel > 0 {
 		m.changedSel--
 	}
+}
+
+func (m *Model) upsertCheckpointEvidence(cp model.CheckpointResult) {
+	if len(cp.Evidence) == 0 && strings.TrimSpace(cp.FixGuidance) == "" {
+		return
+	}
+	var detail strings.Builder
+	for i, ev := range cp.Evidence {
+		ev = strings.TrimSpace(ev)
+		if ev == "" {
+			continue
+		}
+		detail.WriteString(fmt.Sprintf("%d. %s\n", i+1, ev))
+	}
+	if guidance := strings.TrimSpace(cp.FixGuidance); guidance != "" {
+		if detail.Len() > 0 {
+			detail.WriteString("\n")
+		}
+		detail.WriteString("Fix guidance:\n")
+		detail.WriteString(guidance)
+	}
+	summary := fmt.Sprintf("checkpoint %s", cp.Status)
+	if len(cp.ArtifactPaths) > 0 {
+		summary += fmt.Sprintf("  artifacts=%d", len(cp.ArtifactPaths))
+	}
+	if len(cp.Evidence) > 0 {
+		summary += fmt.Sprintf("  evidence=%d", len(cp.Evidence))
+	}
+	item := changeItem{
+		Name:    "checkpoint",
+		Status:  cp.Status,
+		Summary: summary,
+		Detail:  strings.TrimSpace(detail.String()),
+		Count:   1,
+		Tool:    "checkpoint",
+	}
+	for i := range m.changed {
+		if m.changed[i].Tool == "checkpoint" && m.changed[i].Name == "checkpoint" {
+			m.changed[i] = item
+			return
+		}
+	}
+	m.changed = append([]changeItem{item}, m.changed...)
+	m.changedSel = 0
+	m.changedDetailScroll = 0
 }
 
 func (m *Model) rememberWorkspaceEchoSuppression(workflowID, path string) {

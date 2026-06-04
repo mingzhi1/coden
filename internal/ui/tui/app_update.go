@@ -237,12 +237,7 @@ func (app *AppModel) moveAppOverlayCursor(delta int) {
 	if app.appAlert == nil {
 		return
 	}
-	var indices []int
-	for i, item := range app.appAlert.items {
-		if strings.TrimSpace(item.action) != "" {
-			indices = append(indices, i)
-		}
-	}
+	indices := overlaySelectableIndexList(app.appAlert.items)
 	if len(indices) == 0 {
 		return
 	}
@@ -254,17 +249,18 @@ func (app *AppModel) activateAppOverlayAction() tea.Cmd {
 	if app.appAlert == nil {
 		return nil
 	}
-	var indices []int
-	for i, item := range app.appAlert.items {
-		if strings.TrimSpace(item.action) != "" {
-			indices = append(indices, i)
-		}
-	}
+	indices := overlaySelectableIndexList(app.appAlert.items)
 	if len(indices) == 0 || app.appAlert.cursor >= len(indices) {
 		app.appAlert = nil
 		return nil
 	}
-	action := app.appAlert.items[indices[app.appAlert.cursor]].action
+	selected := app.appAlert.items[indices[app.appAlert.cursor]]
+	// disabled item: surface "unavailable" feedback, keep overlay open (spec §55/§189).
+	if selected.kind == "disabled" {
+		app.appAlert.footer = "not available in this session — restart with CLI/env flags to enable"
+		return nil
+	}
+	action := selected.action
 	app.appAlert = nil
 
 	if strings.HasPrefix(action, "switch_session:") {

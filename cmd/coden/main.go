@@ -22,9 +22,9 @@ import (
 	"github.com/mingzhi1/coden/internal/core/board"
 	"github.com/mingzhi1/coden/internal/core/events"
 	"github.com/mingzhi1/coden/internal/core/kernel"
-	"github.com/mingzhi1/coden/internal/hook"
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/storagepath"
+	"github.com/mingzhi1/coden/internal/hook"
 	"github.com/mingzhi1/coden/internal/launcher"
 	"github.com/mingzhi1/coden/internal/llm"
 	rpcclient "github.com/mingzhi1/coden/internal/rpc/client"
@@ -255,7 +255,7 @@ func run(args []string) error {
 	if broker != nil && needsLLM(opts) && !broker.IsConfigured() {
 		return fmt.Errorf(
 			"LLM is required but not configured.\n"+
-				"\tSet one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, MINIMAX_API_KEY, or GITHUB_COPILOT_TOKEN\n"+
+				"\tSet one of: CODEN_ACP_COMMAND, OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, MINIMAX_API_KEY, or GITHUB_COPILOT_TOKEN\n"+
 				"\tCurrent pool status: %s",
 			broker.Summary(),
 		)

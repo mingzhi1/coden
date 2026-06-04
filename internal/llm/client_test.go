@@ -120,6 +120,22 @@ func TestDefaultPoolCreation(t *testing.T) {
 	_ = pool.Summary()
 }
 
+func TestDefaultPoolIncludesACPFromEnv(t *testing.T) {
+	t.Setenv("CODEN_ACP_COMMAND", "npx @agentclientprotocol/claude-agent-acp")
+	t.Setenv("CODEN_ACP_NAME", "claude-local")
+
+	pool := llm.DefaultPool()
+	if !pool.IsConfigured() {
+		t.Fatal("expected ACP env provider to configure pool")
+	}
+	if got := pool.Provider(); got != "claude-local" {
+		t.Fatalf("expected claude-local provider, got %s", got)
+	}
+	if got := pool.LightModel(); got == "" {
+		t.Fatal("expected light model fallback/provider to be configured")
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
 }

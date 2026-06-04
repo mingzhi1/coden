@@ -32,6 +32,7 @@ type RPCError struct {
 
 // InitParams for the "initialize" call.
 type InitParams struct {
+	ProtocolVersion    int         `json:"protocolVersion"`
 	ClientInfo         ClientInfo  `json:"clientInfo"`
 	ClientCapabilities interface{} `json:"clientCapabilities,omitempty"`
 }
@@ -73,7 +74,7 @@ type ContentBlock struct {
 
 // Notification represents a parsed ACP async notification.
 type Notification struct {
-	Type          string         // "sessionUpdate" | "promptResponse"
+	Type          string // "sessionUpdate" | "promptResponse"
 	SessionUpdate *SessionUpdate
 	StopReason    string
 	Usage         *Usage

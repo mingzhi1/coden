@@ -325,13 +325,7 @@ func (m *Model) overlaySelectableIndices() []int {
 	if m.alert == nil || len(m.alert.items) == 0 {
 		return nil
 	}
-	indices := make([]int, 0, len(m.alert.items))
-	for i, item := range m.alert.items {
-		if strings.TrimSpace(item.action) != "" {
-			indices = append(indices, i)
-		}
-	}
-	return indices
+	return overlaySelectableIndexList(m.alert.items)
 }
 
 func (m *Model) clampOverlayCursor() {
@@ -419,10 +413,14 @@ func (m *Model) activateOverlayAction() tea.Cmd {
 	return nil
 }
 
-// showUnavailableFeedback 在浮层底部显示 temporarily unavailable 提示
+// showUnavailableFeedback 在浮层底部显示 unavailable 提示。
+// Per overlay_action_spec §55/§189/§260: focusing a `disabled` item and pressing
+// Enter must give explicit feedback rather than silently doing nothing. We keep
+// the wording generic so it reads correctly across overlays (Permission Required,
+// Model / Config, …) regardless of whether they carry a REASON section.
 func (m *Model) showUnavailableFeedback() {
 	if m.alert == nil {
 		return
 	}
-	m.alert.footer = "unavailable in current session — see REASON section above"
+	m.alert.footer = "not available in this session — restart with CLI/env flags to enable"
 }

@@ -126,7 +126,8 @@ func (c *Conn) dispatchNotification(method string, params json.RawMessage) {
 
 func (c *Conn) initialize(ctx context.Context, clientName, clientVersion string) error {
 	_, err := c.Call(ctx, "initialize", InitParams{
-		ClientInfo: ClientInfo{Name: clientName, Version: clientVersion},
+		ProtocolVersion: 1,
+		ClientInfo:      ClientInfo{Name: clientName, Version: clientVersion},
 	})
 	return err
 }

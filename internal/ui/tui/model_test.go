@@ -56,8 +56,8 @@ func TestModelInitialViewIncludesPanelsAndInput(t *testing.T) {
 		"demo-session",
 		"Chat",
 		"Input",
-		"Workers + Tasks",
-		"Changed Code",
+		"Workflow",
+		"Inspect",
 		"input> bootstrap CodeN",
 	} {
 		if !strings.Contains(view, want) {
@@ -206,6 +206,46 @@ func TestModelDoesNotOpenRuntimeConfigOverlayWhileTyping(t *testing.T) {
 	}
 	if !strings.Contains(m.ti.Value(), "c") {
 		t.Fatalf("expected typed character to reach textarea, got %q", m.ti.Value())
+	}
+}
+
+// Per docs/modules/tui/overlay_action_spec.md §246/§371: the overlay cursor must
+// stop on `disabled` items (not just `action` items), and §55/§189/§260: pressing
+// Enter on a disabled item must surface explicit feedback without dismissing the
+// overlay or silently doing nothing. This guards against regressing steps 2+3 of
+// the spec's "最小实现建议" back into dead code.
+func TestOverlayDisabledItemIsSelectableAndGivesFeedback(t *testing.T) {
+	m := NewModel("demo-session", "")
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 28})
+	m.alert = &alertState{
+		level: "info",
+		title: "Model / Config",
+		items: []overlayItem{
+			{kind: "section", text: "AVAILABLE NOW"},
+			{kind: "action", text: "[do] dismiss overlay", action: "dismiss"},
+			{kind: "disabled", text: "[unavailable] switch model at runtime"},
+		},
+	}
+
+	// disabled must be focusable alongside action (action + disabled = 2).
+	if indices := m.overlaySelectableIndices(); len(indices) != 2 {
+		t.Fatalf("expected 2 selectable items (action+disabled), got %d: %v", len(indices), indices)
+	}
+
+	// Move cursor from the action onto the disabled item.
+	m.moveOverlayCursor(1)
+	if got := m.selectedOverlayItemKind(); got != "disabled" {
+		t.Fatalf("expected cursor on disabled item, got %q", got)
+	}
+
+	// Enter on disabled: overlay stays open and footer shows unavailable feedback.
+	next, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = next.(*Model)
+	if m.alert == nil {
+		t.Fatalf("expected overlay to remain open after Enter on disabled item")
+	}
+	if !strings.Contains(m.alert.footer, "not available") {
+		t.Fatalf("expected unavailable feedback in footer, got %q", m.alert.footer)
 	}
 }
 

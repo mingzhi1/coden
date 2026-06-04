@@ -130,6 +130,19 @@ func TestRegistryStartCleansUpOnFailure(t *testing.T) {
 	}
 }
 
+func TestDefaultOptionsTreatsACPCommandAsLLM(t *testing.T) {
+	t.Setenv("CODEN_ACP_COMMAND", "npx @agentclientprotocol/claude-agent-acp")
+
+	opts := DefaultOptions(".", ".")
+	if opts.Input != "llm" || opts.Planner != "llm" || opts.Coder != "llm" || opts.Acceptor != "llm" {
+		t.Fatalf("expected llm workers from ACP env, got input=%s planner=%s coder=%s acceptor=%s",
+			opts.Input, opts.Planner, opts.Coder, opts.Acceptor)
+	}
+	if !opts.Agentic {
+		t.Fatal("expected agentic mode when ACP env is configured")
+	}
+}
+
 func TestDefaultRegistrySupportsLoopback(t *testing.T) {
 	t.Parallel()
 

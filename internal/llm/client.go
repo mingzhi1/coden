@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -548,6 +549,14 @@ func DefaultPool() *Pool {
 	pool := NewPool()
 
 	// Primary tier: add all configured providers (strongest first)
+	if acpCmd := strings.TrimSpace(os.Getenv("CODEN_ACP_COMMAND")); acpCmd != "" {
+		acpName := strings.TrimSpace(os.Getenv("CODEN_ACP_NAME"))
+		if acpName == "" {
+			acpName = "claude-code"
+		}
+		pool.Add(Config{Provider: "acp", AcpName: acpName, AcpCommand: acpCmd})
+		pool.AddLight(Config{Provider: "acp", AcpName: acpName, AcpCommand: acpCmd})
+	}
 	pool.Add(Config{Provider: "anthropic"})
 	pool.Add(Config{Provider: "openai"})
 	pool.Add(Config{Provider: "copilot"})

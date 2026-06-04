@@ -119,8 +119,8 @@ func Default() Registry {
 			"loopback": writefile.NewLoopbackRPCExecutorAdapter,
 		},
 		Searchers: defaultSearcherFactories(),
-		broker:  broker,
-		chatter: broker,
+		broker:    broker,
+		chatter:   broker,
 	}
 }
 
@@ -157,7 +157,7 @@ func DefaultWithServer(addr string) Registry {
 			"loopback": writefile.NewLoopbackRPCExecutorAdapter,
 		},
 		Searchers: defaultSearcherFactories(),
-		chatter: client,
+		chatter:   client,
 	}
 }
 
@@ -193,8 +193,8 @@ func DefaultWithOverride(providerName, modelName string) Registry {
 			"process": newProcessToolExecutorFactory, "loopback": writefile.NewLoopbackRPCExecutorAdapter,
 		},
 		Searchers: defaultSearcherFactories(),
-		broker:  broker,
-		chatter: broker,
+		broker:    broker,
+		chatter:   broker,
 	}
 }
 
@@ -202,11 +202,11 @@ func DefaultOptions(moduleRoot, workspaceRoot string) Options {
 	// Prefer in-process LLM workers when an API key is available; otherwise
 	// fall back to loopback stubs so the system still runs without credentials.
 	workerMode := "loopback"
-	hasLLM := os.Getenv("OPENAI_API_KEY") != "" || os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("DEEPSEEK_API_KEY") != "" || os.Getenv("MINIMAX_API_KEY") != "" || os.Getenv("GITHUB_COPILOT_TOKEN") != ""
+	hasLLM := hasLLMProviderEnv()
 	if hasLLM {
 		workerMode = "llm"
 	} else {
-		slog.Warn("[launcher] no LLM API key detected, using loopback stubs (set OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, MINIMAX_API_KEY, or GITHUB_COPILOT_TOKEN)")
+		slog.Warn("[launcher] no LLM provider detected, using loopback stubs (set CODEN_ACP_COMMAND, OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, MINIMAX_API_KEY, or GITHUB_COPILOT_TOKEN)")
 	}
 	return Options{
 		ModuleRoot:    moduleRoot,
@@ -218,6 +218,15 @@ func DefaultOptions(moduleRoot, workspaceRoot string) Options {
 		Executor:      "process",
 		Agentic:       hasLLM, // enable agentic loop when LLM is available
 	}
+}
+
+func hasLLMProviderEnv() bool {
+	return os.Getenv("CODEN_ACP_COMMAND") != "" ||
+		os.Getenv("OPENAI_API_KEY") != "" ||
+		os.Getenv("ANTHROPIC_API_KEY") != "" ||
+		os.Getenv("DEEPSEEK_API_KEY") != "" ||
+		os.Getenv("MINIMAX_API_KEY") != "" ||
+		os.Getenv("GITHUB_COPILOT_TOKEN") != ""
 }
 
 func (r Registry) Start(ctx context.Context, opts Options) (Dependencies, func(), error) {

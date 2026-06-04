@@ -108,7 +108,7 @@ Clients: TUI / CLI / Web
                         │  session.attach · workflow.submit · event.subscribe
                         v
          ┌─────────────────────────────────────┐
-         │           coden-kernel              │  ← 唯一状态写入者
+         │   coden  (内嵌 Kernel，-serve 模式)   │  ← 唯一状态写入者
          │  (Session · Turn · Task · Event Bus)│
          └──────────────┬──────────────────────┘
                         │  Pattern B: kernel → worker / tool
@@ -117,10 +117,13 @@ Clients: TUI / CLI / Web
     v                   v             v
 coden-agent-plan   coden-agent-code   coden-agent-accept
                         │
-               ┌────────┼────────┐
-               v        v        v
-         tool-shell  tool-lsp  tool-mcp
+          ┌─────────────┼─────────────┐
+          v             v             v
+   coden-tool-shell  coden-tool-lsp   coden-tool-{read,write}file
 ```
+
+> Kernel 没有独立二进制——它内嵌在 `coden` 进程里（`coden -serve` 即以 Kernel 角色运行）。
+> MCP 不是独立进程，而是 `internal/mcp` 内部模块，经 `coden-llm-server` 接入。
 
 **铁律**：Worker 之间不能直接通信，Tool 之间不能直接通信。所有跨角色协调必须经过 Kernel。
 
@@ -313,14 +316,28 @@ go run ./cmd/coden -plain -prompt "bootstrap CodeN" -allow-shell
 
 ```yaml
 llm:
+  # providers 是 map（key = provider 名），不是数组
   providers:
-    - name: anthropic
+    anthropic:
+      type: http              # http（默认）| acp
       api_key: $ANTHROPIC_API_KEY
+      default_model: claude-opus-4
+    openai:
+      api_key: $OPENAI_API_KEY
+      default_model: gpt-4o
+
+  # pool 按档次声明 provider 优先级链（名字引用上面 providers 的 key）
+  pool:
+    primary: [anthropic, openai]   # Strong 档：Planner / Critic / Acceptor
+    light:   [anthropic]           # Light 档：Intent / Coder / Secretary
+
+  # routing 按角色覆盖 pool（异构 Critic 在这里实现：让 critic 走与 planner 不同的 provider）
   routing:
-    primary: anthropic/claude-opus-4
-    light: anthropic/claude-haiku-4-5
-    critic_provider: openai  # 异构 Critic
+    critic: [openai, deepseek]     # critic 优先用非 anthropic，实现"反自恋"
 ```
+
+> 异构 Critic 是**优先级偏好**而非硬约束：若只配了一个 provider，critic 会回退到同一家。
+> 要强制异构，请确保 `routing.critic` 的首选 provider 与 `pool.primary` 的首选不同。
 
 ---
 
@@ -329,7 +346,7 @@ llm:
 | 模块 | 进度 | 说明 |
 |------|------|------|
 | Kernel & 状态核心 | `█████████░` 95% | Session/Turn/Task/Checkpoint/Event Bus 全部完成，Artifact 接入完成 |
-| RPC 协议层 | `█████████░` 95% | JSON-RPC 2.0，34 个方法，handler 全部接入 |
+| RPC 协议层 | `█████████░` 95% | JSON-RPC 2.0，客户端面 29 个方法接入 handler（protocol 共定义 59 个方法常量，含 worker/tool 方向） |
 | Workflow Engine | `█████████░` 95% | 6 阶段流水线完成，任务状态机完成，L2 Regression 尚未实现 |
 | Hook System | `█████████░` 90% | 9 阶段统一框架完成，Config/RPC/Event Bus 全部接入，Filter/Webhook 待实现 |
 | LLM Broker | `█████████░` 90% | per-role pool、provider fallback、usage stats 完成，Sidecar 模式接入完成 |
@@ -338,7 +355,7 @@ llm:
 | 三层检索 | `████████░░` 85% | grep/LSP/RAG 全部实现，RAG stale 标记完成，写后同步完成 |
 | Secretary | `███████░░░` 75% | ContextGate/ExecGate/AfterTurn 完成，MEMORY.md 写入完成，权限模型待强化 |
 | TUI | `████████░░` 80% | 双栏四面板布局（Chat+Input / Workers+Changed）、事件驱动、History Tab 完成，slash command 扩展中 |
-| LLM Server Sidecar | `█████████░` 90% | TCP sidecar、ACP/Anthropic/OpenAI/DeepSeek 完成，crash 监控待实现 |
+| LLM Server Sidecar | `█████████░` 90% | TCP sidecar、ACP/Anthropic/OpenAI/DeepSeek 完成，crash 监控完成（自动重启，上限 3 次，指数退避） |
 | Artifact 管理 | `████████░░` 85% | M13 Phase 1-3 完成：存储/查询/引用/GC，Phase 4（导出/TUI）待完善 |
 | Web Kanban | `███████░░░` 70% | HTTP/WS server + 完整 UI、Board/Card CRUD API、Session API（列表/创建/变更/Submit）完成，Event 回写 Card 状态待完成 |
 

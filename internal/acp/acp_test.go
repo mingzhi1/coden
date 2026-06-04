@@ -12,7 +12,8 @@ func TestTypesRoundTrip(t *testing.T) {
 		ID:      1,
 		Method:  "initialize",
 		Params: InitParams{
-			ClientInfo: ClientInfo{Name: "test", Version: "0.1.0"},
+			ProtocolVersion: 1,
+			ClientInfo:      ClientInfo{Name: "test", Version: "0.1.0"},
 		},
 	}
 	data, err := json.Marshal(req)
@@ -28,6 +29,9 @@ func TestTypesRoundTrip(t *testing.T) {
 	}
 	if decoded.ID != 1 {
 		t.Errorf("expected id=1, got %d", decoded.ID)
+	}
+	if !json.Valid(data) || !containsString(string(data), `"protocolVersion":1`) {
+		t.Fatalf("expected initialize payload to include protocolVersion: %s", data)
 	}
 }
 
@@ -81,4 +85,13 @@ func TestPromptMessageSerialization(t *testing.T) {
 	if len(decoded.Content) != 1 || decoded.Content[0].Text != "hello world" {
 		t.Errorf("unexpected content: %+v", decoded.Content)
 	}
+}
+
+func containsString(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return sub == ""
 }

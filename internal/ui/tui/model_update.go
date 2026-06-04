@@ -296,6 +296,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, path := range msg.Result.ArtifactPaths {
 			m.ensureChangedPath(path, "written")
 		}
+		m.upsertCheckpointEvidence(msg.Result)
 		if m.followChat {
 			m.chatScroll = m.maxChatScroll()
 			// Only focus input if user was following the chat (not scrolled up reading)

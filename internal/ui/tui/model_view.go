@@ -60,9 +60,9 @@ func (m *Model) RenderContent(width, height int) string {
 	if m.focus == focusTodo {
 		todoPanelStyle = styles.PanelFocus
 	}
-	todoTitle := "Workers + Tasks"
+	todoTitle := "Workflow"
 	if m.currentStep != "" {
-		todoTitle = fmt.Sprintf("Workers + Tasks  [%s]", m.currentStep)
+		todoTitle = fmt.Sprintf("Workflow  [%s]", m.currentStep)
 	} else if len(m.todos) > 0 {
 		done := 0
 		for _, t := range m.todos {
@@ -70,7 +70,7 @@ func (m *Model) RenderContent(width, height int) string {
 				done++
 			}
 		}
-		todoTitle = fmt.Sprintf("Workers + Tasks  %d/%d", done, len(m.todos))
+		todoTitle = fmt.Sprintf("Workflow  %d/%d", done, len(m.todos))
 	}
 	todoPanel := todoPanelStyle.Width(rightWidth).Height(topRightHeight).Render(
 		styles.BoldText.Render(todoTitle) + "\n" + strings.Join(todoLines, "\n"),
@@ -79,9 +79,9 @@ func (m *Model) RenderContent(width, height int) string {
 	if m.focus == focusChanged {
 		changedPanelStyle = styles.PanelFocus
 	}
-	changedTitle := "Changed Code"
+	changedTitle := "Inspect"
 	if len(m.changed) > 0 {
-		changedTitle = fmt.Sprintf("Changed Code  (%d)", len(m.changed))
+		changedTitle = fmt.Sprintf("Inspect  (%d)", len(m.changed))
 	}
 	changedPanel := changedPanelStyle.Width(rightWidth).Height(bottomRightHeight).Render(
 		styles.BoldText.Render(changedTitle) + "\n" + strings.Join(changedLines, "\n"),
@@ -316,8 +316,46 @@ func (m *Model) renderTodoLines(width, visibleRows int) []string {
 	}
 
 	lines := make([]string, 0, len(m.workers)+len(m.todos)+1)
-	for _, worker := range m.workers {
-		lines = append(lines, renderWorkerLine(worker, width))
+	if m.activeWorkflowID != "" {
+		lines = append(lines, styles.MutedText.Render(truncatePanelText("workflow: "+m.activeWorkflowID, width)))
+	}
+	if m.status != "" {
+		status := "status: " + m.status
+		if m.currentStep != "" {
+			status += " / " + m.currentStep
+		}
+		lines = append(lines, workflowStatusStyle(m.status).Render(truncatePanelText(status, width)))
+	}
+	if !m.workflowStartedAt.IsZero() && m.status == "running" {
+		lines = append(lines, styles.MutedText.Render(truncatePanelText("elapsed: "+time.Since(m.workflowStartedAt).Truncate(time.Second).String(), width)))
+	}
+	if len(m.todos) > 0 {
+		done, failed, active := taskCounts(m.todos)
+		summary := fmt.Sprintf("tasks: %d/%d done", done, len(m.todos))
+		if active > 0 {
+			summary += fmt.Sprintf("  %d active", active)
+		}
+		if failed > 0 {
+			summary += fmt.Sprintf("  %d failed", failed)
+		}
+		lines = append(lines, styles.MutedText.Render(truncatePanelText(summary, width)))
+	}
+	if m.checkpoint != nil {
+		cp := fmt.Sprintf("checkpoint: %s", m.checkpoint.Status)
+		if len(m.checkpoint.Evidence) > 0 {
+			cp += fmt.Sprintf("  evidence=%d", len(m.checkpoint.Evidence))
+		}
+		lines = append(lines, checkpointStatusStyle(m.checkpoint.Status).Render(truncatePanelText(cp, width)))
+	}
+
+	if len(lines) > 0 && (len(m.todos) > 0 || len(m.workers) > 0) {
+		lines = append(lines, "")
+	}
+	if len(m.workers) > 0 {
+		lines = append(lines, styles.MutedText.Render("workers"))
+		for _, worker := range m.workers {
+			lines = append(lines, renderWorkerLine(worker, width))
+		}
 	}
 	if len(m.workers) > 0 && len(m.todos) > 0 {
 		lines = append(lines, "")
@@ -402,7 +440,7 @@ func (m *Model) renderChangedPanelLines(width, visibleRows int) []string {
 		visibleRows = 1
 	}
 	if len(m.changed) == 0 {
-		return []string{"no changed files yet"}
+		return []string{styles.MutedText.Render("select a tool, file, or checkpoint to inspect")}
 	}
 	m.clampChangedSelection()
 
@@ -494,6 +532,9 @@ func fitPanelLines(lines []string, visibleRows int) []string {
 }
 
 func changedDetailLabel(item changeItem) string {
+	if item.Tool == "checkpoint" {
+		return "evidence"
+	}
 	switch item.Tool {
 	case "write_file":
 		return "diff"
@@ -505,6 +546,44 @@ func changedDetailLabel(item changeItem) string {
 		return "diff"
 	}
 	return "detail"
+}
+
+func taskCounts(items []todoItem) (done, failed, active int) {
+	for _, item := range items {
+		switch item.Status {
+		case "passed", "done", "skipped":
+			done++
+		case "failed":
+			failed++
+		case "coding", "accepting", "running", "retrying":
+			active++
+		}
+	}
+	return done, failed, active
+}
+
+func workflowStatusStyle(status string) lipgloss.Style {
+	switch strings.ToLower(status) {
+	case "running":
+		return styles.PrimaryText
+	case "error", "failed", "fail":
+		return styles.ErrorText
+	case "disconnected", "canceled", "crashed":
+		return styles.WarningText
+	default:
+		return styles.MutedText
+	}
+}
+
+func checkpointStatusStyle(status string) lipgloss.Style {
+	switch strings.ToLower(status) {
+	case "pass", "passed":
+		return styles.SuccessText
+	case "fail", "failed":
+		return styles.ErrorText
+	default:
+		return styles.MutedText
+	}
 }
 
 // renderStatusBar composes the full-width status bar at the bottom of the layout.
@@ -711,9 +790,9 @@ func (m *Model) focusLabels() []string {
 		case focusInput:
 			labels = append(labels, "Input")
 		case focusTodo:
-			labels = append(labels, "Workers + Tasks")
+			labels = append(labels, "Workflow")
 		case focusChanged:
-			labels = append(labels, "Changed Code")
+			labels = append(labels, "Inspect")
 		}
 	}
 	return labels
@@ -740,48 +819,9 @@ func (m *Model) renderAlertBox(width int) string {
 		"",
 	}
 	if len(m.alert.items) > 0 {
-		selectable := m.overlaySelectableIndices()
-		selectedItem := -1
-		if len(selectable) > 0 {
-			m.clampOverlayCursor()
-			selectedItem = selectable[m.alert.cursor]
-		}
-		for index, item := range m.alert.items {
-			selected := index == selectedItem
-			switch item.kind {
-			case "spacer":
-				bodyLines = append(bodyLines, "")
-			case "section":
-				bodyLines = append(bodyLines, styles.BoldText.Render(item.text))
-			case "action":
-				line := "  " + item.text
-				if selected {
-					line = styles.PanelFocus.Padding(0, 1).Render("> " + item.text)
-				} else {
-					line = styles.PrimaryText.Render("  " + item.text)
-				}
-				bodyLines = append(bodyLines, line)
-			case "disabled":
-				// disabled: 视觉上弱于 action，选中态用不同前缀
-				line := "  " + item.text
-				if selected {
-					line = styles.MutedText.Render("> " + item.text)
-				} else {
-					line = styles.MutedText.Render("  " + item.text)
-				}
-				bodyLines = append(bodyLines, line)
-			case "todo":
-				bodyLines = append(bodyLines, styles.MutedText.Render("  "+item.text))
-			case "warn":
-				bodyLines = append(bodyLines, styles.WarningText.Render("  "+item.text))
-			case "ok":
-				bodyLines = append(bodyLines, styles.SuccessText.Render("  "+item.text))
-			case "kv-muted":
-				bodyLines = append(bodyLines, styles.MutedText.Render("  "+item.text))
-			default:
-				bodyLines = append(bodyLines, styles.NormalText.Render("  "+item.text))
-			}
-		}
+		m.clampOverlayCursor()
+		selectedItem := selectedOverlayIndex(m.alert.items, m.alert.cursor)
+		bodyLines = append(bodyLines, renderOverlayItemLines(m.alert.items, selectedItem)...)
 	} else {
 		for _, line := range m.alert.lines {
 			raw := strings.TrimRight(line, "\r")

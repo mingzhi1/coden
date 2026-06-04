@@ -425,6 +425,7 @@ func (m *Model) applySessionSnapshot(snapshot api.SessionSnapshot) {
 		for _, path := range cp.ArtifactPaths {
 			m.ensureChangedPath(path, "written")
 		}
+		m.upsertCheckpointEvidence(cp)
 	}
 
 	if snapshot.LatestRun != nil {
@@ -454,7 +455,6 @@ func (m *Model) applySessionSnapshot(snapshot api.SessionSnapshot) {
 		m.chatScroll = m.maxChatScroll()
 	}
 }
-
 
 func (m *Model) updateTasks(event model.Event) {
 	payload, ok := decodeEventPayload[model.WorkflowTasksUpdatedPayload](event)

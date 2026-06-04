@@ -279,6 +279,11 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		err       error
 	}
 	discoveryCh := make(chan discoveryPrefetch, 1)
+	// Snapshot ctx for the prefetch goroutine. The main goroutine reassigns the
+	// `ctx` variable below (injectSecretaryContext for the Planner), so the
+	// goroutine must capture a stable value rather than racing on the shared
+	// variable. The prefetch intentionally runs against the pre-Planner context.
+	prefetchCtx := ctx
 	go func() {
 		slog.Info("[workflow] starting discovery prefetch", "workflow_id", workflowID)
 		k.events.Emit(sessionID, model.EventSearchStarted, model.SearchStartedPayload{
@@ -291,7 +296,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 			s = NewLocalSearcher(k, sessionID, workflowID)
 		}
 		t0 := time.Now()
-		dc, searchErr := s.Search(ctx, intentSpec, nil)
+		dc, searchErr := s.Search(prefetchCtx, intentSpec, nil)
 		if searchErr == nil {
 			k.events.Emit(sessionID, model.EventSearchFinished, model.SearchFinishedPayload{
 				WorkflowID:    workflowID,
