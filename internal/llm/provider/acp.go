@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -81,9 +82,16 @@ func (p *Acp) Chat(ctx context.Context, model string, messages []Message) (strin
 	p.promptMu.Lock()
 	defer p.promptMu.Unlock()
 
-	cwd := p.cwd
-	if strings.TrimSpace(cwd) == "" {
+	cwd := strings.TrimSpace(p.cwd)
+	if cwd == "" {
 		cwd, _ = os.Getwd()
+	}
+	// claude-code-acp resolves its file-tool permission boundary from the session
+	// cwd. A relative path (e.g. the default "workspace") lands the agent in a
+	// directory relative to wherever coden was launched — usually the wrong place,
+	// with no write access to the real project. Always pass an absolute path.
+	if abs, err := filepath.Abs(cwd); err == nil {
+		cwd = abs
 	}
 	sessionID, err := conn.NewSession(ctx, cwd)
 	if err != nil {

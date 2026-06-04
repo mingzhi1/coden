@@ -101,6 +101,17 @@ func mergeLLMConfig(dst, src *LLMConfig) {
 		dst.Pool.Light = src.Pool.Light
 	}
 
+	// Per-role routing — merge key-by-key so a workspace config can add or
+	// override individual role routes without dropping the rest.
+	if len(src.Routing) > 0 {
+		if dst.Routing == nil {
+			dst.Routing = make(map[string][]string)
+		}
+		for role, providers := range src.Routing {
+			dst.Routing[role] = providers
+		}
+	}
+
 	if src.TokenBudget.MaxInputTokens > 0 {
 		dst.TokenBudget.MaxInputTokens = src.TokenBudget.MaxInputTokens
 	}
