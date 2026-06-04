@@ -25,6 +25,15 @@ func NewLLMResponder(chatter Chatter) *LLMResponder {
 // Responder role (Light tier) to produce the final user-facing text.
 func (r *LLMResponder) Respond(ctx context.Context, intent model.IntentSpec, tasks []model.Task, cp model.CheckpointResult) (string, error) {
 	var b strings.Builder
+
+	// Anchor the reply on the user's ACTUAL words. intent.Goal and task titles are
+	// normalized (often to English) by upstream roles, so without the raw message
+	// the Responder has no Chinese/other-language text to match and defaults to
+	// English — even when the user asked for another language. Include the latest
+	// user message so "reply in the user's language" has something to match.
+	if userMsg := lastUserMessage(model.WorkflowContextFrom(ctx).History); userMsg != "" {
+		fmt.Fprintf(&b, "User's latest message (REPLY IN THE SAME LANGUAGE as this message): %q\n\n", userMsg)
+	}
 	fmt.Fprintf(&b, "User goal: %s\n", strings.TrimSpace(intent.Goal))
 
 	if intent.Kind == model.IntentKindPlanOnly {
@@ -58,4 +67,15 @@ func (r *LLMResponder) Respond(ctx context.Context, intent model.IntentSpec, tas
 		return "", fmt.Errorf("responder llm: %w", err)
 	}
 	return strings.TrimSpace(reply), nil
+}
+
+// lastUserMessage returns the most recent user-role message content from the
+// conversation history (history is oldest-first), or "" if none.
+func lastUserMessage(history []model.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			return strings.TrimSpace(history[i].Content)
+		}
+	}
+	return ""
 }

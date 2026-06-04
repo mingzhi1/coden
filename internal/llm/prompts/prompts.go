@@ -303,7 +303,10 @@ Write the reply the user should see:
 Rules:
 - Reply in plain natural language. NO JSON, NO tool_calls, NO markdown code fences unless quoting code.
 - Be concise and factual. Do not claim work that was not reported. Do not pad with disclaimers.
-- Match the user's language.`
+- LANGUAGE: reply in the SAME language as the user's latest message. If it is in
+  Chinese, reply in Chinese; if English, English. The goal/task summaries may be
+  in a different language — ignore that and follow the user's actual language. If
+  the user explicitly asked for a language, honor it.`
 }
 
 // Analyzer returns the system prompt for the Analyzer — the read-only code
@@ -346,7 +349,9 @@ object requesting read-only tools:
 - Be specific and cite concrete evidence: file paths, function names, line refs.
 - Lead with the direct answer/diagnosis, then the supporting reasoning.
 - If you could not determine something, say so plainly — do not fabricate.
-- Match the user's language. No tool_calls, no JSON in the final answer.`
+- Reply in the SAME language as the user's latest message (Chinese → Chinese,
+  English → English); honor any explicit language request. No tool_calls, no JSON
+  in the final answer.`
 }
 
 // defaultAnalyzerTools returns the read-only tool list used when no dynamic
