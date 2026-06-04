@@ -119,6 +119,26 @@ func TestLoaderEnvOverride(t *testing.T) {
 	}
 }
 
+func TestLoaderEnvCodexAppServerProvider(t *testing.T) {
+	t.Setenv("CODEN_CODEX_APP_SERVER_COMMAND", "codex app-server")
+
+	loader := NewLoader("")
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	entry, ok := cfg.LLM.Providers["codex"]
+	if !ok {
+		t.Fatal("expected codex provider from CODEN_CODEX_APP_SERVER_COMMAND")
+	}
+	if entry.Type != "codex_app_server" {
+		t.Fatalf("expected type=codex_app_server, got %s", entry.Type)
+	}
+	if cfg.LLM.Pool.Primary[0] != "codex" {
+		t.Fatalf("expected codex first in primary, got %v", cfg.LLM.Pool.Primary)
+	}
+}
+
 func TestLoaderToolsOnlyBackcompat(t *testing.T) {
 	loader := NewLoader("")
 	tools, err := loader.LoadToolsOnly()

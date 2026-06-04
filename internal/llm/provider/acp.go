@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,12 @@ type Acp struct {
 
 	mu   sync.Mutex
 	conn *acp.Conn // lazy init on first Chat()
+
+	// promptMu serializes Chat calls on the shared connection. The single conn
+	// has one NotifyCh with no per-session demux, so concurrent prompts (the
+	// kernel runs workers in parallel) would interleave on it and cross-contaminate
+	// responses. Serializing keeps each prompt's stream isolated.
+	promptMu sync.Mutex
 }
 
 // AcpConfig holds ACP provider configuration.
@@ -57,7 +64,7 @@ func NewAcp(cfg AcpConfig) *Acp {
 	}
 }
 
-func (p *Acp) Name() string      { return p.providerName }
+func (p *Acp) Name() string       { return p.providerName }
 func (p *Acp) IsConfigured() bool { return p.command != "" }
 
 // Chat sends messages to the ACP server and returns the assembled text reply.
@@ -69,26 +76,50 @@ func (p *Acp) Chat(ctx context.Context, model string, messages []Message) (strin
 		return "", fmt.Errorf("acp(%s): connect: %w", p.providerName, err)
 	}
 
-	sessionID, err := conn.NewSession(ctx, p.cwd)
+	// Serialize prompts on the shared connection: the single NotifyCh has no
+	// per-session demux, so concurrent calls would cross-contaminate streams.
+	p.promptMu.Lock()
+	defer p.promptMu.Unlock()
+
+	cwd := p.cwd
+	if strings.TrimSpace(cwd) == "" {
+		cwd, _ = os.Getwd()
+	}
+	sessionID, err := conn.NewSession(ctx, cwd)
 	if err != nil {
 		p.resetConn()
 		return "", fmt.Errorf("acp(%s): newSession: %w", p.providerName, err)
 	}
 	defer conn.CloseSession(context.Background(), sessionID)
 
-	acpMsgs := convertToAcpMessages(messages)
+	// Select the model for this session (e.g. opus vs sonnet). Best-effort: if the
+	// agent doesn't support session/set_model, keep its default model.
+	if strings.TrimSpace(model) != "" {
+		if err := conn.SetModel(ctx, sessionID, model); err != nil {
+			slog.Warn("[acp] set model failed, using agent default",
+				"name", p.providerName, "model", model, "error", err)
+		}
+	}
 
-	if err := conn.Prompt(sessionID, acpMsgs); err != nil {
+	acpPrompt := convertToAcpPrompt(messages)
+
+	if err := conn.Prompt(sessionID, acpPrompt); err != nil {
 		return "", fmt.Errorf("acp(%s): prompt: %w", p.providerName, err)
 	}
 
 	var sb strings.Builder
 	var stopReason string
 	var usage *acp.Usage
+	var msgChunks, thoughtChunks, toolCalls int // DEBUG: chunk breakdown
 
 	for {
 		notification, err := conn.ReadNotification(ctx)
 		if err != nil {
+			// If the caller gave up (timeout/cancel), tell the agent to stop so it
+			// doesn't keep generating (and burning tokens) on a dead turn.
+			if ctx.Err() != nil {
+				conn.Cancel(sessionID)
+			}
 			partial := sb.String()
 			if partial != "" {
 				return partial, &TruncatedError{
@@ -106,10 +137,12 @@ func (p *Acp) Chat(ctx context.Context, model string, messages []Message) (strin
 			}
 			switch notification.SessionUpdate.Type {
 			case "agent_message_chunk":
+				msgChunks++
 				sb.WriteString(notification.SessionUpdate.Text)
 			case "agent_thought_chunk":
-				// Thinking — skip.
+				thoughtChunks++ // Thinking — skip content, but count it.
 			case "tool_call":
+				toolCalls++
 				slog.Warn("[acp] unexpected tool_call in reasoning mode",
 					"name", p.providerName, "session", sessionID)
 			}
@@ -143,10 +176,19 @@ done:
 		inputToks = usage.InputTokens
 		outputToks = usage.OutputTokens
 	}
+	replyForLog := reply
+	if len(replyForLog) > 800 {
+		replyForLog = replyForLog[:800] + "…(truncated)"
+	}
 	slog.Info("[acp] response received", "name", p.providerName,
 		"duration_ms", duration.Milliseconds(),
 		"input_tokens", inputToks, "output_tokens", outputToks,
-		"reply_len", len(reply))
+		"reply_len", len(reply),
+		// DEBUG: chunk breakdown + raw reply — tells us whether the agent ran
+		// agentic (tool_calls coden ignores) and only sent a tiny text chunk, or
+		// genuinely replied short.
+		"msg_chunks", msgChunks, "thought_chunks", thoughtChunks, "tool_calls", toolCalls,
+		"reply", replyForLog)
 	return reply, nil
 }
 

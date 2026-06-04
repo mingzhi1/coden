@@ -221,9 +221,15 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		return
 	}
 
-	// V1-01c: Route based on intent kind.
-	// Questions skip Plan/Code/Accept and get a direct LLM answer.
-	if intentSpec.IsQuestion() {
+	// Intent-adaptive routing — single source of truth: pipelinePolicy / policyForKind.
+	// Paths with no Plan stage (direct-answer kinds and read-only analyze) take the
+	// lightweight path: optional code investigation (Coder mode per policy) → Responder.
+	// analyze sets CoderMode=ReadOnly so the Coder reads code but never modifies it,
+	// fixing "I asked to analyze and it started changing files".
+	policy := policyForKind(intentSpec.Kind)
+	if !policy.Plan {
+		wfCtx.CoderMode = policy.CoderMode
+		ctx = model.WithWorkflowContext(ctx, wfCtx)
 		k.emitTasksUpdated(sessionID, workflowID, []model.Task{{
 			ID:     "answer",
 			Title:  intentSpec.Goal,
@@ -488,6 +494,13 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		}
 	}
 
+	// plan_only (policy without Code): stop after Plan + Critic + RePlan. Present
+	// the reviewed plan via the Responder and commit — do NOT execute any code.
+	if !policy.Code {
+		k.finishPlanOnly(ctx, sessionID, workflowID, intentSpec, tasks)
+		return
+	}
+
 	// M11-02: Wrap tasks in a dynamic TaskQueue to enable append/skip/undo
 	// during execution. The queue replaces the static for-range loop.
 	queue := taskqueue.New(tasks)
@@ -607,7 +620,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		ID:        nextKernelID("msg-assistant"),
 		SessionID: sessionID,
 		Role:      "assistant",
-		Content:   k.buildAssistantCompletionMessage(sessionID, checkpointResult, artifact),
+		Content:   k.buildResponderMessage(ctx, sessionID, intentSpec, tasks, checkpointResult, artifact),
 		CreatedAt: time.Now(),
 	}
 
@@ -715,4 +728,43 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 			}
 		}()
 	}
+}
+
+// finishPlanOnly commits a plan_only workflow: the reviewed plan IS the
+// deliverable — Plan + Critic + RePlan ran, but no code is executed. The
+// Responder presents the plan to the user and the workflow auto-passes.
+func (k *Kernel) finishPlanOnly(ctx context.Context, sessionID, workflowID string, intent model.IntentSpec, tasks []model.Task) {
+	checkpointResult := model.CheckpointResult{
+		WorkflowID: workflowID,
+		SessionID:  sessionID,
+		Status:     "pass",
+		Evidence:   []string{fmt.Sprintf("plan produced (%d tasks), not executed (plan_only)", len(tasks))},
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	turnSummary := k.buildTurnSummary(sessionID, workflowID, intent, tasks, checkpointResult)
+	assistantMessage := model.Message{
+		ID:        nextKernelID("msg-assistant"),
+		SessionID: sessionID,
+		Role:      "assistant",
+		Content:   k.buildResponderMessage(ctx, sessionID, intent, tasks, checkpointResult, model.Artifact{}),
+		CreatedAt: time.Now(),
+	}
+
+	if err := k.commitWorkflowSaga(sessionID, workflowID, checkpointResult, turnSummary, assistantMessage); err != nil {
+		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("saga commit failed: %w", err))
+		return
+	}
+	clog.Session(sessionID).Info("plan_only workflow completed", "workflow_id", workflowID, "tasks", len(tasks))
+
+	k.events.Emit(sessionID, model.EventMessageCreated, model.MessageCreatedPayload{
+		MessageID: assistantMessage.ID,
+		Role:      assistantMessage.Role,
+		Content:   assistantMessage.Content,
+	})
+	k.events.Emit(sessionID, model.EventCheckpointUpdated, model.CheckpointUpdatedPayload{
+		WorkflowID: workflowID,
+		Status:     checkpointResult.Status,
+		Evidence:   checkpointResult.Evidence,
+	})
 }

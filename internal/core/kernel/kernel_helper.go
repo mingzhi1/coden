@@ -106,6 +106,12 @@ func (k *Kernel) formatTopInsights(sessionID string) string {
 
 // commitWorkflowSaga 实现 L4-07: Saga 事务提交。
 func (k *Kernel) commitWorkflowSaga(sessionID, workflowID string, cp model.CheckpointResult, ts model.TurnSummary, msg model.Message) error {
+	// Persist the assistant reply on the turn summary so the next turn's Inputter
+	// can resolve follow-ups ("do it", "go ahead") against what was actually said.
+	if ts.Response == "" {
+		ts.Response = msg.Content
+	}
+
 	type sagaStep struct {
 		name       string
 		action     func() error
@@ -371,6 +377,21 @@ func buildRetryFeedback(checkpoint model.CheckpointResult, artifact model.Artifa
 }
 
 // buildAssistantCompletionMessage 构建 assistant 完成消息。
+// buildResponderMessage runs the Responder (final pipeline stage) to synthesize
+// the user-facing reply. Best-effort: on error or empty output it falls back to
+// the deterministic buildAssistantCompletionMessage so the workflow always has
+// a usable message.
+func (k *Kernel) buildResponderMessage(ctx context.Context, sessionID string, intent model.IntentSpec, tasks []model.Task, checkpointResult model.CheckpointResult, artifact model.Artifact) string {
+	if r := k.workflow.Responder(); r != nil {
+		if text, err := r.Respond(ctx, intent, tasks, checkpointResult); err != nil {
+			clog.Session(sessionID).Warn("[responder] failed, using fallback message", "error", err)
+		} else if strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return k.buildAssistantCompletionMessage(sessionID, checkpointResult, artifact)
+}
+
 func (k *Kernel) buildAssistantCompletionMessage(sessionID string, checkpointResult model.CheckpointResult, artifact model.Artifact) string {
 	status := strings.TrimSpace(checkpointResult.Status)
 	if status == "" {

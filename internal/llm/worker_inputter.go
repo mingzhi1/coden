@@ -33,6 +33,16 @@ func (i *LLMInputter) Build(ctx context.Context, sessionID, prompt string) (mode
 		if last.Intent.Goal != "" {
 			prevIntentHint = fmt.Sprintf("\n\nPrevious turn intent: %q (kind: %s, outcome: %s)",
 				last.Intent.Goal, last.Intent.Kind, last.Checkpoint.Status)
+			// Carry the assistant's previous reply so short follow-ups ("do it",
+			// "go ahead", "yes") can be resolved against what was actually said —
+			// e.g. a plan_only proposal that the user now wants executed.
+			if resp := strings.TrimSpace(last.Response); resp != "" {
+				const maxPrevResp = 600
+				if len(resp) > maxPrevResp {
+					resp = resp[:maxPrevResp] + "…"
+				}
+				prevIntentHint += fmt.Sprintf("\nPrevious assistant reply: %q", resp)
+			}
 		}
 	}
 
@@ -87,7 +97,8 @@ func (i *LLMInputter) Build(ctx context.Context, sessionID, prompt string) (mode
 	switch parsed.Kind {
 	case model.IntentKindCodeGen, model.IntentKindDebug, model.IntentKindRefactor,
 		model.IntentKindQuestion, model.IntentKindConfig,
-		model.IntentKindChat, model.IntentKindAnalyze, model.IntentKindOther:
+		model.IntentKindChat, model.IntentKindAnalyze, model.IntentKindPlanOnly,
+		model.IntentKindOther:
 		// valid
 	default:
 		parsed.Kind = model.IntentKindOther

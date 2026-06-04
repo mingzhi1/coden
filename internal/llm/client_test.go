@@ -3,6 +3,7 @@ package llm_test
 import (
 	"testing"
 
+	"github.com/mingzhi1/coden/internal/config"
 	"github.com/mingzhi1/coden/internal/llm"
 )
 
@@ -133,6 +134,46 @@ func TestDefaultPoolIncludesACPFromEnv(t *testing.T) {
 	}
 	if got := pool.LightModel(); got == "" {
 		t.Fatal("expected light model fallback/provider to be configured")
+	}
+}
+
+func TestDefaultPoolIncludesCodexAppServerFromEnv(t *testing.T) {
+	t.Setenv("CODEN_CODEX_APP_SERVER_COMMAND", "codex app-server")
+	t.Setenv("CODEN_CODEX_APP_SERVER_NAME", "codex-local")
+
+	pool := llm.DefaultPool()
+	if !pool.IsConfigured() {
+		t.Fatal("expected Codex app-server env provider to configure pool")
+	}
+	if got := pool.Provider(); got != "codex-local" {
+		t.Fatalf("expected codex-local provider, got %s", got)
+	}
+}
+
+func TestPoolFromConfigIncludesCodexAppServerProvider(t *testing.T) {
+	cfg := config.LLMConfig{
+		Providers: map[string]config.ProviderEntry{
+			"codex-local": {
+				Type:         "codex_app_server",
+				Command:      "codex",
+				Args:         []string{"app-server"},
+				DefaultModel: "gpt-codex-test",
+			},
+		},
+		Pool: config.PoolConfig{
+			Primary: []string{"codex-local"},
+			Light:   []string{"codex-local"},
+		},
+	}
+	pool := llm.PoolFromConfig(cfg, "/tmp/workspace")
+	if !pool.IsConfigured() {
+		t.Fatal("expected codex app-server provider to configure pool")
+	}
+	if got := pool.Provider(); got != "codex-local" {
+		t.Fatalf("expected provider name codex-local, got %s", got)
+	}
+	if got := pool.Model(); got != "gpt-codex-test" {
+		t.Fatalf("expected model gpt-codex-test, got %s", got)
 	}
 }
 

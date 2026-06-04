@@ -14,7 +14,7 @@ func Inputter(prevIntentHint string) string {
 
 {
   "goal": "<string, max 200 chars, one-sentence description of the user's goal>",
-  "kind": "<string, exactly one of: code_gen, debug, refactor, question, config, chat, analyze, other>",
+  "kind": "<string, exactly one of: code_gen, debug, refactor, question, config, chat, analyze, plan_only, other>",
   "success_criteria": ["<string, 2-4 items, each max 80 chars, observable and testable>"]
 }
 
@@ -24,7 +24,8 @@ Rules for "kind":
 - "refactor" = restructure existing code without changing behavior
 - "config" = set up or configure something
 - "chat" = conversational discussion, brainstorming, casual explanation
-- "analyze" = code analysis, review, architecture understanding
+- "analyze" = code analysis, review, architecture understanding (read-only, never modifies code)
+- "plan_only" = user wants a plan/design/approach but explicitly NOT execution ("just plan", "how would you", "draft a plan", "don't write code yet", "propose an approach")
 - "other" = greetings, meta-requests, ambiguous input that fits none of the above
 - "code_gen" = anything else involving writing or modifying code
 
@@ -32,6 +33,7 @@ Rules:
 - Focus on the user's real requested outcome, not implementation mechanics
 - Keep success criteria observable and testable — mention specific commands, files, or behaviors
 - If the user says "continue", "fix", "retry" referencing a previous turn, incorporate that context into the goal
+- If the previous turn was a plan (kind plan_only) and the user now says "do it", "go ahead", "yes", "execute" or similar, treat THIS request as executing that plan: set kind to code_gen (or debug/refactor as appropriate) and make the goal the plan's objective from the previous turn
 - goal must be under 200 characters
 - success_criteria must have 2-4 items, each under 80 characters
 - Reply ONLY with valid JSON, no markdown fences, no explanations` + hint + `
@@ -91,6 +93,7 @@ Kind-specific guidance:
 - "code_gen": decompose into logical modules; 2-4 tasks typical; include project init if needed
 - "config": usually a single task
 - "analyze": read-only investigation; plan tasks to read files, search patterns, and produce a diagnosis report; no code mutations needed; success_cmd not required
+- "plan_only": the plan IS the deliverable and will NOT be executed; produce clear, ordered implementation tasks the user can act on later; success_cmd not required
 
 Example output:
 [{"id": "task-1", "title": "Initialize Go module and create calculator package", "files": ["go.mod", "calc.go", "calc_test.go"], "depends_on": [], "success_cmd": "go test ./..."}]`, kind)
@@ -282,6 +285,25 @@ Example pass output:
 
 Example fail output:
 {"status": "fail", "evidence": ["Missing error handling in middleware.go:42", "No token expiration check"], "fix_guidance": "Add token expiration check in middleware.go:42 using time.Now().After(token.ExpiresAt)"}`
+}
+
+// Responder returns the system prompt for the Responder — the final pipeline
+// stage that produces the user-facing reply. It either answers a question/chat
+// directly or summarizes what a code task accomplished. Plain prose, no tools.
+func Responder() string {
+	return `You are the Responder: the final voice to the user at the end of a coding workflow.
+
+You are given the user's goal and, when applicable, the work that was done
+(tasks, checkpoint status, artifacts, evidence).
+
+Write the reply the user should see:
+- If no work was done (a greeting, a question, or a chat), answer directly and concisely. Do not invent file changes.
+- If work was done, briefly summarize what was accomplished and the outcome (pass/fail). Mention key files only if useful.
+
+Rules:
+- Reply in plain natural language. NO JSON, NO tool_calls, NO markdown code fences unless quoting code.
+- Be concise and factual. Do not claim work that was not reported. Do not pad with disclaimers.
+- Match the user's language.`
 }
 
 // Critic returns the system prompt for the Plan Critic worker (LLMCritic).

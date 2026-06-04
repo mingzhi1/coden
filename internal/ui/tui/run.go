@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
@@ -14,6 +15,15 @@ import (
 	"github.com/mingzhi1/coden/internal/api"
 	clog "github.com/mingzhi1/coden/internal/log"
 )
+
+// isBenignNotFound reports whether an error is a "not found" that should be
+// silently ignored rather than shown as a blocking error overlay. The checkpoint
+// /object loaders fire eagerly on checkpoint.updated events; if the lookup races
+// the persist (or the workflow never reached commit), surfacing "checkpoint not
+// found" as an error popup is wrong — it's a transient/expected condition.
+func isBenignNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found")
+}
 
 func Run(ctx context.Context, client api.ClientAPI, sessionID, prompt string) error {
 	return RunWithRuntimeInfo(ctx, client, sessionID, prompt, RuntimeInfo{})
@@ -55,6 +65,9 @@ func RunWithRuntimeInfo(ctx context.Context, client api.ClientAPI, sessionID, pr
 		return func() tea.Msg {
 			items, err := api.LoadWorkflowObjectDetails(sessionCtx, client, sessionID, workflowID)
 			if err != nil {
+				if isBenignNotFound(err) {
+					return nil // not ready / no objects — don't pop an error overlay
+				}
 				return ErrMsg{Err: err}
 			}
 			return WorkflowObjectsLoadedMsg{WorkflowID: workflowID, Items: items}
@@ -65,6 +78,9 @@ func RunWithRuntimeInfo(ctx context.Context, client api.ClientAPI, sessionID, pr
 		return func() tea.Msg {
 			result, err := client.GetCheckpoint(sessionCtx, sessionID, workflowID)
 			if err != nil {
+				if isBenignNotFound(err) {
+					return nil // checkpoint not persisted yet — don't pop an error overlay
+				}
 				return ErrMsg{Err: err}
 			}
 			return CheckpointMsg{Result: result}

@@ -19,6 +19,7 @@ const (
 	RoleCoder     = "coder"
 	RoleAcceptor  = "acceptor"
 	RoleReplanner = "replanner"
+	RoleResponder = "responder" // final user-facing response; Light tier (not in strongRoles)
 )
 
 // strongRoles identifies which roles default to the primary (strong) pool tier.
@@ -28,6 +29,13 @@ var strongRoles = map[string]bool{
 	RoleCritic:    true, // cross-reviews the plan (anti-narcissism)
 	RoleAcceptor:  true, // decides whether the build is correct
 	RoleReplanner: true, // revises the plan based on critic + discovery
+}
+
+// shortReplyRoles are free-text roles whose legitimate output is often shorter
+// than DegenerateReplyThreshold (e.g. a greeting or one-line answer). They skip
+// the degenerate-reply heuristic so a valid short reply isn't discarded.
+var shortReplyRoles = map[string]bool{
+	RoleResponder: true,
 }
 
 // UsageStats records accumulated LLM usage for a single role.
@@ -112,6 +120,10 @@ func (b *Broker) Chat(ctx context.Context, role string, messages []Message) (str
 		reply, err = chatWithRetry(ctx, override, messages)
 	case strongRoles[role]:
 		reply, err = b.pool.Chat(ctx, messages)
+	case shortReplyRoles[role]:
+		// Free-text roles (Responder) legitimately produce short replies; don't
+		// let the degenerate-reply heuristic discard a valid one-line answer.
+		reply, err = b.pool.ChatLightAllowShort(ctx, messages)
 	default:
 		reply, err = b.pool.ChatLight(ctx, messages)
 	}

@@ -37,32 +37,26 @@ func (p *Acp) resetConn() {
 	}
 }
 
-// convertToAcpMessages converts CodeN provider.Message slice to ACP format.
-// System messages are merged into the first user message as a prefix,
-// since ACP protocol uses the standard user/assistant role pattern.
-func convertToAcpMessages(messages []Message) []acp.PromptMessage {
-	var system strings.Builder
-	var out []acp.PromptMessage
-
+// convertToAcpPrompt converts CodeN's chat-style messages into ACP's
+// session/prompt content blocks. ACP prompt turns are user-message shaped, so
+// we preserve roles inline inside a single text block.
+func convertToAcpPrompt(messages []Message) []acp.ContentBlock {
+	var text strings.Builder
 	for _, m := range messages {
-		if m.Role == "system" {
-			if system.Len() > 0 {
-				system.WriteString("\n")
-			}
-			system.WriteString(m.Content)
+		content := strings.TrimSpace(m.Content)
+		if content == "" {
 			continue
 		}
-
-		content := m.Content
-		if m.Role == "user" && system.Len() > 0 {
-			content = system.String() + "\n\n" + content
-			system.Reset()
+		role := strings.TrimSpace(m.Role)
+		if role == "" {
+			role = "user"
 		}
-
-		out = append(out, acp.PromptMessage{
-			Role:    m.Role,
-			Content: []acp.ContentBlock{{Type: "text", Text: content}},
-		})
+		if text.Len() > 0 {
+			text.WriteString("\n\n")
+		}
+		text.WriteString(strings.ToUpper(role))
+		text.WriteString(":\n")
+		text.WriteString(content)
 	}
-	return out
+	return []acp.ContentBlock{{Type: "text", Text: text.String()}}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/mingzhi1/coden/internal/agent/input"
 	"github.com/mingzhi1/coden/internal/agent/plan"
 	"github.com/mingzhi1/coden/internal/agent/search"
+	"github.com/mingzhi1/coden/internal/config"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
 	"github.com/mingzhi1/coden/internal/core/workflow"
 	"github.com/mingzhi1/coden/internal/core/workspace"
@@ -90,9 +91,22 @@ type Dependencies struct {
 func Default() Registry {
 	// Create a shared LLM broker for all workers. The broker wraps a pool that
 	// auto-discovers available API keys and layers providers with fallback.
-	broker := llm.DefaultBroker()
-	llmInput, llmPlan, llmCode, llmAccept := sharedChatterFactories(broker, broker)
+	return registryWithBroker(llm.DefaultBroker())
+}
 
+// DefaultFromConfig builds an embedded registry whose broker is driven by an
+// explicit LLM config (config.yaml `llm:` block) rather than env auto-detection.
+// This is what makes the documented `llm.providers` / `pool` / `routing` config
+// actually take effect for the local (non-sidecar) launcher.
+func DefaultFromConfig(llmCfg config.LLMConfig, workspaceCwd string) Registry {
+	return registryWithBroker(llm.BrokerFromConfig(llmCfg, workspaceCwd))
+}
+
+// registryWithBroker assembles the standard embedded Registry around a broker.
+// All embedded constructors (Default, DefaultWithOverride, DefaultFromConfig)
+// share this wiring and differ only in how the broker/pool is built.
+func registryWithBroker(broker *llm.Broker) Registry {
+	llmInput, llmPlan, llmCode, llmAccept := sharedChatterFactories(broker, broker)
 	return Registry{
 		Inputs: map[string]InputterFactory{
 			"process":  input.NewProcessRPCInputter,
@@ -161,41 +175,29 @@ func DefaultWithServer(addr string) Registry {
 	}
 }
 
-// DefaultWithOverride creates a registry where the specified provider/model is prepended
-// to the primary pool, overriding auto-detection priority.
+// DefaultWithOverride creates a registry where the specified provider/model is
+// preferred across ALL tiers (primary + light), overriding auto-detection
+// priority. The override is placed first in both tiers so every role — including
+// the light-tier workers (Intent / Coder / Secretary) — uses it; the env-detected
+// providers remain only as fallbacks. Previously the override hit the primary tier
+// only, so light-tier workers silently fell back to hardcoded models
+// (deepseek-chat / gpt-4o-mini) that don't exist on a custom endpoint, wasting
+// failed attempts (and risking sending the API key to the wrong provider).
 func DefaultWithOverride(providerName, modelName string) Registry {
 	pool := llm.NewPool()
 	if providerName != "" || modelName != "" {
-		pool.Add(llm.Config{Provider: providerName, Model: modelName})
+		ov := llm.Config{Provider: providerName, Model: modelName}
+		pool.Add(ov)      // primary, first
+		pool.AddLight(ov) // light, first
 	}
+	// Env-detected providers as fallback (skipped automatically when unconfigured).
 	pool.Add(llm.Config{Provider: "anthropic"})
 	pool.Add(llm.Config{Provider: "openai"})
 	pool.Add(llm.Config{Provider: "deepseek"})
 	pool.AddLight(llm.Config{Provider: "deepseek"})
 	pool.AddLight(llm.Config{Provider: "openai"})
 
-	broker := llm.NewBroker(pool)
-	llmInput, llmPlan, llmCode, llmAccept := sharedChatterFactories(broker, broker)
-	return Registry{
-		Inputs: map[string]InputterFactory{
-			"process": input.NewProcessRPCInputter, "loopback": input.NewLoopbackRPCInputterAdapter, "llm": llmInput,
-		},
-		Planners: map[string]PlannerFactory{
-			"process": plan.NewProcessRPCPlanner, "loopback": plan.NewLoopbackRPCPlannerAdapter, "llm": llmPlan,
-		},
-		Coders: map[string]CoderFactory{
-			"process": code.NewProcessRPCCoder, "loopback": code.NewLoopbackRPCCoderAdapter, "llm": llmCode,
-		},
-		Acceptors: map[string]AcceptorFactory{
-			"process": accept.NewProcessRPCAcceptor, "loopback": accept.NewLoopbackRPCAcceptorAdapter, "llm": llmAccept,
-		},
-		Executors: map[string]ExecutorFactory{
-			"process": newProcessToolExecutorFactory, "loopback": writefile.NewLoopbackRPCExecutorAdapter,
-		},
-		Searchers: defaultSearcherFactories(),
-		broker:    broker,
-		chatter:   broker,
-	}
+	return registryWithBroker(llm.NewBroker(pool))
 }
 
 func DefaultOptions(moduleRoot, workspaceRoot string) Options {
@@ -222,6 +224,7 @@ func DefaultOptions(moduleRoot, workspaceRoot string) Options {
 
 func hasLLMProviderEnv() bool {
 	return os.Getenv("CODEN_ACP_COMMAND") != "" ||
+		os.Getenv("CODEN_CODEX_APP_SERVER_COMMAND") != "" ||
 		os.Getenv("OPENAI_API_KEY") != "" ||
 		os.Getenv("ANTHROPIC_API_KEY") != "" ||
 		os.Getenv("DEEPSEEK_API_KEY") != "" ||

@@ -40,3 +40,5 @@ secrets.yml
 .vscode/
 *.swp
 *.swo
+/artifacts
+.coden/*

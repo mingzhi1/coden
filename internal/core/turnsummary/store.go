@@ -132,12 +132,15 @@ CREATE TABLE IF NOT EXISTS turn_summaries (
 	task_results_json TEXT NOT NULL,
 	changed_files_json TEXT NOT NULL,
 	checkpoint_json TEXT NOT NULL,
+	response TEXT NOT NULL DEFAULT '',
 	created_at_unix_nano INTEGER NOT NULL,
 	PRIMARY KEY (id)
 )`)
 	if err != nil {
 		return fmt.Errorf("create turn_summaries table: %w", err)
 	}
+	// Migration for databases created before the response column existed.
+	_, _ = s.db.Exec(`ALTER TABLE turn_summaries ADD COLUMN response TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_turn_summaries_session ON turn_summaries(session_id, created_at_unix_nano DESC)`)
 	return nil
 }
@@ -164,13 +167,14 @@ func (s *sqliteStore) Save(summary model.TurnSummary) error {
 INSERT INTO turn_summaries (
 	id, turn_id, session_id,
 	intent_json, task_results_json, changed_files_json, checkpoint_json,
-	created_at_unix_nano
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	response, created_at_unix_nano
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(turn_id) DO UPDATE SET
 	intent_json=excluded.intent_json,
 	task_results_json=excluded.task_results_json,
 	changed_files_json=excluded.changed_files_json,
 	checkpoint_json=excluded.checkpoint_json,
+	response=excluded.response,
 	created_at_unix_nano=excluded.created_at_unix_nano
 `,
 		summary.ID,
@@ -180,6 +184,7 @@ ON CONFLICT(turn_id) DO UPDATE SET
 		string(taskResultsJSON),
 		string(changedFilesJSON),
 		string(checkpointJSON),
+		summary.Response,
 		summary.CreatedAt.UnixNano(),
 	)
 	if err != nil {
@@ -190,7 +195,7 @@ ON CONFLICT(turn_id) DO UPDATE SET
 
 func (s *sqliteStore) Get(turnID string) (model.TurnSummary, bool) {
 	row := s.db.QueryRow(`
-SELECT id, turn_id, session_id, intent_json, task_results_json, changed_files_json, checkpoint_json, created_at_unix_nano
+SELECT id, turn_id, session_id, intent_json, task_results_json, changed_files_json, checkpoint_json, response, created_at_unix_nano
 FROM turn_summaries
 WHERE turn_id = ?
 `, turnID)
@@ -199,7 +204,7 @@ WHERE turn_id = ?
 
 func (s *sqliteStore) ListBySession(sessionID string, limit int) []model.TurnSummary {
 	query := `
-SELECT id, turn_id, session_id, intent_json, task_results_json, changed_files_json, checkpoint_json, created_at_unix_nano
+SELECT id, turn_id, session_id, intent_json, task_results_json, changed_files_json, checkpoint_json, response, created_at_unix_nano
 FROM turn_summaries
 WHERE session_id = ?
 ORDER BY created_at_unix_nano DESC
@@ -261,6 +266,7 @@ func scanSummaryFields(scanner rowScanner) (model.TurnSummary, bool) {
 		&taskResultsJSON,
 		&changedFilesJSON,
 		&checkpointJSON,
+		&summary.Response,
 		&createdAtUnixNano,
 	)
 	if err != nil {

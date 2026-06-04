@@ -220,6 +220,16 @@ func run(args []string) error {
 				opts.Acceptor = "llm"
 				opts.Agentic = true
 			}
+		} else if llmCfg := loadLLMConfig(*workspaceRoot); len(llmCfg.Providers) > 0 {
+			// config.yaml declares explicit providers — build the broker from it so
+			// the documented `llm.providers` / `pool` / `routing` config takes effect
+			// for the embedded launcher (previously BrokerFromConfig was never wired).
+			registry = launcher.DefaultFromConfig(llmCfg, *workspaceRoot)
+			opts.Input = "llm"
+			opts.Planner = "llm"
+			opts.Coder = "llm"
+			opts.Acceptor = "llm"
+			opts.Agentic = true
 		} else {
 			registry = launcher.Default()
 		}
@@ -522,6 +532,8 @@ func newKernel(ctx context.Context, workspaceRoot, stateDBPath string, opts laun
 		k.SetReplanner(llm.NewLLMReplanner(chatter))
 		// Critic reviews plan before execution for structural anti-narcissism.
 		k.SetCritic(llm.NewLLMCritic(chatter))
+		// Responder synthesizes the final user-facing reply (Light tier).
+		k.SetResponder(llm.NewLLMResponder(chatter))
 	}
 	// SA-10: Wire optional Searcher dependency from the launcher.
 	if deps.Searcher != nil {
@@ -654,6 +666,18 @@ func loadLLMServerConfig(workspaceRoot string) config.ServerConfig {
 	return cfg.LLM.Server
 }
 
+// loadLLMConfig loads the full `llm:` config block (providers / pool / routing)
+// for the embedded launcher. Returns an empty config on load failure so callers
+// can simply check len(Providers).
+func loadLLMConfig(workspaceRoot string) config.LLMConfig {
+	loader := config.NewLoader(workspaceRoot)
+	cfg, err := loader.Load()
+	if err != nil {
+		return config.LLMConfig{}
+	}
+	return cfg.LLM
+}
+
 // findConfigPath returns the path to the first existing config.yaml
 // that the sidecar should read. Returns empty if not found.
 func findConfigPath(workspaceRoot string) string {
@@ -669,15 +693,19 @@ func findConfigPath(workspaceRoot string) string {
 // needsLLM returns true if any workflow stage requires an LLM-backed worker.
 // When all stages are "loopback" (stub), LLM keys are optional.
 func needsLLM(opts launcher.Options) bool {
+	// Only the reasoning workers consume an LLM. "process" is their default and
+	// resolves to llm when a provider is available; "loopback" runs credential-free
+	// stubs. The tool Executor is always a subprocess (shell/fs, zero LLM) — it must
+	// NOT count toward needsLLM, otherwise the credential-free loopback fallback can
+	// never start (Executor is hardwired to "process").
 	llmModes := map[string]bool{
 		"llm":     true,
-		"process": true, // process is the default and resolves to llm when available
+		"process": true,
 	}
 	return llmModes[opts.Input] ||
 		llmModes[opts.Planner] ||
 		llmModes[opts.Coder] ||
-		llmModes[opts.Acceptor] ||
-		llmModes[opts.Executor]
+		llmModes[opts.Acceptor]
 }
 
 func defaultStateDBPath(workspaceRoot string) string {

@@ -134,6 +134,12 @@ func (s *sqliteStore) init() error {
 	if _, err := s.db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
 		return fmt.Errorf("set busy_timeout: %w", err)
 	}
+	// WAL avoids the exclusive-lock contention that caused SQLITE_BUSY when the
+	// saga commit writes checkpoint + turn + message + insight to the shared
+	// workspace sqlite file concurrently. (Persistent, file-level.)
+	if _, err := s.db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
+		return fmt.Errorf("set journal_mode WAL: %w", err)
+	}
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS checkpoint_results (
 	session_id TEXT NOT NULL,

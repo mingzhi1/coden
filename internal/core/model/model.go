@@ -288,8 +288,9 @@ const (
 	IntentKindQuestion = "question" // ask a question (no code changes)
 	IntentKindConfig   = "config"   // configuration or setup task
 	IntentKindChat     = "chat"     // conversational discussion, explanation
-	IntentKindAnalyze  = "analyze"  // code analysis, review, understanding
-	IntentKindOther    = "other"    // fallback for unclassifiable requests
+	IntentKindAnalyze  = "analyze"   // code analysis, review, understanding (read-only)
+	IntentKindPlanOnly = "plan_only" // produce & review a plan, do not execute
+	IntentKindOther    = "other"     // fallback for unclassifiable requests
 )
 
 type IntentSpec struct {
@@ -438,7 +439,12 @@ type TurnSummary struct {
 	TaskResults  []TaskResult     `json:"task_results"`
 	ChangedFiles []FileChange     `json:"changed_files"`
 	Checkpoint   CheckpointResult `json:"checkpoint"`
-	CreatedAt    time.Time        `json:"created_at"`
+	// Response is the user-facing assistant reply produced by the Responder for
+	// this turn. It is fed back to the Inputter next turn so follow-ups like
+	// "do it" / "go ahead" can be resolved against what was actually said
+	// (e.g. a plan_only proposal → execute it).
+	Response  string    `json:"response,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // FixGuidanceEntry records one round of acceptor rejection with its fix guidance.
@@ -594,7 +600,25 @@ type WorkflowContext struct {
 	// Non-empty when the Critic ran and found problems; injected into the
 	// Replanner prompt so the refined plan addresses the critique.
 	CritiqueIssues []string
+
+	// CoderMode controls whether the agentic Coder may modify the repo.
+	// Zero value (CoderModeReadWrite) preserves existing behavior; the kernel
+	// sets CoderModeReadOnly for read-only intents (e.g. analyze) so the Coder
+	// executes only read tools and never write_file/edit_file/run_shell.
+	CoderMode CoderMode
 }
+
+// CoderMode controls the agentic Coder's tool execution policy.
+type CoderMode int
+
+const (
+	// CoderModeReadWrite is the default: the Coder may execute read AND mutation
+	// tools (write_file / edit_file / run_shell).
+	CoderModeReadWrite CoderMode = iota
+	// CoderModeReadOnly restricts the Coder to read tools (read_file / search /
+	// list_dir / grep / lsp / rag_search). Mutations are skipped, never executed.
+	CoderModeReadOnly
+)
 
 // FileSnippet holds a pre-fetched excerpt of a workspace file.
 type FileSnippet struct {

@@ -167,9 +167,14 @@ func (p *Acp) resetConn() {
 	}
 }
 
-func convertToAcpMessages(messages []Message) []acp.PromptMessage {
+// convertToAcpMessages flattens chat-style messages into ACP content blocks.
+// ACP's session/prompt takes a ContentBlock[] (a single user turn), not a
+// role-tagged message array, so we emit one text block per turn and fold any
+// system text into the following user turn. Conversation history is carried
+// inline because CodeN drives each prompt statelessly.
+func convertToAcpMessages(messages []Message) []acp.ContentBlock {
 	var system strings.Builder
-	var out []acp.PromptMessage
+	var blocks []acp.ContentBlock
 
 	for _, m := range messages {
 		if m.Role == "system" {
@@ -186,10 +191,11 @@ func convertToAcpMessages(messages []Message) []acp.PromptMessage {
 			system.Reset()
 		}
 
-		out = append(out, acp.PromptMessage{
-			Role:    m.Role,
-			Content: []acp.ContentBlock{{Type: "text", Text: content}},
-		})
+		blocks = append(blocks, acp.ContentBlock{Type: "text", Text: content})
 	}
-	return out
+	// Trailing system text with no following user turn.
+	if system.Len() > 0 {
+		blocks = append(blocks, acp.ContentBlock{Type: "text", Text: system.String()})
+	}
+	return blocks
 }

@@ -65,11 +65,19 @@ func Dial(ctx context.Context, cfg DialConfig) (*Conn, error) {
 		return nil, fmt.Errorf("acp(%s): start: %w", cfg.Name, err)
 	}
 
+	// ACP messages carry full LLM prompts/responses (file context, discovery
+	// snippets, long completions) on a single ndJSON line, which routinely
+	// exceeds bufio.Scanner's 64KB default. Without a larger buffer Scan() fails
+	// with ErrTooLong, the readLoop dies, and in-flight calls hang. Allow lines
+	// up to 64MB.
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
+
 	conn := &Conn{
 		Name:     cfg.Name,
 		cmd:      cmd,
 		stdin:    stdin,
-		stdout:   bufio.NewScanner(stdout),
+		stdout:   sc,
 		pending:  make(map[int64]chan json.RawMessage),
 		NotifyCh: make(chan Notification, 64),
 	}

@@ -3,6 +3,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -38,20 +39,31 @@ type Config struct {
 	AcpArgs    []string
 	AcpEnv     map[string]string
 	AcpCwd     string
+
+	CodexName    string
+	CodexCommand string
+	CodexArgs    []string
+	CodexEnv     map[string]string
+	CodexCwd     string
 }
 
 // New creates a Client from config.
 func New(cfg Config) *Client {
 	backend, model := provider.New(provider.Config{
-		Provider:   cfg.Provider,
-		APIKey:     cfg.APIKey,
-		BaseURL:    cfg.BaseURL,
-		Model:      cfg.Model,
-		AcpName:    cfg.AcpName,
-		AcpCommand: cfg.AcpCommand,
-		AcpArgs:    cfg.AcpArgs,
-		AcpEnv:     cfg.AcpEnv,
-		AcpCwd:     cfg.AcpCwd,
+		Provider:     cfg.Provider,
+		APIKey:       cfg.APIKey,
+		BaseURL:      cfg.BaseURL,
+		Model:        cfg.Model,
+		AcpName:      cfg.AcpName,
+		AcpCommand:   cfg.AcpCommand,
+		AcpArgs:      cfg.AcpArgs,
+		AcpEnv:       cfg.AcpEnv,
+		AcpCwd:       cfg.AcpCwd,
+		CodexName:    cfg.CodexName,
+		CodexCommand: cfg.CodexCommand,
+		CodexArgs:    cfg.CodexArgs,
+		CodexEnv:     cfg.CodexEnv,
+		CodexCwd:     cfg.CodexCwd,
 	})
 	return &Client{model: model, name: backend.Name(), backend: backend}
 }
@@ -122,13 +134,24 @@ func (p *Pool) AddWithProvider(backend provider.ChatProvider, model string) {
 
 // Chat tries primary clients in order. Returns the first success.
 func (p *Pool) Chat(ctx context.Context, messages []Message) (string, error) {
-	return p.chatFromTier(ctx, p.primary, messages)
+	return p.chatFromTier(ctx, p.primary, messages, true)
 }
 
 // ChatLight tries light clients first, falls back to primary pool.
 func (p *Pool) ChatLight(ctx context.Context, messages []Message) (string, error) {
+	return p.chatLight(ctx, messages, true)
+}
+
+// ChatLightAllowShort is like ChatLight but does NOT treat short replies as
+// degenerate. Used by free-text roles (e.g. Responder) whose legitimate output
+// is often shorter than DegenerateReplyThreshold (a greeting, a one-line answer).
+func (p *Pool) ChatLightAllowShort(ctx context.Context, messages []Message) (string, error) {
+	return p.chatLight(ctx, messages, false)
+}
+
+func (p *Pool) chatLight(ctx context.Context, messages []Message, checkDegenerate bool) (string, error) {
 	if len(p.light) > 0 {
-		reply, err := p.chatFromTier(ctx, p.light, messages)
+		reply, err := p.chatFromTier(ctx, p.light, messages, checkDegenerate)
 		if err == nil {
 			return reply, nil
 		}
@@ -139,10 +162,10 @@ func (p *Pool) ChatLight(ctx context.Context, messages []Message) (string, error
 		}
 		slog.Warn("[llm] light tier exhausted, falling back to primary", "error", err)
 	}
-	return p.Chat(ctx, messages)
+	return p.chatFromTier(ctx, p.primary, messages, checkDegenerate)
 }
 
-func (p *Pool) chatFromTier(ctx context.Context, tier []*Client, messages []Message) (string, error) {
+func (p *Pool) chatFromTier(ctx context.Context, tier []*Client, messages []Message, checkDegenerate bool) (string, error) {
 	var lastErr error
 	skipped := 0
 	for i, c := range tier {
@@ -155,15 +178,23 @@ func (p *Pool) chatFromTier(ctx context.Context, tier []*Client, messages []Mess
 		slog.Info("[llm] trying provider", "provider", c.Provider(), "model", c.Model(), "attempt", i+1, "total", len(tier))
 		reply, err := chatWithRetry(ctx, c, messages)
 		if err == nil {
-			// Check for degenerate response (very short reply after rate limiting).
-			if IsDegenerateReply(reply) {
+			// A degenerate response is HTTP 200 but uselessly short (typically
+			// rate-limit degradation). Treat it as a soft failure: record it for the
+			// circuit breaker AND fall through to the next provider in the tier
+			// instead of returning the useless reply. Only if no provider yields a
+			// usable reply does the degenerate error surface — which lets ChatLight
+			// fall back to the primary tier and upper layers react, rather than
+			// handing a worker garbage that silently fails to parse.
+			if checkDegenerate && IsDegenerateReply(reply) {
 				p.recordSoftFailure(key)
-				slog.Warn("[llm] degenerate response detected",
+				slog.Warn("[llm] degenerate response, trying next provider",
 					"provider", c.Provider(), "model", c.Model(),
-					"reply_len", len(reply))
-			} else {
-				p.recordSuccess(key)
+					"reply_len", len(reply),
+					"reply", capForLog(reply)) // DEBUG: see exactly what the short reply contained
+				lastErr = &DegenerateResponseError{Reply: reply, ReplyLen: len(strings.TrimSpace(reply))}
+				continue
 			}
+			p.recordSuccess(key)
 			slog.Info("[llm] provider succeeded", "provider", c.Provider(), "model", c.Model(), "reply_len", len(reply))
 			return reply, nil
 		}
@@ -360,10 +391,31 @@ func (e *DegenerateResponseError) Error() string {
 // are flagged as degenerate.
 const DegenerateReplyThreshold = 40
 
+// capForLog truncates a string for safe logging of reply contents.
+func capForLog(s string) string {
+	const max = 800
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…(truncated)"
+}
+
 // IsDegenerateReply checks if a reply is too short to contain useful content.
 // Callers should combine this with a check for zero tool calls.
 func IsDegenerateReply(reply string) bool {
-	return len(strings.TrimSpace(reply)) < DegenerateReplyThreshold
+	trimmed := strings.TrimSpace(reply)
+	if len(trimmed) >= DegenerateReplyThreshold {
+		return false
+	}
+	// A short reply that still carries a valid JSON value is legitimate
+	// structured output, NOT rate-limit garbage. Workers emit JSON, and a
+	// correct-but-terse answer like {"tool_calls": []} ("no changes needed") is
+	// only ~18 chars — flagging it degenerate caused trivial prompts (e.g. "hi")
+	// to fail the whole workflow once degeneracy triggered provider fallback.
+	if json.Valid([]byte(extractJSON(trimmed))) {
+		return false
+	}
+	return true
 }
 
 // CircuitBreakerOpenError is returned when all providers in a pool tier
@@ -458,7 +510,7 @@ func DefaultClient() *Client {
 // PoolFromConfig builds a Pool driven by the unified LLMConfig.
 // Provider entries are resolved by name from cfg.Providers; the Pool tiers
 // (Primary/Light) are populated in the order specified by cfg.Pool.
-// If workspaceCwd is non-empty, ACP providers receive it as the session CWD.
+// If workspaceCwd is non-empty, subprocess providers receive it as the session CWD.
 func PoolFromConfig(cfg config.LLMConfig, workspaceCwd string) *Pool {
 	pool := NewPool()
 
@@ -476,6 +528,18 @@ func PoolFromConfig(cfg config.LLMConfig, workspaceCwd string) *Pool {
 				AcpArgs:    entry.Args,
 				AcpEnv:     entry.Env,
 				AcpCwd:     workspaceCwd,
+				Model:      entry.DefaultModel, // ACP session model (claude-code-acp: session/set_model)
+			}
+		}
+		if isCodexAppServerType(entry.EffectiveType()) {
+			return Config{
+				Provider:     "codex_app_server",
+				Model:        entry.DefaultModel,
+				CodexName:    name,
+				CodexCommand: entry.Command,
+				CodexArgs:    entry.Args,
+				CodexEnv:     entry.Env,
+				CodexCwd:     workspaceCwd,
 			}
 		}
 		// HTTP provider
@@ -516,6 +580,18 @@ func BrokerFromConfig(cfg config.LLMConfig, workspaceCwd string) *Broker {
 				AcpArgs:    entry.Args,
 				AcpEnv:     entry.Env,
 				AcpCwd:     workspaceCwd,
+				Model:      entry.DefaultModel, // ACP session model (claude-code-acp: session/set_model)
+			}
+		}
+		if isCodexAppServerType(entry.EffectiveType()) {
+			return Config{
+				Provider:     "codex_app_server",
+				Model:        entry.DefaultModel,
+				CodexName:    name,
+				CodexCommand: entry.Command,
+				CodexArgs:    entry.Args,
+				CodexEnv:     entry.Env,
+				CodexCwd:     workspaceCwd,
 			}
 		}
 		return Config{
@@ -543,12 +619,30 @@ func BrokerFromConfig(cfg config.LLMConfig, workspaceCwd string) *Broker {
 	return broker
 }
 
+func isCodexAppServerType(providerType string) bool {
+	switch strings.ToLower(providerType) {
+	case "codex", "codex-app-server", "codex_app_server":
+		return true
+	default:
+		return false
+	}
+}
+
 // DefaultPool creates a pool auto-configured from env.
 // Discovers all available API keys and adds them to appropriate tiers.
 func DefaultPool() *Pool {
 	pool := NewPool()
 
 	// Primary tier: add all configured providers (strongest first)
+	if codexCmd := strings.TrimSpace(os.Getenv("CODEN_CODEX_APP_SERVER_COMMAND")); codexCmd != "" {
+		codexName := strings.TrimSpace(os.Getenv("CODEN_CODEX_APP_SERVER_NAME"))
+		if codexName == "" {
+			codexName = "codex"
+		}
+		cfg := Config{Provider: "codex_app_server", CodexName: codexName, CodexCommand: codexCmd, Model: os.Getenv("CODEX_MODEL")}
+		pool.Add(cfg)
+		pool.AddLight(cfg)
+	}
 	if acpCmd := strings.TrimSpace(os.Getenv("CODEN_ACP_COMMAND")); acpCmd != "" {
 		acpName := strings.TrimSpace(os.Getenv("CODEN_ACP_NAME"))
 		if acpName == "" {

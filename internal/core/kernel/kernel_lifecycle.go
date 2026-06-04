@@ -132,6 +132,12 @@ func (k *Kernel) SetCritic(c workflow.Critic) {
 	k.workflow.SetCritic(c)
 }
 
+// SetResponder configures the Responder — the final pipeline stage that
+// synthesizes the user-facing response from the workflow outcome.
+func (k *Kernel) SetResponder(r workflow.Responder) {
+	k.workflow.SetResponder(r)
+}
+
 // Start 执行一次性启动任务：
 //   - L4-08: 扫描孤儿 turns（状态=running）并标记为 "crashed"
 //

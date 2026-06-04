@@ -62,10 +62,22 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 	// answer artifact, or it may be empty. Either way we auto-pass.
 	var artifact model.Artifact
 	if codeResult.CodePlan != nil {
-		calls := codeResult.CodePlan.Calls()
-		if len(calls) > 0 {
+		// A question/chat answer must never modify the repo. Drop mutation tool
+		// calls (write_file/edit_file/run_shell); the answer is the coder's text
+		// reply. This guards against the model trying to write its answer to a file.
+		var safe []workflow.ToolCall
+		for _, call := range codeResult.CodePlan.Calls() {
+			switch call.Request.Kind {
+			case "write_file", "edit_file", "run_shell":
+				slog.Info("[question] dropping mutation tool call in answer mode",
+					"session", sessionID, "kind", call.Request.Kind)
+			default:
+				safe = append(safe, call)
+			}
+		}
+		if len(safe) > 0 {
 			workerID := workerIDFor(roleOrDefault(codeResult.Metadata, workflow.RoleCoder))
-			artifact, _, err = k.executeToolPlan(ctx, sessionID, workflowID, workerID, nil, calls)
+			artifact, _, err = k.executeToolPlan(ctx, sessionID, workflowID, workerID, nil, safe)
 			if err != nil {
 				k.handleWorkflowError(sessionID, workflowID, err)
 				return
@@ -95,7 +107,8 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 		ID:        nextKernelID("msg-assistant"),
 		SessionID: sessionID,
 		Role:      "assistant",
-		Content:   k.buildAssistantCompletionMessage(sessionID, checkpointResult, artifact),
+		// Question/chat: Responder answers directly (nil tasks → "no work done").
+		Content:   k.buildResponderMessage(ctx, sessionID, intent, nil, checkpointResult, artifact),
 		CreatedAt: time.Now(),
 	}
 

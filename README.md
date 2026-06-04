@@ -64,26 +64,42 @@ Clients: TUI / CLI / Web
 ```
 用户输入
   → Intent    意图解析 → IntentSpec + Kind          [Light LLM]
-  └─ question → Coder 直接回答 → 结束
-  → Plan      WHAT：任务 DAG + 依赖关系              [Strong LLM]
-  → Discovery WHERE：grep / LSP / RAG 并行搜索       [零 LLM 成本]
-  → Critic    REVIEW：异构 Provider 审查，反自恋     [Strong LLM, 不同厂商]
-  → RePlan    HOW：基于真实代码细化到函数/行号        [Strong LLM]
+  │
+  ├─ 意图自适应路由（声明式 PipelinePolicy：Kind → 阶段集，所有路径收口 Responder）
+  │   question / chat / other          → Responder                          （直答）
+  │   analyze                          → Discovery → Analyzer(只读) → Responder  （读代码出分析,零修改）
+  │   plan_only                        → Discovery → Plan → Critic → RePlan → Responder  （出计划并审核,不执行）
+  │   code_gen / debug / refactor / config → 完整流水线 → Responder
+  │
+  → Discovery WHERE：grep / LSP / RAG 捞片段          [零 LLM 成本]
+  → Plan      WHAT：任务 DAG + 依赖关系               [Strong LLM]
+  → Critic    REVIEW：异构 Provider 审查,反自恋        [Strong LLM, 不同厂商]
+  → RePlan    HOW：细化到函数/行号                     [Strong LLM]
   → Kernel 调度（按 DAG 并行）
       ├─→ Coder × N   执行 patch                   [Light LLM]
       ├─→ Tool Runtime write / edit / shell
       └─→ Acceptor    pass/fail + FixGuidance       [Strong LLM]
             ├─ pass → task.passed
             └─ fail → inject FixGuidance → Coder retry
+  → Responder 收口：把意图 + 所做/结果合成面向用户的响应  [Light LLM]
   → Checkpoint 存档 + Secretary AfterTurn → MEMORY.md
 ```
+
+> **设计要点（声明式 PipelinePolicy）**：路由查一张 `policyForKind(Kind)` 策略表,条件化执行
+> 各阶段——单一真相源。角色不混用:
+> - **Analyzer 只服务 `analyze`**(读代码出分析,只读、零修改),**不前置代码任务、不喂其他角色**;
+> - **Coder 纯写**、**Responder 纯收口**、**Discovery 纯检索**;
+> - `plan_only`(高频:只想要计划)→ Plan+Critic+RePlan 后收口,**不执行**;
+> - 简单意图(`hi`)直达 Responder,从几分钟降到几秒。
+>
+> 详见 `docs/ARCHITECTURE.md` 的 PipelinePolicy 表与阶段详情。
 
 **流水线组件分类**
 
 | 类别 | 组件 | 说明 |
 |------|------|------|
 | **Dispatched Workers**（经 `executeWorker` 调度） | Intent / Plan / Coder / Acceptor | 标准 Worker 生命周期，产生事件与 tracing |
-| **Inline Components**（Kernel 直接调用） | Discovery / Critic / RePlan | Kernel 内部同步调用，不经过 Worker dispatch |
+| **Inline Components**（Kernel 直接调用） | Discovery / Critic / RePlan / Responder | Kernel 内部同步调用，不经过 Worker dispatch |
 | **Background Service** | Secretary | 异步执行，策略引擎 + MEMORY.md 写入 |
 
 **LLM 模型分层原则**
@@ -91,7 +107,7 @@ Clients: TUI / CLI / Web
 | 组件 | 档次 | 原因 |
 |------|------|------|
 | Planner / Critic / Replanner / Acceptor | **Strong** | 决策点，错误代价高 |
-| Intent / Coder | **Light** | 执行点，速度优先 |
+| Intent / Coder / Responder | **Light** | 执行点 / 收口总结，速度优先 |
 | Critic | **异构 Provider** | 与 Planner 不同厂商，消除盲区 |
 | Discovery | **零 LLM** | 纯代码工具（grep / LSP / RAG），不调用 LLM |
 | Secretary | **条件性 Light** | AfterTurn 阶段可选调用 LLM 提取 insight |
@@ -193,6 +209,15 @@ llm:
 | RAG | 语义召回，BM25，大仓库跨文件检索 |
 
 RAG 索引只包含验收通过的代码，写入期间标记 stale。
+
+**RAG 索引生命周期**：
+
+| 时机 | 动作 | 现状 |
+|------|------|------|
+| checkpoint 通过后 | 增量更新变更文件（`rag_index_update`） | ✅ 已实现 |
+| `analyze` 等检索路径前 | 索引为空/stale → **按需补丁式增量构建**(只建涉及范围,不阻塞式全量 rebuild) | 🔧 设计待实现 |
+
+> 缺口:目前**只有增量更新、没有全量/按需构建**——已有代码库首次运行时 RAG 索引为空，`rag_search` 实际失效，仅靠 grep/LSP。`analyze` 路由依赖此项补齐。
 
 ---
 

@@ -86,7 +86,7 @@ type ChatProvider interface {
 
 // Config holds the provider configuration.
 type Config struct {
-	Provider string // "openai" | "anthropic" | "deepseek" | "minimax" | "copilot" | "acp" | ""=auto
+	Provider string // "openai" | "anthropic" | "deepseek" | "minimax" | "copilot" | "acp" | "codex_app_server" | ""=auto
 	APIKey   string
 	BaseURL  string // OpenAI-compatible base URL override (also used by anthropic)
 	Model    string
@@ -96,6 +96,13 @@ type Config struct {
 	AcpArgs    []string          // additional CLI arguments
 	AcpEnv     map[string]string // environment variables
 	AcpCwd     string            // working directory for ACP sessions
+
+	// Codex app-server specific fields (only used when Provider == "codex_app_server").
+	CodexName    string
+	CodexCommand string
+	CodexArgs    []string
+	CodexEnv     map[string]string
+	CodexCwd     string
 }
 
 // New creates a ChatProvider from config. Auto-detects if Provider is empty.
@@ -126,6 +133,14 @@ func New(cfg Config) (ChatProvider, string) {
 			Env:     cfg.AcpEnv,
 			CWD:     cfg.AcpCwd,
 		}), model
+	case "codex-app-server", "codex_app_server", "codex":
+		return NewCodexAppServer(CodexAppServerConfig{
+			Name:    cfg.CodexName,
+			Command: cfg.CodexCommand,
+			Args:    cfg.CodexArgs,
+			Env:     cfg.CodexEnv,
+			CWD:     cfg.CodexCwd,
+		}), model
 	case "anthropic":
 		return NewAnthropic(cfg.APIKey, cfg.BaseURL, httpCli), model
 	case "deepseek":
@@ -140,6 +155,9 @@ func New(cfg Config) (ChatProvider, string) {
 }
 
 func autoDetect() string {
+	if os.Getenv("CODEN_CODEX_APP_SERVER_COMMAND") != "" {
+		return "codex_app_server"
+	}
 	// ACP providers take priority when configured.
 	if os.Getenv("CODEN_ACP_COMMAND") != "" {
 		return "acp"
@@ -169,6 +187,8 @@ func defaultModel(providerName string) string {
 		return envOr("MINIMAX_MODEL", "MiniMax-M2.7")
 	case "copilot":
 		return envOr("COPILOT_MODEL", "gpt-4o")
+	case "codex", "codex-app-server", "codex_app_server":
+		return envOr("CODEX_MODEL", "gpt-5.4")
 	default:
 		return envOr("OPENAI_MODEL", "gpt-4o-mini")
 	}

@@ -134,6 +134,24 @@ func (l *Loader) applyEnvOverrides(cfg *Config) {
 			cfg.LLM.Pool.Primary = append([]string{acpName}, cfg.LLM.Pool.Primary...)
 		}
 	}
+
+	// Codex app-server provider from env.
+	if codexCmd := os.Getenv(l.envPrefix + "CODEX_APP_SERVER_COMMAND"); codexCmd != "" {
+		if cfg.LLM.Providers == nil {
+			cfg.LLM.Providers = make(map[string]ProviderEntry)
+		}
+		codexName := os.Getenv(l.envPrefix + "CODEX_APP_SERVER_NAME")
+		if codexName == "" {
+			codexName = "codex"
+		}
+		cfg.LLM.Providers[codexName] = ProviderEntry{
+			Type:    "codex_app_server",
+			Command: codexCmd,
+		}
+		if !containsString(cfg.LLM.Pool.Primary, codexName) {
+			cfg.LLM.Pool.Primary = append([]string{codexName}, cfg.LLM.Pool.Primary...)
+		}
+	}
 }
 
 func containsString(ss []string, s string) bool {

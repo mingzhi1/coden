@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -100,6 +101,12 @@ func (c *LLMCoder) Build(ctx context.Context, workflowID string, intent model.In
 		{Role: "user", Content: userMsg},
 	}
 
+	// Questions / chat must not modify the repo (IntentKindQuestion is defined as
+	// "no code changes"). Force single-shot text mode so the agentic loop never
+	// pre-executes file writes for a greeting or an explanation.
+	if intent.IsQuestion() {
+		return c.singleShotBuild(ctx, workflowID, intent, messages)
+	}
 	if c.executor == nil {
 		return c.singleShotBuild(ctx, workflowID, intent, messages)
 	}
@@ -125,6 +132,11 @@ func (c *LLMCoder) singleShotBuild(ctx context.Context, workflowID string, inten
 
 func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent model.IntentSpec, messages []Message) (workflow.CodePlan, error) {
 	var allMutations []workflow.ToolCall
+
+	// Read-only mode (e.g. analyze): the Coder may execute read tools to gather
+	// context but must NEVER modify the repo. Mutation tool calls are reported
+	// back to the model as "not executed" and dropped — see the loop below.
+	readOnly := model.WorkflowContextFrom(ctx).CoderMode == model.CoderModeReadOnly
 
 	// M8-07: Token budget for the agentic message history.
 	// Allocation: tool-history 40% of available tokens (after system+context).
@@ -153,7 +165,7 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 		}
 	}()
 
-	// T1-02: Output-side continuation tracker — nudges the model to keep
+		// T1-02: Output-side continuation tracker — nudges the model to keep
 	// working when it stops before exhausting the output token budget.
 	// Budget set to availableTokens (conservative prompt budget).
 	contTracker := tokenbudget.NewContinuationTracker(30000)
@@ -221,9 +233,15 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 
 			// T1-02: Check if the model stopped prematurely — nudge to continue
 			// if the output token budget has not been sufficiently consumed.
+			//
+			// EXCEPTION: an explicit empty tool_calls array is the protocol's
+			// "I'm done" signal (the prompt instructs the model to reply with
+			// {"tool_calls": []} when finished). Nudging it to continue would loop
+			// forever on trivial turns (e.g. a chat greeting that needs no tools),
+			// since a short final reply always looks "budget under-consumed".
 			cumulativeOutputTokens += tokenbudget.EstimateTokens(reply)
 			decision := contTracker.Check(cumulativeOutputTokens)
-			if decision.ShouldContinue {
+			if decision.ShouldContinue && !replyDeclaresDone(reply) {
 				slog.Info("[llm:coder] token budget continuation",
 					"round", round+1, "pct", decision.Pct, "tokens", decision.TurnTokens)
 				c.push("info", "coder", fmt.Sprintf("round %d: budget %d%% used, nudging to continue", round+1, decision.Pct))
@@ -268,6 +286,17 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 
 		resultSummary.WriteString(executeReadsParallel(ctx, c.executor, reads, readBudgetChars, round+1, c.push, c.outputCompressor))
 
+		// Read-only mode: drop mutations without executing them, and tell the
+		// model they were not run so it stops re-issuing writes and concludes.
+		if readOnly && len(mutations) > 0 {
+			for _, call := range mutations {
+				slog.Info("[llm:coder] read-only mode: skipping mutation", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call))
+				c.push("info", "coder", fmt.Sprintf("round %d: read-only — skipped %s %s", round+1, call.Request.Kind, toolCallTarget(call)))
+				fmt.Fprintf(&resultSummary, "\n### %s %s\n(read-only analysis mode: NOT executed — do not modify files; provide your analysis as text)\n", call.Request.Kind, toolCallTarget(call))
+			}
+			mutations = nil
+		}
+
 		for _, call := range mutations {
 			slog.Info("[llm:coder] executing mutation tool call", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call))
 			result, execErr := deps.Execute(ctx, call.Request)
@@ -305,6 +334,12 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 	}
 
 	if len(allMutations) == 0 {
+		if readOnly {
+			// Read-only (analyze): producing no mutations is the expected outcome —
+			// the investigation is done by reading. Return an empty plan so the
+			// workflow completes and the Responder delivers the analysis.
+			return workflow.CodePlan{}, nil
+		}
 		return workflow.CodePlan{}, fmt.Errorf("coder agentic loop produced no mutations after %d rounds", maxCoderRounds)
 	}
 
@@ -541,4 +576,18 @@ var _ workflow.Coder = (*LLMCoder)(nil)
 
 func (c *LLMCoder) Metadata() workflow.WorkerMetadata {
 	return workflow.WorkerMetadata{Worker: "llm-coder", Role: workflow.RoleCoder}
+}
+
+// replyDeclaresDone reports whether the reply carries an explicit (present but
+// empty) tool_calls array — the agentic protocol's "I'm finished, no more
+// actions" signal. A pointer slice distinguishes "tool_calls": [] (done) from a
+// reply with no tool_calls key at all (ambiguous — may still warrant a nudge).
+func replyDeclaresDone(reply string) bool {
+	var v struct {
+		ToolCalls *[]json.RawMessage `json:"tool_calls"`
+	}
+	if err := json.Unmarshal([]byte(extractJSON(reply)), &v); err != nil {
+		return false
+	}
+	return v.ToolCalls != nil && len(*v.ToolCalls) == 0
 }

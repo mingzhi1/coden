@@ -140,6 +140,9 @@ func (app *AppModel) AddSessionFromEvent(msg NewSessionCreatedMsg) tea.Cmd {
 		return func() tea.Msg {
 			items, err := api.LoadWorkflowObjectDetails(sessionCtx, app.client, sessionID, workflowID)
 			if err != nil {
+				if isBenignNotFound(err) {
+					return nil // not ready / no objects — don't pop an error overlay
+				}
 				return ErrMsg{Err: err}
 			}
 			return WorkflowObjectsLoadedMsg{WorkflowID: workflowID, Items: items}
@@ -150,6 +153,9 @@ func (app *AppModel) AddSessionFromEvent(msg NewSessionCreatedMsg) tea.Cmd {
 		return func() tea.Msg {
 			result, err := app.client.GetCheckpoint(sessionCtx, sessionID, workflowID)
 			if err != nil {
+				if isBenignNotFound(err) {
+					return nil // checkpoint not persisted yet — don't pop an error overlay
+				}
 				return ErrMsg{Err: err}
 			}
 			return CheckpointMsg{Result: result}

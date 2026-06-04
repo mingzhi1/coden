@@ -105,6 +105,15 @@ func (s *sqliteStore) init() error {
 	if _, err := s.db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
 		return fmt.Errorf("set busy_timeout: %w", err)
 	}
+	// Enable WAL: every workspace store (session/intent/message/checkpoint/turn/
+	// turnsummary/objectstore/insight) opens the SAME sqlite file from a separate
+	// connection. Without WAL their writes take an exclusive lock and collide
+	// during saga commit ("database is locked", SQLITE_BUSY). WAL is a persistent
+	// file-level mode, so setting it on the first-opened store converts the file
+	// for all connections.
+	if _, err := s.db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
+		return fmt.Errorf("set journal_mode WAL: %w", err)
+	}
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS sessions (
 	session_id TEXT PRIMARY KEY,

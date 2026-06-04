@@ -45,8 +45,8 @@ type ClientInfo struct {
 
 // NewSessionParams for the "newSession" call.
 type NewSessionParams struct {
-	CWD     string         `json:"cwd,omitempty"`
-	Options map[string]any `json:"options,omitempty"`
+	CWD        string `json:"cwd"`
+	MCPServers []any  `json:"mcpServers"`
 }
 
 // NewSessionResult from the "newSession" call.
@@ -54,10 +54,10 @@ type NewSessionResult struct {
 	SessionID string `json:"sessionId"`
 }
 
-// PromptParams for the "prompt" call.
+// PromptParams for the "session/prompt" call.
 type PromptParams struct {
-	SessionID string          `json:"sessionId"`
-	Messages  []PromptMessage `json:"messages"`
+	SessionID string         `json:"sessionId"`
+	Prompt    []ContentBlock `json:"prompt"`
 }
 
 // PromptMessage is a single message in a prompt request.

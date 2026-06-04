@@ -54,20 +54,20 @@ type LLMConfig struct {
 
 // ServerConfig controls the standalone llm-server sidecar.
 type ServerConfig struct {
-	Enabled bool   `yaml:"enabled"`       // CodeN auto-launches llm-server if true
-	Addr    string `yaml:"addr"`          // listen address (default ":7533")
+	Enabled bool   `yaml:"enabled"` // CodeN auto-launches llm-server if true
+	Addr    string `yaml:"addr"`    // listen address (default ":7533")
 }
 
-// ProviderEntry represents a single LLM provider (HTTP API or ACP subprocess).
-// The Type field discriminates between the two transports.
+// ProviderEntry represents a single LLM provider (HTTP API, ACP subprocess, or
+// Codex app-server subprocess). The Type field discriminates the transport.
 type ProviderEntry struct {
-	Type         string            `yaml:"type"`          // "http" (default) | "acp"
+	Type         string            `yaml:"type"`          // "http" (default) | "acp" | "codex_app_server"
 	APIKey       string            `yaml:"api_key"`       // HTTP only
 	BaseURL      string            `yaml:"base_url"`      // HTTP only
-	DefaultModel string            `yaml:"default_model"` // HTTP: model name; ACP: ignored
-	Command      string            `yaml:"command"`       // ACP only: executable command
-	Args         []string          `yaml:"args"`          // ACP only: CLI arguments
-	Env          map[string]string `yaml:"env"`           // ACP only: environment variables
+	DefaultModel string            `yaml:"default_model"` // HTTP/Codex: model name; ACP: ignored
+	Command      string            `yaml:"command"`       // subprocess providers: executable command
+	Args         []string          `yaml:"args"`          // subprocess providers: CLI arguments
+	Env          map[string]string `yaml:"env"`           // subprocess providers: environment variables
 }
 
 // EffectiveType returns the provider type, defaulting to "http".
@@ -136,7 +136,7 @@ type LoggingConfig struct {
 	Level      string `yaml:"level"`  // debug, info, warn, error
 	Format     string `yaml:"format"` // json, text
 	Output     string `yaml:"output"`
-	MaxSize    int    `yaml:"max_size"`    // MB
+	MaxSize    int    `yaml:"max_size"` // MB
 	MaxBackups int    `yaml:"max_backups"`
 	MaxAge     int    `yaml:"max_age"` // days
 }

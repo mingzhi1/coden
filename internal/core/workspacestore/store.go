@@ -86,6 +86,11 @@ func (s *sqliteStore) init() error {
 	if _, err := s.db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
 		return fmt.Errorf("set busy_timeout: %w", err)
 	}
+	// WAL: persistent file-level mode; avoids exclusive-lock SQLITE_BUSY on the
+	// shared main.sqlite when multiple stores/processes write concurrently.
+	if _, err := s.db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
+		return fmt.Errorf("set journal_mode WAL: %w", err)
+	}
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS workspaces (
 	workspace_id TEXT PRIMARY KEY,
