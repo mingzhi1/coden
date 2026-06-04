@@ -1341,3 +1341,35 @@ func runCmdUntilNonSpinner(t *testing.T, cmd tea.Cmd) tea.Msg {
 		}
 	}
 }
+
+// TestLongChatLinesDoNotOverflowLeftPanel guards the layout fix: a chat line
+// far wider than the left panel must be wrapped (not silently inflate the panel
+// past its allotted height and clip the rest of the layout). After rendering,
+// the total view height must not exceed the terminal height, and every rendered
+// row must fit the terminal width.
+func TestLongChatLinesDoNotOverflowLeftPanel(t *testing.T) {
+	// Include the minimum supported size, where there is the least slack to
+	// absorb any panel overflow.
+	for _, dim := range [][2]int{{minWidth, minHeight}, {100, 30}, {120, 26}} {
+		termW, termH := dim[0], dim[1]
+		m := NewModel("demo-session", "")
+		m.Update(tea.WindowSizeMsg{Width: termW, Height: termH})
+
+		// Very long ASCII line + long CJK line — both must wrap, not overflow.
+		m.chatLines = append(m.chatLines,
+			chatMetaLine("system", strings.Repeat("verylongtoken ", 80)),
+			chatMetaLine("assistant", strings.Repeat("分析这段代码的逻辑结构和潜在问题", 40)),
+		)
+
+		view := m.View().Content
+		rows := strings.Split(view, "\n")
+		if len(rows) > termH {
+			t.Fatalf("%dx%d: view height %d exceeds terminal height %d (panel overflowed)", termW, termH, len(rows), termH)
+		}
+		for i, r := range rows {
+			if w := ansi.StringWidth(r); w > termW {
+				t.Fatalf("%dx%d: row %d width %d exceeds terminal width %d: %q", termW, termH, i, w, termW, ansi.Strip(r))
+			}
+		}
+	}
+}

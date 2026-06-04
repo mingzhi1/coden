@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/mingzhi1/coden/internal/ui/styles"
 )
@@ -36,15 +37,20 @@ func (m *Model) RenderContent(width, height int) string {
 	rightBottomBodyRows := max(1, panelBodyRows(bottomRightHeight, 1))
 	rightContentWidth := panelContentWidth(rightWidth)
 
+	leftContentWidth := panelContentWidth(leftWidth)
 	todoLines := m.renderTodoLines(rightContentWidth, rightTopBodyRows)
-	chatContent := m.renderActivePanelLines(leftChatBodyRows)
+	chatContent := m.renderActivePanelLines(leftContentWidth, leftChatBodyRows)
 	changedLines := m.renderChangedPanelLines(rightContentWidth, rightBottomBodyRows)
 
 	leftChatPanelStyle := styles.Panel
 	if m.focus == focusChat {
 		leftChatPanelStyle = styles.PanelFocus
 	}
-	tabHeader := m.renderTabHeader()
+	// Tab header and input hint must stay ONE line each: the panel heights budget
+	// exactly one header line and one hint line. A wider header/hint would wrap at
+	// render time and silently push the panel past its allotted height, overflowing
+	// the left column. Truncate both to the panel content width.
+	tabHeader := ansi.TruncateWc(m.renderTabHeader(), leftContentWidth, "…")
 	leftChatPanel := leftChatPanelStyle.Width(leftWidth).Height(leftChatHeight).Render(
 		tabHeader + "\n" + strings.Join(chatContent, "\n"),
 	)
@@ -52,7 +58,7 @@ func (m *Model) RenderContent(width, height int) string {
 	if m.focus == focusInput && m.acceptsInput() {
 		inputPanelStyle = styles.PanelFocus
 	}
-	inputHint := m.renderInputHint()
+	inputHint := ansi.TruncateWc(m.renderInputHint(), leftContentWidth, "…")
 	leftInputPanel := inputPanelStyle.Width(leftWidth).Height(leftInputHeight).Render(
 		styles.BoldText.Render("Input") + "\n" + m.ti.View() + "\n" + styles.MutedText.Render(inputHint),
 	)
@@ -114,6 +120,33 @@ func panelContentWidth(totalWidth int) int {
 	return max(1, totalWidth-panelHorizontalFrame)
 }
 
+// wrapPanelLines wraps each logical line to fit width visual columns, returning
+// the flattened visual rows (ANSI-aware, so SGR styling survives). This must run
+// BEFORE windowing content to a panel's fixed row budget: lipgloss wraps long
+// lines at render time but does NOT clip to the style's Height, so an unwrapped
+// long line silently inflates the panel past its allotted height and pushes the
+// rest of the layout off-screen. Wrapping here keeps 1 returned row == 1 visual
+// row, so the row budget and scroll math stay accurate.
+func wrapPanelLines(lines []string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			out = append(out, "")
+			continue
+		}
+		// Word-wrap for readable breaks, then hard-wrap any token still wider than
+		// width so nothing can overflow. The Wc variants count East-Asian wide
+		// characters (CJK) as 2 cells, matching the terminal — otherwise CJK lines
+		// would still overflow the panel and re-wrap at render time.
+		wrapped := ansi.HardwrapWc(ansi.WordwrapWc(line, width, ""), width, false)
+		out = append(out, strings.Split(wrapped, "\n")...)
+	}
+	return out
+}
+
 func panelBodyRows(totalHeight int, headerLines int) int {
 	return max(1, totalHeight-2-headerLines)
 }
@@ -142,23 +175,23 @@ func (m *Model) renderTabHeader() string {
 	return strings.Join(parts, " ") + styles.MutedText.Render("  ← 1/2")
 }
 
-func (m *Model) renderActivePanelLines(visibleRows int) []string {
+func (m *Model) renderActivePanelLines(width, visibleRows int) []string {
 	switch m.chatTabActive {
 	case tabHistory:
-		return m.renderHistoryLines(visibleRows)
+		return m.renderHistoryLines(width, visibleRows)
 	default:
-		return m.renderChatLines(visibleRows)
+		return m.renderChatLines(width, visibleRows)
 	}
 }
 
-func (m *Model) renderHistoryLines(visibleRows int) []string {
+func (m *Model) renderHistoryLines(width, visibleRows int) []string {
 	if len(m.turns) == 0 {
 		return []string{styles.MutedText.Render("no turns yet")}
 	}
 
 	// Expanded detail view for selected turn.
 	if m.turnExpanded {
-		return m.renderTurnDetail(visibleRows)
+		return m.renderTurnDetail(width, visibleRows)
 	}
 
 	// Summary list view.
@@ -208,6 +241,7 @@ func (m *Model) renderHistoryLines(visibleRows int) []string {
 
 	lines = append(lines, "", styles.MutedText.Render("enter expand  esc collapse  ↑↓ navigate"))
 
+	lines = wrapPanelLines(lines, width)
 	if visibleRows <= 0 || len(lines) <= visibleRows {
 		return lines
 	}
@@ -224,7 +258,7 @@ func (m *Model) renderHistoryLines(visibleRows int) []string {
 	return lines[start:end]
 }
 
-func (m *Model) renderTurnDetail(visibleRows int) []string {
+func (m *Model) renderTurnDetail(width, visibleRows int) []string {
 	if m.turnSel >= len(m.turns) {
 		return []string{styles.MutedText.Render("no turn selected")}
 	}
@@ -258,6 +292,7 @@ func (m *Model) renderTurnDetail(visibleRows int) []string {
 	}
 	lines = append(lines, "", styles.MutedText.Render("esc back to list"))
 
+	lines = wrapPanelLines(lines, width)
 	if visibleRows <= 0 || len(lines) <= visibleRows {
 		return lines
 	}
@@ -265,7 +300,7 @@ func (m *Model) renderTurnDetail(visibleRows int) []string {
 	return lines[offset : offset+visibleRows]
 }
 
-func (m *Model) renderChatLines(visibleRows int) []string {
+func (m *Model) renderChatLines(width, visibleRows int) []string {
 	all := append([]string(nil), m.chatLines...)
 	if len(all) == 0 {
 		all = append(all, chatMetaLine("system", "start chatting"))
@@ -291,6 +326,7 @@ func (m *Model) renderChatLines(visibleRows int) []string {
 		all = append(all, "", fmt.Sprintf("%s %s%s", m.spinner.View(), stepText, progressText))
 	}
 
+	all = wrapPanelLines(all, width)
 	if visibleRows <= 0 || len(all) <= visibleRows {
 		return all
 	}
@@ -608,20 +644,23 @@ func (m *Model) renderStatusBar(w int) string {
 		statusText += "│ " + extra + " "
 	}
 
-	var statusLine string
+	barStyle := styles.StatusBar
 	switch m.status {
 	case "running":
-		statusLine = styles.StatusBar.Background(styles.ColorWarning).Foreground(styles.ColorBg).Render(statusText)
+		barStyle = barStyle.Background(styles.ColorWarning).Foreground(styles.ColorBg)
 	case "disconnected":
-		statusLine = styles.StatusBar.Background(styles.ColorMuted).Foreground(styles.ColorText).Render(statusText)
+		barStyle = barStyle.Background(styles.ColorMuted).Foreground(styles.ColorText)
 	case "error":
-		statusLine = styles.StatusBar.Background(styles.ColorError).Foreground(styles.ColorText).Render(statusText)
-	default:
-		statusLine = styles.StatusBar.Render(statusText)
+		barStyle = barStyle.Background(styles.ColorError).Foreground(styles.ColorText)
 	}
-	// Pad to full width
-	statusLine += styles.StatusBar.Render(strings.Repeat(" ", max(0, w-lipgloss.Width(statusLine))))
-	return statusLine
+	// Render the whole bar once at Width(w) so lipgloss pads to EXACTLY w
+	// (border/padding included). The text is first truncated to the content width
+	// (w minus the style's 2 cols of horizontal padding) so it never wraps.
+	// Previously the bar was rendered, then the pad-spaces rendered through the
+	// padded StatusBar style a second time, which re-applied the +2 padding and
+	// made the line w+2 wide — overflowing the terminal and clipping the layout.
+	inner := ansi.Truncate(statusText, max(0, w-barStyle.GetHorizontalPadding()), "…")
+	return barStyle.Width(w).Render(inner)
 }
 
 // renderHelpLine returns the bottom help text with context-sensitive shortcuts.
