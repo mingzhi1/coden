@@ -129,7 +129,17 @@ func (c *Conn) readLoop() {
 			c.pendingMu.Unlock()
 			if ok {
 				if msg.Error != nil {
-					slog.Warn("[acp] RPC error", "name", c.Name, "code", msg.Error.Code)
+					// -32601 ("method not found") is benign: coden only Call()s
+					// OPTIONAL methods that an agent may not implement (session/close,
+					// session/set_model). Required calls (session/new, session/prompt)
+					// surface failures to their callers. Logging -32601 at Warn floods
+					// the log once per turn (e.g. claude-code-acp has no session/close),
+					// so demote it to Debug; keep genuine errors at Warn.
+					if msg.Error.Code == -32601 {
+						slog.Debug("[acp] optional method not supported", "name", c.Name, "code", msg.Error.Code)
+					} else {
+						slog.Warn("[acp] RPC error", "name", c.Name, "code", msg.Error.Code)
+					}
 				}
 				ch <- msg.Result
 			}

@@ -35,6 +35,26 @@ type Conn struct {
 }
 
 // Dial starts an ACP subprocess and performs the initialize handshake.
+// scrubEnv returns a copy of env with any entries whose key matches one of
+// the given keys removed. Used to drop CLAUDECODE before launching an ACP
+// subprocess (see Dial).
+func scrubEnv(env []string, keys ...string) []string {
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		drop := false
+		for _, k := range keys {
+			if strings.HasPrefix(e, k+"=") {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func Dial(ctx context.Context, cfg DialConfig) (*Conn, error) {
 	parts := strings.Fields(cfg.Command)
 	if len(parts) == 0 {
@@ -45,12 +65,16 @@ func Dial(ctx context.Context, cfg DialConfig) (*Conn, error) {
 
 	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
 	cmd.Stderr = os.Stderr
-	if len(cfg.Env) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range cfg.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+	// claude-code-acp refuses to start when CLAUDECODE is set — it guards against
+	// nested interactive Claude Code sessions ("cannot be launched inside another
+	// Claude Code session"). coden drives it as a programmatic ACP client, not a
+	// nested session, so always strip CLAUDECODE; otherwise running coden from
+	// within a Claude Code session breaks every ACP provider call.
+	childEnv := scrubEnv(os.Environ(), "CLAUDECODE")
+	for k, v := range cfg.Env {
+		childEnv = append(childEnv, k+"="+v)
 	}
+	cmd.Env = childEnv
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
