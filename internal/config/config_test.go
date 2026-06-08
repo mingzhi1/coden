@@ -64,6 +64,7 @@ func TestMergeConfigs(t *testing.T) {
 }
 
 func TestLoaderLoadFromWorkspace(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	codenDir := filepath.Join(dir, ".coden")
 	os.MkdirAll(codenDir, 0755)
@@ -91,6 +92,7 @@ logging:
 }
 
 func TestLoaderEnvOverride(t *testing.T) {
+	isolateHome(t)
 	t.Setenv("CODEN_ALLOW_SHELL", "true")
 	t.Setenv("CODEN_LOG_LEVEL", "debug")
 	t.Setenv("CODEN_ACP_COMMAND", "npx @agentclientprotocol/claude-agent-acp")
@@ -120,6 +122,7 @@ func TestLoaderEnvOverride(t *testing.T) {
 }
 
 func TestLoaderEnvCodexAppServerProvider(t *testing.T) {
+	isolateHome(t)
 	t.Setenv("CODEN_CODEX_APP_SERVER_COMMAND", "codex app-server")
 
 	loader := NewLoader("")
@@ -140,6 +143,7 @@ func TestLoaderEnvCodexAppServerProvider(t *testing.T) {
 }
 
 func TestLoaderToolsOnlyBackcompat(t *testing.T) {
+	isolateHome(t)
 	loader := NewLoader("")
 	tools, err := loader.LoadToolsOnly()
 	if err != nil {

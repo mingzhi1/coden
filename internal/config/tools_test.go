@@ -21,9 +21,20 @@ func writeYAML(t *testing.T, path, content string) {
 	}
 }
 
+// isolateHome points HOME (which os.UserHomeDir reads on unix) at a fresh
+// empty temp dir so config tests never pick up the developer's real
+// ~/.coden/config.yaml. Without this the suite is non-hermetic: it passes in
+// CI's clean home but fails locally whenever ~/.coden/config.yaml exists.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+}
+
 // tempDir returns a fresh temporary directory cleaned up after the test.
+// It also isolates HOME so loads can't see the developer's real user config.
 func tempDir(t *testing.T) string {
 	t.Helper()
+	isolateHome(t)
 	d := t.TempDir()
 	// Resolve symlinks so comparisons with filepath.Join are stable on macOS (/var → /private/var).
 	resolved, err := filepath.EvalSymlinks(d)
