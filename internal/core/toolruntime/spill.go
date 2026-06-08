@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mingzhi1/coden/internal/core/storagepath"
 )
 
 const (
@@ -15,15 +17,25 @@ const (
 	MaxResultChars = 8000
 	// spillPreviewLines: number of leading lines to keep as inline preview.
 	spillPreviewLines = 20
-	// SpillDirName is the subdirectory under workspace root for spilled results.
+	// SpillDirName is the in-repo fallback subdirectory for spilled results,
+	// used only when the home-side per-workspace dir can't be resolved.
 	SpillDirName = ".coden/spill"
 )
 
-// SpillResult writes content to a temp file under workspaceRoot/.coden/spill/
-// and returns the file path plus a short preview (first N lines).
-// It is safe to call concurrently — file names are content-addressed.
+// spillDir returns the home-side spill directory for a workspace, falling back
+// to the in-repo .coden/spill when the home root can't be resolved.
+func spillDir(workspaceRoot string) string {
+	if d := storagepath.SpillDir(workspaceRoot); d != "" {
+		return d
+	}
+	return filepath.Join(workspaceRoot, SpillDirName)
+}
+
+// SpillResult writes content to a content-addressed file under the workspace's
+// home-side spill dir (~/.coden/workspace/<key>/spill/) and returns the path
+// plus a short preview. Safe to call concurrently — file names are hashed.
 func SpillResult(workspaceRoot, toolKind, target, content string) (spillPath, preview string, err error) {
-	dir := filepath.Join(workspaceRoot, SpillDirName)
+	dir := spillDir(workspaceRoot)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", "", fmt.Errorf("spill: mkdir %s: %w", dir, err)
 	}
@@ -42,9 +54,9 @@ func SpillResult(workspaceRoot, toolKind, target, content string) (spillPath, pr
 	return fullPath, preview, nil
 }
 
-// CleanupSpillDir removes the entire .coden/spill/ directory tree.
+// CleanupSpillDir removes the workspace's spill directory tree (home-side).
 func CleanupSpillDir(workspaceRoot string) error {
-	dir := filepath.Join(workspaceRoot, SpillDirName)
+	dir := spillDir(workspaceRoot)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil
 	}

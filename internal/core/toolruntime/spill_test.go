@@ -59,11 +59,13 @@ func TestShouldSpill(t *testing.T) {
 func TestCleanupSpillDir(t *testing.T) {
 	tmp := t.TempDir()
 	content := "some data to spill"
-	_, _, err := SpillResult(tmp, "read_file", "f.go", content)
+	spillPath, _, err := SpillResult(tmp, "read_file", "f.go", content)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(tmp, SpillDirName)
+	// SpillResult writes to the home-side per-workspace dir; assert via the
+	// returned path's directory rather than assuming an in-repo location.
+	dir := filepath.Dir(spillPath)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		t.Fatal("spill dir should exist after SpillResult")
 	}
