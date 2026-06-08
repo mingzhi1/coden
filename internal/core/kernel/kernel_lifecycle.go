@@ -41,14 +41,17 @@ func (k *Kernel) Close() error {
 	k.workflowWG.Wait()
 	// Drain async post-turn memory work (Secretary insight extraction + embedding)
 	// before closing stores, so it persists even when the process exits right
-	// after a turn (e.g. headless --plain mode). Bounded: those goroutines use a
-	// detached context, so a hung/slow embeddings endpoint must not stall shutdown
-	// indefinitely — give up after 20s and let the process exit.
+	// after a turn (e.g. headless --plain mode). Bounded so a hung endpoint can't
+	// stall shutdown indefinitely — but the bound must exceed a NORMAL Secretary
+	// extraction (~18-24s) or it cuts off and drops insights (caught by the eval
+	// suite). 45s matches the extraction timeout: a working-but-slow Secretary
+	// still completes; only a truly-hung call (which self-cancels at its own 60s
+	// ctx) is given up on early.
 	memDone := make(chan struct{})
 	go func() { k.memWG.Wait(); close(memDone) }()
 	select {
 	case <-memDone:
-	case <-time.After(20 * time.Second):
+	case <-time.After(45 * time.Second):
 		slog.Warn("[kernel] timed out draining post-turn memory work; some insights may not have persisted")
 	}
 
