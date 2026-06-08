@@ -171,6 +171,10 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		"workflow_id", workflowID,
 		"prompt_len", len(prompt))
 
+	// Build/enrich the cached project profile once (heuristic + one-time LLM
+	// overview/style) so every worker's context starts with durable project facts.
+	k.ensureProjectProfile(ctx)
+
 	// 构建 WorkflowContext 并注入到每次 worker 调用中。
 	wfCtx := k.buildWorkflowContext(ctx, sessionID, prompt)
 	ctx = model.WithWorkflowContext(ctx, wfCtx)
@@ -220,10 +224,31 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		return
 	}
 
-	// Intent-adaptive routing — single source of truth: pipelinePolicy / policyForKind.
-	// Every path closes with the Responder.
-	policy := policyForKind(intentSpec.Kind)
-	if policy.Analyzer {
+	// Intent-adaptive routing — single runtime source of truth: WorkflowPlan.
+	// The Dispatcher chooses the plan (default LocalDispatcher = static policy
+	// table; an LLM dispatcher can replace it). Every path closes with the
+	// Responder. Dispatch never errors — it falls back to the policy table.
+	plan := k.workflow.Dispatch(ctx, intentSpec)
+	slog.Info("[workflow] dispatched plan",
+		"workflow_id", workflowID,
+		"kind", intentSpec.Kind,
+		"mode", plan.Mode,
+		"critic", plan.Has(workflow.RoleCritic),
+		"replan", plan.Has(workflow.RoleReplanner),
+		"coder", plan.Has(workflow.RoleCoder),
+		"acceptor", plan.Has(workflow.RoleAcceptor),
+		"objectives", len(plan.Objectives))
+	// Hand each agent the workflow-assigned purpose (sharpened, bounded brief).
+	// Empty map → workers fall back to intent.Goal (LocalDispatcher behavior).
+	if len(plan.Objectives) > 0 {
+		wfCtx.RoleObjectives = make(map[string]string, len(plan.Objectives))
+		for role, obj := range plan.Objectives {
+			wfCtx.RoleObjectives[string(role)] = obj
+		}
+		ctx = model.WithWorkflowContext(ctx, wfCtx)
+	}
+	switch plan.Mode {
+	case workflow.WorkflowModeAnalyze:
 		// analyze: read-only investigation via the Analyzer — reads code, never
 		// modifies it (fixing "I asked to analyze and it started changing files").
 		ctx = model.WithWorkflowContext(ctx, wfCtx)
@@ -234,10 +259,9 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		}})
 		k.runAnalyzeWorkflow(ctx, sessionID, workflowID, intentSpec)
 		return
-	}
-	if !policy.Plan {
+	case workflow.WorkflowModeAnswer:
 		// Direct answer (greeting / question / chat): Intent → Responder.
-		wfCtx.CoderMode = policy.CoderMode
+		wfCtx.CoderMode = plan.CoderMode
 		ctx = model.WithWorkflowContext(ctx, wfCtx)
 		k.emitTasksUpdated(sessionID, workflowID, []model.Task{{
 			ID:     "answer",
@@ -247,6 +271,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		k.runQuestionWorkflow(ctx, sessionID, workflowID, intentSpec, prompt)
 		return
 	}
+	// WorkflowModeExecute: Plan → [Critic] → [RePlan] → [Code → [Accept]].
 
 	// SA-08: Fast grep-only macro context for Planner.
 	// Run synchronously before Plan starts so the Planner's contextSummary
@@ -429,9 +454,11 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	wfCtx.DiscoveryContext = discoverySnippets
 
 	// Critic step — reviews the plan before execution (Plan → Critic → RePlan → Code).
+	// Gated on policy.Critic (single source of truth) AND Critic availability, so a
+	// future kind with Plan=true,Critic=false skips review without code changes here.
 	// Critic is best-effort: failure logs but does not abort the workflow.
 	var critiqueIssues []string
-	if critic := k.workflow.Critic(); critic != nil {
+	if critic := k.workflow.Critic(); plan.Has(workflow.RoleCritic) && critic != nil {
 		k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
 			WorkflowID: workflowID,
 			Step:       "critique",
@@ -466,10 +493,11 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 
 	// M10-04: RePlan step — refine high-level tasks into concrete steps.
 	// Discovery = WHERE, RePlan = HOW, then Coder = DO (low-level worker).
-	// RP-01: Always run RePlan when available, even with empty snippets.
-	// Greenfield projects have no existing code, but still benefit from
-	// step refinement (e.g. "create go.mod", "write main.go with ...").
-	if rp := k.workflow.Replanner(); rp != nil {
+	// Gated on policy.RePlan (single source of truth) AND Replanner availability.
+	// RP-01: when enabled, RePlan runs even with empty snippets — greenfield
+	// projects have no existing code but still benefit from step refinement
+	// (e.g. "create go.mod", "write main.go with ...").
+	if rp := k.workflow.Replanner(); plan.Has(workflow.RoleReplanner) && rp != nil {
 		k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
 			WorkflowID: workflowID,
 			Step:       "replan",
@@ -503,9 +531,9 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		}
 	}
 
-	// plan_only (policy without Code): stop after Plan + Critic + RePlan. Present
-	// the reviewed plan via the Responder and commit — do NOT execute any code.
-	if !policy.Code {
+	// plan_only (no Coder role): stop after Plan + Critic + RePlan. Present the
+	// reviewed plan via the Responder and commit — do NOT execute any code.
+	if !plan.Has(workflow.RoleCoder) {
 		k.finishPlanOnly(ctx, sessionID, workflowID, intentSpec, tasks)
 		return
 	}
@@ -525,8 +553,9 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	k.mu.Unlock()
 
 	// N-08: Execute tasks concurrently using DAG-level scheduling.
+	acceptEnabled := plan.Has(workflow.RoleAcceptor)
 	checkpointResult, artifact, llmOutputStr, taskErr := k.runTasksConcurrent(
-		ctx, sessionID, workflowID, intentSpec, queue, discoverySnippets)
+		ctx, sessionID, workflowID, intentSpec, queue, discoverySnippets, acceptEnabled)
 
 	// Handle "replan" failure policy: re-plan abandoned tasks and retry once.
 	if re, ok := taskErr.(*replanRequestedError); ok && k.workflow.Replanner() != nil {
@@ -579,7 +608,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 				replanQueue := taskqueue.New(refined)
 				k.emitTasksUpdated(sessionID, workflowID, refined)
 				cp2, art2, llm2, err2 := k.runTasksConcurrent(
-					ctx, sessionID, workflowID, intentSpec, replanQueue, discoverySnippets)
+					ctx, sessionID, workflowID, intentSpec, replanQueue, discoverySnippets, acceptEnabled)
 				// Merge results: use replan results if available.
 				if cp2.Status != "" {
 					checkpointResult = cp2
@@ -681,7 +710,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	for i, t := range tasks {
 		taskTitles[i] = t.Title
 	}
-	k.persistTurnMemory(ctx, sessionID, workflowID, intentSpec.Goal, taskTitles, llmOutputStr, checkpointResult.Status)
+	k.persistTurnMemory(ctx, sessionID, workflowID, intentSpec.Goal, taskTitles, llmOutputStr, checkpointResult.Status, dirtyPaths)
 }
 
 // finishPlanOnly commits a plan_only workflow: the reviewed plan IS the
@@ -728,5 +757,5 @@ func (k *Kernel) finishPlanOnly(ctx context.Context, sessionID, workflowID strin
 	for i, t := range tasks {
 		taskTitles[i] = t.Title
 	}
-	k.persistTurnMemory(ctx, sessionID, workflowID, intent.Goal, taskTitles, assistantMessage.Content, checkpointResult.Status)
+	k.persistTurnMemory(ctx, sessionID, workflowID, intent.Goal, taskTitles, assistantMessage.Content, checkpointResult.Status, nil)
 }

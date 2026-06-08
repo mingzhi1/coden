@@ -44,7 +44,21 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, intent model.IntentSpec) (str
 	wc := model.WorkflowContextFrom(ctx)
 	systemPrompt := prompts.Analyzer(wc.ToolsPrompt)
 
-	userMsg := fmt.Sprintf("Analysis goal: %s\n\nInvestigate the code and answer.", strings.TrimSpace(intent.Goal))
+	// The workflow Dispatcher may hand the Analyzer a concrete, bounded objective
+	// (what to determine + when it's done). When present it replaces the vague raw
+	// goal as the driving purpose — this is what makes the read loop converge
+	// instead of exploring open-endedly. Falls back to intent.Goal when absent.
+	goal := strings.TrimSpace(intent.Goal)
+	objective := strings.TrimSpace(wc.RoleObjectives[string(workflow.RoleAnalyzer)])
+	var userMsg string
+	if objective != "" {
+		userMsg = fmt.Sprintf("Question: %s\n\nObjective — exactly what to determine, and when you are DONE:\n%s\n\n"+
+			"Investigate the code to satisfy this objective. Read only what the objective requires; "+
+			"the moment every point is answered with file evidence, STOP reading and write your final analysis as prose.",
+			goal, objective)
+	} else {
+		userMsg = fmt.Sprintf("Analysis goal: %s\n\nInvestigate the code and answer.", goal)
+	}
 	if wc.WorkspaceRoot != "" {
 		userMsg = fmt.Sprintf("Workspace root: %s\n\n%s", wc.WorkspaceRoot, userMsg)
 	}
@@ -140,10 +154,18 @@ func (a *LLMAnalyzer) investigate(ctx context.Context, messages []Message) (stri
 			}
 		}
 
+		// Convergence-biased nudge: anchor on the objective, surface the round
+		// budget so the model self-paces, and bias toward concluding. The old
+		// "keep reading / build a complete picture" wording had no stop condition
+		// and made weaker models loop until the deadline killed them.
+		nudge := fmt.Sprintf("Tool results:\n%s\n\n"+
+			"You are on round %d of %d. If the results so far already let you answer the objective, "+
+			"STOP now and reply with your final analysis as plain prose (no JSON, no tool_calls). "+
+			"Only request more reads for a SPECIFIC point the objective still needs — do not explore beyond it.",
+			resultSummary.String(), round+1, maxAnalyzerRounds)
 		messages = append(messages,
 			Message{Role: "assistant", Content: reply},
-			Message{Role: "user", Content: "Tool results:\n" + resultSummary.String() +
-				"\n\nKeep investigating — read more files, trace the key flows, and build a complete picture before concluding. Only once you have thoroughly explored the relevant code should you reply with your final analysis as plain prose (no JSON, no tool_calls)."},
+			Message{Role: "user", Content: nudge},
 		)
 	}
 

@@ -8,15 +8,17 @@ import (
 )
 
 type Engine struct {
-	inputter  Inputter
-	planner   Planner
-	critic    Critic
-	searcher  Searcher
-	replanner Replanner
-	coder     Coder
-	acceptor  Acceptor
-	responder Responder
-	analyzer  Analyzer
+	inputter   Inputter
+	planner    Planner
+	critic     Critic
+	searcher   Searcher
+	replanner  Replanner
+	coder      Coder
+	acceptor   Acceptor
+	responder  Responder
+	analyzer   Analyzer
+	dispatcher Dispatcher
+	profiler   Profiler
 }
 
 func New(planner Planner, coder Coder, acceptor ...Acceptor) *Engine {
@@ -52,6 +54,38 @@ func (e *Engine) SetReplanner(r Replanner) { e.replanner = r }
 func (e *Engine) SetResponder(r Responder) { e.responder = r }
 
 func (e *Engine) SetAnalyzer(a Analyzer) { e.analyzer = a }
+
+// SetDispatcher configures the Dispatcher that chooses each run's WorkflowPlan.
+// When none is set, Dispatch falls back to the deterministic LocalDispatcher
+// (static policy table).
+func (e *Engine) SetDispatcher(d Dispatcher) { e.dispatcher = d }
+
+// Dispatcher returns the configured Dispatcher, falling back to LocalDispatcher
+// (static policy table) when none is wired.
+func (e *Engine) Dispatcher() Dispatcher {
+	if e.dispatcher == nil {
+		return NewLocalDispatcher()
+	}
+	return e.dispatcher
+}
+
+// SetProfiler configures the optional one-time project Profiler (overview/style).
+func (e *Engine) SetProfiler(p Profiler) { e.profiler = p }
+
+// Profiler returns the configured Profiler, or nil when none is wired (the
+// kernel then keeps the heuristic-only profile).
+func (e *Engine) Profiler() Profiler { return e.profiler }
+
+// Dispatch selects the WorkflowPlan for intent. It delegates to the configured
+// Dispatcher and, if that errors, falls back to the deterministic policy table
+// so a misbehaving LLM dispatcher can never strand a workflow.
+func (e *Engine) Dispatch(ctx context.Context, intent model.IntentSpec) WorkflowPlan {
+	plan, err := e.Dispatcher().Dispatch(ctx, intent)
+	if err != nil {
+		return planFromPolicy(policyForKind(intent.Kind))
+	}
+	return plan
+}
 
 // Analyzer returns the configured Analyzer, falling back to LocalAnalyzer when
 // none is wired (offline/loopback mode).

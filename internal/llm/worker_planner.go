@@ -33,6 +33,10 @@ func (p *LLMPlanner) Plan(ctx context.Context, workflowID string, intent model.I
 	ctxInfo := contextSummary(ctx)
 	userMsg := fmt.Sprintf("Goal: %s\nSuccess criteria:\n%s",
 		intent.Goal, bulletList(intent.SuccessCriteria))
+	// Workflow-assigned objective: a sharper brief on what the plan must cover.
+	if obj := strings.TrimSpace(model.WorkflowContextFrom(ctx).RoleObjectives[string(workflow.RolePlanner)]); obj != "" {
+		userMsg += "\n\nObjective — what the plan must cover (and when it's complete):\n" + obj
+	}
 	if ctxInfo != "" {
 		userMsg = ctxInfo + "\n" + userMsg
 	}

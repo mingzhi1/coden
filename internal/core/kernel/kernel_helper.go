@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -15,7 +17,10 @@ import (
 
 	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/core/model"
+	"github.com/mingzhi1/coden/internal/core/profile"
 	"github.com/mingzhi1/coden/internal/core/storagepath"
+	"github.com/mingzhi1/coden/internal/core/workflow"
+	"github.com/mingzhi1/coden/internal/tool/inventory"
 	clog "github.com/mingzhi1/coden/internal/log"
 	"github.com/mingzhi1/coden/internal/secretary"
 )
@@ -69,6 +74,177 @@ func (k *Kernel) buildWorkflowContext(ctx context.Context, sessionID, query stri
 		DirtyPaths:        dirtyPaths,
 		ToolsPrompt:       k.inventoryToolsPrompt,
 		EnvironmentPrompt: k.inventoryEnvPrompt,
+		ProjectProfile:    k.projectProfileBlock(),
+	}
+}
+
+// projectProfileBlock returns the in-memory cached profile block. It is a plain
+// getter: ensureProjectProfile (called once at workflow start) does the actual
+// build/enrich/persist, so the repeated buildWorkflowContext calls within a
+// workflow just read the result. Returns "" until ensureProjectProfile runs.
+func (k *Kernel) projectProfileBlock() string {
+	k.profileMu.Lock()
+	defer k.profileMu.Unlock()
+	return k.profileBlock
+}
+
+// ensureProjectProfile builds (heuristic) and enriches (one-time LLM overview +
+// style) the cached project profile, persisting it to <ws>/.coden and memoizing
+// the formatted block in-memory per manifest hash. Called once at workflow start.
+// Cheap on a memo/cache hit; the LLM pass runs only on a miss/stale profile.
+func (k *Kernel) ensureProjectProfile(ctx context.Context) {
+	root := k.workspace.Root()
+	if root == "" {
+		return
+	}
+	hash := profile.ComputeSourceHash(root)
+
+	k.profileMu.Lock()
+	memoHit := k.profileHash == hash && k.profileBlock != ""
+	k.profileMu.Unlock()
+	if memoHit {
+		return
+	}
+
+	p := profile.Load(root)
+	if p.Stale(root, profile.DefaultTTL) {
+		langs := inventory.DetectProjectLanguages(root)
+		toolchain := strings.TrimSpace(k.inventoryEnvPrompt)
+		if toolchain == "" {
+			// Fallback when inventory discovery didn't run: probe the compiler for
+			// each detected language directly so "compiler address" is always captured.
+			toolchain = probeToolchain(langs)
+		}
+		p = &profile.ProjectProfile{
+			Languages:   langs,
+			Toolchain:   toolchain,
+			SourceHash:  hash,
+			GeneratedAt: time.Now().UTC(),
+		}
+	}
+
+	// One-time semantic enrichment: fill Overview/Style via a single LLM pass.
+	if !p.HasSemantic() {
+		if pr := k.workflow.Profiler(); pr != nil {
+			t0 := time.Now()
+			res, err := pr.Profile(ctx, k.buildProfileInput(root, p.Languages))
+			if err != nil {
+				slog.Warn("[profile] enrich failed, keeping heuristic-only", "error", err)
+			} else {
+				p.Overview = strings.TrimSpace(res.Overview)
+				p.Style = strings.TrimSpace(res.Style)
+				slog.Info("[profile] enriched", "overview_len", len(p.Overview),
+					"style_len", len(p.Style), "dur_ms", time.Since(t0).Milliseconds())
+			}
+		}
+	}
+
+	p.SourceHash = hash
+	p.GeneratedAt = time.Now().UTC()
+	if err := profile.Save(root, p); err != nil {
+		slog.Warn("[profile] save failed", "error", err)
+	}
+
+	block := p.Format()
+	k.profileMu.Lock()
+	k.profileHash = hash
+	k.profileBlock = block
+	k.profileMu.Unlock()
+}
+
+// languageToolchains maps a detected language to its compiler/runtime binary and
+// the argument that prints its version.
+var languageToolchains = []struct {
+	lang       string
+	bin        string
+	versionArg string
+}{
+	{"go", "go", "version"},
+	{"python", "python3", "--version"},
+	{"javascript", "node", "--version"},
+	{"typescript", "node", "--version"},
+	{"rust", "rustc", "--version"},
+	{"java", "javac", "-version"},
+	{"ruby", "ruby", "--version"},
+	{"c", "cc", "--version"},
+	{"cpp", "c++", "--version"},
+}
+
+// probeToolchain finds the compiler/runtime binary + version + path for each
+// detected language. It's the fallback used when inventory discovery is off, so
+// the profile still records "compiler address". Best-effort and bounded.
+func probeToolchain(languages []string) string {
+	want := make(map[string]bool, len(languages))
+	for _, l := range languages {
+		want[strings.ToLower(strings.TrimSpace(l))] = true
+	}
+	var lines []string
+	for _, t := range languageToolchains {
+		if !want[t.lang] {
+			continue
+		}
+		path, err := exec.LookPath(t.bin)
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		out, _ := exec.CommandContext(ctx, t.bin, t.versionArg).CombinedOutput()
+		cancel()
+		ver := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+		if ver != "" {
+			lines = append(lines, fmt.Sprintf("%s — %s (%s)", t.lang, ver, path))
+		} else {
+			lines = append(lines, fmt.Sprintf("%s — %s", t.lang, path))
+		}
+	}
+	return strings.Join(lines, "; ")
+}
+
+// invalidateProfile drops the cached project profile (in-memory memo + disk) so
+// the next ensureProjectProfile rebuilds it. Called when the Secretary judges a
+// turn's changes structural enough to make the cached overview/style stale.
+func (k *Kernel) invalidateProfile() {
+	k.profileMu.Lock()
+	k.profileBlock = ""
+	k.profileHash = ""
+	k.profileMu.Unlock()
+	if root := k.workspace.Root(); root != "" {
+		if err := profile.Invalidate(root); err != nil {
+			slog.Warn("[profile] invalidate failed", "error", err)
+		} else {
+			slog.Info("[profile] invalidated after structural change; will rebuild next turn")
+		}
+	}
+}
+
+// buildProfileInput gathers the cheap, single-shot context for the Profiler:
+// the primary manifest, the README head, and a capped file tree.
+func (k *Kernel) buildProfileInput(root string, languages []string) workflow.ProfileInput {
+	readFile := func(name string, max int) string {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			return ""
+		}
+		s := string(data)
+		if len(s) > max {
+			s = s[:max]
+		}
+		return s
+	}
+	goMod := readFile("go.mod", 4000)
+	if goMod == "" {
+		goMod = readFile("package.json", 4000)
+	}
+	readme := readFile("README.md", 4000)
+	if readme == "" {
+		readme = readFile("README", 4000)
+	}
+	files, _ := k.workspace.ListFiles("", 200)
+	return workflow.ProfileInput{
+		Languages: languages,
+		GoMod:     goMod,
+		Readme:    readme,
+		FileTree:  files,
 	}
 }
 
@@ -272,7 +448,7 @@ func (k *Kernel) saveInsight(ctx context.Context, ins insight.Insight) {
 // schemes, a stale log line, inconsistent dedup). Policy: regex insights are the
 // cheap lexical fallback (plain Save, no embed); the Secretary's high-value
 // insights go through saveInsight (embed + semantic dedup).
-func (k *Kernel) persistTurnMemory(ctx context.Context, sessionID, workflowID, goal string, taskTitles []string, workerOutput, status string) {
+func (k *Kernel) persistTurnMemory(ctx context.Context, sessionID, workflowID, goal string, taskTitles []string, workerOutput, status string, changedFiles []string) {
 	if strings.TrimSpace(workerOutput) == "" {
 		return
 	}
@@ -299,7 +475,13 @@ func (k *Kernel) persistTurnMemory(ctx context.Context, sessionID, workflowID, g
 			TaskTitles:   taskTitles,
 			WorkerOutput: workerOutput,
 			Status:       status,
+			ChangedFiles: changedFiles,
 		})
+		// Secretary judged the cached project profile stale after this turn's
+		// structural changes — drop it so the next workflow rebuilds.
+		if res.ProfileStale {
+			k.invalidateProfile()
+		}
 		ts := time.Now().UTC()
 		for i, ins := range res.Insights {
 			k.saveInsight(afterCtx, insight.Insight{

@@ -545,6 +545,12 @@ func newKernel(ctx context.Context, workspaceRoot, stateDBPath string, opts laun
 		// Analyzer performs read-only code investigation for analyze intents
 		// (Strong tier); shares the kernel's tool executor for its read loop.
 		k.SetAnalyzer(llm.NewLLMAnalyzer(chatter, deps.Executor))
+		// Dispatcher designs each run's workflow (mode + participating roles) via
+		// a lightweight SideQuery; falls back to the static policy table on error.
+		k.SetDispatcher(llm.NewLLMDispatcher(chatter))
+		// Profiler fills the cached project profile (overview/style) once per
+		// manifest change; heuristic languages/toolchain work without it.
+		k.SetProfiler(llm.NewLLMProfiler(chatter))
 	}
 	// SA-10: Wire optional Searcher dependency from the launcher.
 	if deps.Searcher != nil {

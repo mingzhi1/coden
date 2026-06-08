@@ -156,6 +156,7 @@ func (k *Kernel) runOneTask(
 	shared *sharedTasks,
 	queue *taskqueue.Queue,
 	wfCtx model.WorkflowContext,
+	acceptEnabled bool,
 ) taskExecResult {
 	task := shared.get(taskIdx)
 
@@ -261,7 +262,9 @@ func (k *Kernel) runOneTask(
 		})
 
 		// ── Post-code hooks (zero-LLM-cost quality gates) ───────────────────
-		skipAccept := false
+		// acceptEnabled=false (plan has no Acceptor role) bypasses the Accept
+		// phase entirely; the task's own success_cmd / hooks still gate status.
+		skipAccept := !acceptEnabled
 		if hookBlocked := k.runHookPoint(taskCtx, hook.PostCode, sessionID, workflowID, task.ID, task.Title, attempt); hookBlocked {
 			hookErrMsg := "post-code hooks blocked execution"
 			finalCheckpoint = model.CheckpointResult{
@@ -554,6 +557,7 @@ func (k *Kernel) runTasksConcurrent(
 	intentSpec model.IntentSpec,
 	queue *taskqueue.Queue,
 	discoverySnippets []model.FileSnippet,
+	acceptEnabled bool,
 ) (model.CheckpointResult, model.Artifact, string, error) {
 	// M11-02: Get current task list from the queue snapshot.
 	tasks := queue.Snapshot()
@@ -586,7 +590,7 @@ func (k *Kernel) runTasksConcurrent(
 			wg.Add(1)
 			go func(i, taskIdx int) {
 				defer wg.Done()
-				results[i] = k.runOneTask(ctx, sessionID, workflowID, intentSpec, taskIdx, shared, queue, wfCtx)
+				results[i] = k.runOneTask(ctx, sessionID, workflowID, intentSpec, taskIdx, shared, queue, wfCtx, acceptEnabled)
 			}(i, taskIdx)
 		}
 		wg.Wait()
@@ -670,7 +674,7 @@ func (k *Kernel) runTasksConcurrent(
 			if !ok {
 				continue
 			}
-			res := k.runOneTask(ctx, sessionID, workflowID, intentSpec, taskIdx, shared, queue, wfCtx)
+			res := k.runOneTask(ctx, sessionID, workflowID, intentSpec, taskIdx, shared, queue, wfCtx, acceptEnabled)
 			llmOut.WriteString(res.llmOutput)
 			if res.checkpoint.Status != "" {
 				finalCheckpoint = res.checkpoint

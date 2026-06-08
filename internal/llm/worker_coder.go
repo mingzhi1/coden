@@ -78,6 +78,10 @@ func (c *LLMCoder) Build(ctx context.Context, workflowID string, intent model.In
 	ctxInfo := contextSummary(ctx)
 	userMsg := fmt.Sprintf("Goal: %s\n\nTasks:\n%s\n\nGenerate the implementation artifact plan.",
 		intent.Goal, strings.Join(taskList, "\n"))
+	// Workflow-assigned objective: what to implement and the success condition.
+	if obj := strings.TrimSpace(wc.RoleObjectives[string(workflow.RoleCoder)]); obj != "" {
+		userMsg += "\n\nObjective — what to implement and when it's done:\n" + obj
+	}
 
 	// Inject critic feedback so the coder addresses flagged issues.
 	if len(wc.CritiqueIssues) > 0 {

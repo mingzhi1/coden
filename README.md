@@ -35,8 +35,9 @@ Clients: TUI / CLI / Web
 │       │                                                    │
 │  Kernel（单写者）                                           │
 │  ├── Workflow Engine                                       │
-│  │   Intent → Plan → Discovery → Critic                   │
-│  │   → RePlan → [Code → Accept] × N → Checkpoint         │
+│  │   Intent → Profile → Dispatcher(WorkflowPlan)          │
+│  │   → Discovery → Plan → Critic → RePlan                 │
+│  │   → [Code → Accept] × N → Checkpoint                   │
 │  │                                                         │
 │  ├── Secretary（策略引擎）                                  │
 │  │   ContextGate · ExecGate · AfterTurn → MEMORY.md       │
@@ -63,54 +64,61 @@ Clients: TUI / CLI / Web
 
 ```
 用户输入
-  → Intent    意图解析 → IntentSpec + Kind          [Light LLM]
+  → Intent       意图解析 → IntentSpec + Kind                        [Light LLM]
+  → ProjectProfile  载入缓存(语言/工具链/概览/风格);失效则重建        [缓存命中零成本 / 一次 Light LLM]
+  → Dispatcher   设计本次 workflow → WorkflowPlan                     [Strong LLM]
+  │   { Mode, 参与角色集, 每角色 Objective, CoderMode }
+  │   解析失败 → 回退静态策略表 (LocalDispatcher: Kind → 阶段集)
   │
-  ├─ 意图自适应路由（声明式 PipelinePolicy：Kind → 阶段集，所有路径收口 Responder）
-  │   question / chat / other          → Responder                          （直答）
-  │   analyze                          → Discovery → Analyzer(只读) → Responder  （读代码出分析,零修改）
-  │   plan_only                        → Discovery → Plan → Critic → RePlan → Responder  （出计划并审核,不执行）
-  │   code_gen / debug / refactor / config → 完整流水线 → Responder
+  ├─ 按 Mode 路由（所有路径收口 Responder）:
+  │   answer    → Responder                                          （直答 / 问答 / 闲聊）
+  │   analyze   → Discovery → Analyzer(只读) → Responder              （读代码出分析,零修改）
+  │   execute   → 下方完整流水线;plan_only = execute 但不含 Coder/Accept
   │
-  → Discovery WHERE：grep / LSP / RAG 捞片段          [零 LLM 成本]
-  → Plan      WHAT：任务 DAG + 依赖关系               [Strong LLM]
-  → Critic    REVIEW：异构 Provider 审查,反自恋        [Strong LLM, 不同厂商]
-  → RePlan    HOW：细化到函数/行号                     [Strong LLM]
+  → Discovery  WHERE：grep / LSP / RAG 捞片段                        [零 LLM 成本]
+  → Plan       WHAT：任务 DAG + 依赖（注入 Dispatcher 下发的 Objective）[Strong LLM]
+  → Critic     REVIEW：异构 Provider 审查,反自恋                      [Strong LLM, 不同厂商]
+  → RePlan     HOW：细化到函数/行号                                  [Strong LLM]
   → Kernel 调度（按 DAG 并行）
-      ├─→ Coder × N   执行 patch                   [Light LLM]
+      ├─→ Coder × N   执行 patch（注入 Objective）                   [Light LLM]
       ├─→ Tool Runtime write / edit / shell
-      └─→ Acceptor    pass/fail + FixGuidance       [Strong LLM]
+      └─→ Acceptor    pass/fail + FixGuidance                        [Strong LLM]
             ├─ pass → task.passed
             └─ fail → inject FixGuidance → Coder retry
-  → Responder 收口：把意图 + 所做/结果合成面向用户的响应  [Light LLM]
-  → Checkpoint 存档 + Secretary AfterTurn → MEMORY.md
+  → Responder  收口：成功→简洁总结;失败/部分→进展 + 下一步建议        [Light LLM]
+  → Checkpoint 存档 + Secretary AfterTurn → MEMORY.md（并判断 Profile 是否过期）
 ```
 
-> **设计要点（声明式 PipelinePolicy）**：路由查一张 `policyForKind(Kind)` 策略表,条件化执行
-> 各阶段——单一真相源。角色不混用:
-> - **Analyzer 只服务 `analyze`**(读代码出分析,只读、零修改),**不前置代码任务、不喂其他角色**;
-> - **Coder 纯写**、**Responder 纯收口**、**Discovery 纯检索**;
-> - `plan_only`(高频:只想要计划)→ Plan+Critic+RePlan 后收口,**不执行**;
-> - 简单意图(`hi`)直达 Responder,从几分钟降到几秒。
+> **设计要点（Dispatcher + WorkflowPlan）**：每轮由 **Dispatcher(LLM)** 设计 workflow,产出
+> `WorkflowPlan{ Mode, 参与角色, 每角色 Objective, CoderMode }` —— 运行时单一真相源;Dispatcher
+> 解析失败则**回退**到静态策略表 `policyForKind`(LocalDispatcher),保证永不卡死。角色不混用:
+> - **Dispatcher 给每个参与角色一个明确 Objective**(有边界的目的+完成判据),让 Analyzer/Planner/Coder
+>   收敛而非空转——弱目的曾让 Analyzer 无限读到超时;
+> - **Analyzer 只服务 `analyze`**(只读、零修改);**Coder 纯写**、**Responder 纯收口**、**Discovery 纯检索**;
+> - **`plan_only`** = execute 去掉 Coder/Accept(只出并审核计划,不执行);
+> - 简单意图(`hi`)→ `answer` 直达 Responder;
+> - **ProjectProfile 缓存**:语言/工具链/概览/风格按 manifest hash + Secretary 的结构性判断失效,
+>   跨轮复用,让各 agent 开局即懂项目,不必每轮重新发现基础事实。
 >
-> 详见 `docs/ARCHITECTURE.md` 的 PipelinePolicy 表与阶段详情。
+> 详见 `docs/ARCHITECTURE.md`。
 
 **流水线组件分类**
 
 | 类别 | 组件 | 说明 |
 |------|------|------|
 | **Dispatched Workers**（经 `executeWorker` 调度） | Intent / Plan / Coder / Acceptor | 标准 Worker 生命周期，产生事件与 tracing |
-| **Inline Components**（Kernel 直接调用） | Discovery / Critic / RePlan / Responder | Kernel 内部同步调用，不经过 Worker dispatch |
-| **Background Service** | Secretary | 异步执行，策略引擎 + MEMORY.md 写入 |
+| **Inline Components**（Kernel 直接调用） | Dispatcher / Discovery / Analyzer / Critic / RePlan / Responder | Kernel 内部同步调用，不经过 Worker dispatch |
+| **Background Service** | Secretary（含 ProjectProfile 失效判断） / Profiler | 异步执行，策略引擎 + MEMORY.md 写入 + 一次性项目画像 |
 
 **LLM 模型分层原则**
 
 | 组件 | 档次 | 原因 |
 |------|------|------|
-| Planner / Critic / Replanner / Acceptor | **Strong** | 决策点，错误代价高 |
-| Intent / Coder / Responder | **Light** | 执行点 / 收口总结，速度优先 |
+| Dispatcher / Planner / Critic / Replanner / Acceptor / Analyzer | **Strong** | 决策 / 流程设计 / 分析点，错误代价高 |
+| Intent / Coder / Responder / Profiler | **Light** | 执行 / 收口 / 摘要画像，速度优先 |
 | Critic | **异构 Provider** | 与 Planner 不同厂商，消除盲区 |
 | Discovery | **零 LLM** | 纯代码工具（grep / LSP / RAG），不调用 LLM |
-| Secretary | **条件性 Light** | AfterTurn 阶段可选调用 LLM 提取 insight |
+| Secretary | **条件性 Light** | AfterTurn 提取 insight + 判断 ProjectProfile 是否过期 |
 
 ---
 
@@ -149,45 +157,18 @@ Worker 的输出只是"提案"——Kernel 决定什么最终成为状态。
 
 ## LLM Server Sidecar 与 ACP
 
-LLM 调用链有两种模式，通过配置切换：
+LLM 调用链有两种模式，配置切换:
+- **内嵌(默认)**:`Kernel → Broker.Chat → Pool(本地 provider)`。
+- **Sidecar**:`Kernel → LLMServerClient → TCP JSON-RPC → coden-llm-server`(按 role 路由到 ACP / Anthropic / OpenAI / DeepSeek / MiniMax / Copilot)。
 
-```
-内嵌模式（默认）                    Sidecar 模式
-────────────────                   ──────────────────────────────────
-Kernel                             Kernel
-  └→ Broker.Chat(role, msgs)         └→ LLMServerClient.Chat()
-      └→ Pool (本地 provider)              └→ TCP JSON-RPC → coden-llm-server
-                                                 └→ router.go（role → provider chain）
-                                                     ├─ provider_acp.go      (ACP)
-                                                     ├─ provider_anthropic.go
-                                                     ├─ provider_openai.go
-                                                     └─ provider_others.go   (DeepSeek/MiniMax/Copilot)
-```
-
-**接入 Claude(复用 Claude Code 订阅,无需 API Key)：用 `claude-cli` provider**
-
-```
-type: claude-cli  →  claude_cli.go
-  └→ 子进程: claude -p --disallowed-tools <全部> --permission-mode dontAsk
-                      --output-format json   （单轮纯补全,coden 当 orchestrator）
-```
-
-coden 需要的是「纯大脑」:发消息、收文本/JSON,工具由 coden 自己的 executor 跑。
-`claude -p` 把工具从模型上下文移除,agent 循环塌成一次性补全,完美契合,且复用
-Claude Code 本地登录。
-
-> **ACP 已弃用(reasoning 角色)**:`claude-agent-acp` 把 Claude 当成自驱 agent,
-> 无论 client 声明什么能力都强发 `tool_call`,coden 的 reasoning-only 桥只能拒,导致
-> 死循环。`provider_acp.go` 仍在(带 fail-fast 兜底),但请改用 `claude-cli`。详见
-> [docs](docs/) 里的 provider 说明。
-
-Sidecar 启用方式：
+**接入 Claude(复用 Claude Code 订阅,无需 API Key)**:用 `claude-cli` provider —— 子进程跑
+`claude -p --disallowed-tools <全部> --output-format json`,把工具移出模型上下文,agent 循环塌成
+单轮纯补全;coden 只要「纯大脑」,工具由自己的 executor 跑。(旧的 `claude-agent-acp` 已弃用——
+它强发 tool_call 导致 reasoning 桥死循环;详见 `docs/`。)
 
 ```yaml
 llm:
-  server:
-    enabled: true
-    addr: "127.0.0.1:7533"
+  server: { enabled: true, addr: "127.0.0.1:7533" }   # 启用 sidecar
 ```
 
 ---
@@ -214,17 +195,10 @@ llm:
 | LSP | definition / references / symbols，结构事实 |
 | RAG | SQLite **FTS5 持久化索引**（bm25 排序），大仓库跨文件检索 |
 
-RAG 索引持久化在 `~/.coden/workspace/<key>/rag.sqlite`(不污染仓库工作树),
-重启增量 reconcile:T1 比 mtime+size,T2 比内容 hash,只重索引真正变更的文件。
+RAG 索引持久化在 `~/.coden/workspace/<key>/rag.sqlite`(不污染工作树),重启按 mtime/size + 内容 hash
+增量 reconcile;checkpoint 通过后增量更新变更文件。
 
-**RAG 索引生命周期**：
-
-| 时机 | 动作 | 现状 |
-|------|------|------|
-| checkpoint 通过后 | 增量更新变更文件（`rag_index_update`） | ✅ 已实现 |
-| `analyze` 等检索路径前 | 索引为空/stale → **按需补丁式增量构建**(只建涉及范围,不阻塞式全量 rebuild) | 🔧 设计待实现 |
-
-> 缺口:目前**只有增量更新、没有全量/按需构建**——已有代码库首次运行时 RAG 索引为空，`rag_search` 实际失效，仅靠 grep/LSP。`analyze` 路由依赖此项补齐。
+> 缺口:目前只有增量更新、没有全量/按需构建——已有仓库**首次运行**时索引为空,`rag_search` 暂失效(仅靠 grep/LSP),按需构建待补。
 
 ---
 
@@ -262,66 +236,20 @@ Hook 是可配置的 shell 命令，在工作流生命周期的 **9 个阶段** 
  ❾ post_workflow   清理、统计、CI 触发
 ```
 
-**Hook 分类**
+**分类与执行**：workflow 级(pre_intent / post_intent / post_plan / post_workflow)、task 级(pre_code / post_code / post_accept)、tool 级(pre / post_tool_use,可拒绝该 tool)均可 `blocking`。同阶段按 priority 串行;`blocking: true` 失败则短路并阻断工作流。Hook 经 `CODEN_HOOK_*` 环境变量拿上下文(session / workflow / workspace / task / tool / status / changed_files),运行时也可经 JSON-RPC `hook.list / register / remove` 动态管理。
 
-| 分类 | Hook Points | 可阻断工作流 |
-|------|-------------|-------------|
-| **Workflow-level** | pre_intent, post_intent, post_plan, post_workflow | ✓ (blocking) |
-| **Task-level** | pre_code, post_code, post_accept | ✓ (blocking) |
-| **Tool-level** | pre_tool_use, post_tool_use | ✓ (可拒绝 tool) |
-
-**执行模型**：同一阶段内串行按 priority 执行。`blocking: true` 的 hook 失败会短路剩余 hook 并阻断工作流。
-
-**配置示例**（`~/.coden/config.yaml` 或 `<workspace>/.coden/config.yaml`）：
+**配置示例**(`<workspace>/.coden/config.yaml`):
 
 ```yaml
 tools:
   hooks:
     post_code:
-      - name: go_vet
-        command: "go vet ./..."
-        blocking: true
-        timeout: 30s
-      - name: golint
-        command: "golangci-lint run"
-        blocking: false
-        timeout: 60s
-        priority: 10
-
+      - { name: go_vet, command: "go vet ./...", blocking: true, timeout: 30s }
     pre_tool_use:
-      - name: shell_audit
-        command: "echo \"AUDIT: $CODEN_HOOK_TOOL_NAME $CODEN_HOOK_TOOL_INPUT\" >> .coden/audit.log"
-        blocking: false
-        timeout: 5s
-
-    post_workflow:
-      - name: cleanup
-        command: "rm -rf .coden/tmp/*"
-        blocking: false
-        timeout: 5s
+      - { name: audit, command: "echo $CODEN_HOOK_TOOL_NAME >> .coden/audit.log", blocking: false }
 ```
 
-**环境变量**：Hook 通过 `CODEN_HOOK_*` 环境变量接收上下文：
-
-| 变量 | 说明 | 可用阶段 |
-|------|------|---------|
-| `CODEN_HOOK_SESSION_ID` | 会话 ID | 全部 |
-| `CODEN_HOOK_WORKFLOW_ID` | 工作流 ID | 全部 |
-| `CODEN_HOOK_WORKSPACE` | 工作区根目录 | 全部 |
-| `CODEN_HOOK_PROMPT` | 用户原始输入 | pre/post_intent |
-| `CODEN_HOOK_TASK_ID` | 当前任务 ID | pre/post_code, post_accept |
-| `CODEN_HOOK_TASK_TITLE` | 当前任务标题 | pre/post_code, post_accept |
-| `CODEN_HOOK_ATTEMPT` | 当前重试次数 | pre/post_code, post_accept |
-| `CODEN_HOOK_TOOL_NAME` | 工具名称 | pre/post_tool_use |
-| `CODEN_HOOK_TOOL_INPUT` | 工具输入摘要 | pre/post_tool_use |
-| `CODEN_HOOK_STATUS` | 最终状态 (pass/fail) | post_workflow |
-| `CODEN_HOOK_CHANGED_FILES` | 变更文件列表 (换行分隔) | post_workflow |
-
-**RPC 动态管理**：运行时可通过 JSON-RPC 动态注册/移除/查询 hook：
-
-- `hook.list` — 列出已注册 hook
-- `hook.register` — 动态注册 hook
-- `hook.remove` — 按名称移除 hook
+> 完整阶段语义、环境变量表与 RPC 方法见 `docs/`。
 
 ---
 
@@ -390,13 +318,14 @@ llm:
 |------|------|------|
 | Kernel & 状态核心 | `█████████░` 95% | Session/Turn/Task/Checkpoint/Event Bus 全部完成，Artifact 接入完成 |
 | RPC 协议层 | `█████████░` 95% | JSON-RPC 2.0，客户端面 29 个方法接入 handler（protocol 共定义 59 个方法常量，含 worker/tool 方向） |
-| Workflow Engine | `█████████░` 95% | 6 阶段流水线完成，任务状态机完成，L2 Regression 尚未实现 |
+| Workflow Engine | `█████████░` 95% | Dispatcher(LLM)→WorkflowPlan 驱动路由（策略表回退）、每角色 Objective（Analyzer/Planner/Coder 已消费）、任务状态机完成，L2 Regression 尚未实现 |
 | Hook System | `█████████░` 90% | 9 阶段统一框架完成，Config/RPC/Event Bus 全部接入，Filter/Webhook 待实现 |
 | LLM Broker | `█████████░` 90% | per-role pool、provider fallback、usage stats 完成，Sidecar 模式接入完成 |
 | Tool Runtime | `█████████░` 90% | 14 工具完成，MCP 动态发现完成，tool_search 延迟注册完成 |
 | Search Agent | `█████████░` 95% | SA-01~09 全部完成，meso-level discovery 完成 |
 | 三层检索 | `████████░░` 85% | grep/LSP/RAG 全部实现，RAG stale 标记完成，写后同步完成 |
-| Secretary | `███████░░░` 75% | ContextGate/ExecGate/AfterTurn 完成，MEMORY.md 写入完成，权限模型待强化 |
+| ProjectProfile 缓存 | `████████░░` 80% | 语言/工具链(自探编译器)/概览/风格,manifest hash + Secretary 结构性判断失效,跨轮复用;finding 粒度增量分析未做 |
+| Secretary | `███████░░░` 75% | ContextGate/ExecGate/AfterTurn 完成，MEMORY.md 写入完成，新增 ProjectProfile 过期判断，权限模型待强化 |
 | TUI | `████████░░` 82% | 双栏四面板布局（Chat+Input / Workers+Changed）、事件驱动、History Tab 完成；每轮中间「思考过程」运行时实时显示、完成后折叠为一行摘要（`⋯ N steps · N tools · N files · 时长`），聊天保持干净的 YOU↔CODE 对话；slash command 扩展中 |
 | LLM Server Sidecar | `█████████░` 90% | TCP sidecar、ACP/Anthropic/OpenAI/DeepSeek 完成，crash 监控完成（自动重启，上限 3 次，指数退避 500ms/1s/2s） |
 | Artifact 管理 | `████████░░` 85% | M13 Phase 1-3 完成：存储/查询/引用/GC，Phase 4（导出/TUI）待完善 |

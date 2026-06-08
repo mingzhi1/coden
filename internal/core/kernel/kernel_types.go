@@ -65,6 +65,11 @@ type Kernel struct {
 	hookManager            *hook.Manager        // unified hook manager (9 hook points)
 	artifactMgr            artifact.Manager     // M13: optional artifact lifecycle manager
 	closed                 bool
+
+	// Project profile cache (durable workspace facts surfaced to agents).
+	profileMu    sync.Mutex
+	profileHash  string // manifest hash the in-memory block was built for
+	profileBlock string // pre-formatted profile context block
 }
 
 // activeWorkflow 追踪一个正在运行的工作流及其 workers
