@@ -778,4 +778,52 @@ func (k *Kernel) finishPlanOnly(ctx context.Context, sessionID, workflowID strin
 		Status:     checkpointResult.Status,
 		Evidence:   checkpointResult.Evidence,
 	})
+
+	// Persist memory from the plan too — a plan's decisions/rationale are worth
+	// remembering. Mirrors the analyze/code/question paths so plan_only isn't
+	// second-class (it used to return without touching memory).
+	planText := assistantMessage.Content
+	if planText == "" {
+		return
+	}
+	now := time.Now().UTC()
+	for _, ins := range insight.ExtractInsights(workflowID, planText, now) {
+		ins.SessionID = sessionID
+		if err := k.insights.Save(ins); err != nil {
+			slog.Warn("[plan] failed to save insight", "workflow_id", workflowID, "error", err)
+		}
+	}
+	if wsRoot := k.workspace.Root(); wsRoot != "" {
+		_ = insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights)
+	}
+	if k.secretary != nil && k.secretary.HasLLM() {
+		taskTitles := make([]string, len(tasks))
+		for i, t := range tasks {
+			taskTitles[i] = t.Title
+		}
+		k.memWG.Add(1)
+		go func() {
+			defer k.memWG.Done()
+			afterCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			res := k.secretary.AfterTurn(afterCtx, sessionID, secretary.AfterTurnInput{
+				WorkflowID: workflowID, Goal: intent.Goal, TaskTitles: taskTitles,
+				WorkerOutput: planText, Status: checkpointResult.Status,
+			})
+			ts := time.Now().UTC()
+			for i, ins := range res.Insights {
+				k.saveInsight(afterCtx, insight.Insight{
+					ID:        fmt.Sprintf("sec-plan-%s-%d-%d", workflowID, ts.UnixNano(), i),
+					SessionID: sessionID, Category: insight.Category(ins.Category),
+					Title: ins.Title, Content: ins.Content, Tags: ins.Tags,
+					Confidence: ins.Confidence, CreatedAt: ts, UpdatedAt: ts,
+				})
+			}
+			if len(res.Insights) > 0 {
+				if wsRoot := k.workspace.Root(); wsRoot != "" {
+					_ = insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights)
+				}
+			}
+		}()
+	}
 }
