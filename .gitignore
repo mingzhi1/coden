@@ -42,3 +42,4 @@ secrets.yml
 *.swo
 /artifacts
 .coden/*
+.claude/*
