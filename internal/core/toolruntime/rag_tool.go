@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/mingzhi1/coden/internal/config"
@@ -72,6 +73,9 @@ func (t *RAGTool) executeSearch(ctx context.Context, req Request) (Result, error
 	}
 
 	// Format results
+	chunksTotal, _ := t.index.Stats()
+	slog.Info("[tool] rag_search", "query", query, "hits", len(filteredResults),
+		"scanned_chunks", chunksTotal, "top_k", topK)
 	output := formatRAGResults(filteredResults)
 
 	// Build structured evidence so callers can skip text re-parsing.

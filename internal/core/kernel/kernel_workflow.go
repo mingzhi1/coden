@@ -692,8 +692,10 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	// Secretary AfterTurn: LLM-powered post-turn analysis (async, non-fatal).
 	// Upgrades the regex-based insight extraction with Light-model intelligence.
 	if k.secretary != nil && k.secretary.HasLLM() {
+		k.memWG.Add(1)
 		go func() {
-			afterCtx, afterCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer k.memWG.Done()
+			afterCtx, afterCancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer afterCancel()
 
 			taskTitles := make([]string, len(tasks))

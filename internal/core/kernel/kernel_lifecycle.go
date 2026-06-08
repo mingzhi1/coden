@@ -39,6 +39,10 @@ func (k *Kernel) Close() error {
 		cancel()
 	}
 	k.workflowWG.Wait()
+	// Drain async post-turn memory work (Secretary insight extraction + embedding)
+	// before closing stores, so it persists even when the process exits right
+	// after a turn (e.g. headless --plain mode).
+	k.memWG.Wait()
 
 	var firstErr error
 	if err := k.sessionStore.Close(); err != nil && firstErr == nil {

@@ -123,8 +123,10 @@ func (k *Kernel) runAnalyzeWorkflow(ctx context.Context, sessionID, workflowID s
 		// include them. Mirrors the code-workflow path so analyze isn't second-class.
 		if k.secretary != nil && k.secretary.HasLLM() {
 			analysis := content
+			k.memWG.Add(1)
 			go func() {
-				afterCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer k.memWG.Done()
+				afterCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 				res := k.secretary.AfterTurn(afterCtx, sessionID, secretary.AfterTurnInput{
 					WorkflowID:   workflowID,

@@ -68,7 +68,9 @@ type AfterTurnInput struct {
 
 // extractInsights uses the Light model to find structured insights in worker output.
 func (s *Secretary) extractInsights(ctx context.Context, sessionID string, input AfterTurnInput) []ExtractedInsight {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	// Generous timeout: subprocess providers (claude-cli) spawn a process per
+	// call, so 15s was too tight and silently dropped all insights.
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
 	prompt := fmt.Sprintf(`You are a project analyst. Analyze this workflow output and extract structured insights.

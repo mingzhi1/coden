@@ -143,8 +143,10 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 
 	// Secretary AfterTurn: LLM-powered post-turn analysis (async, non-fatal).
 	if k.secretary != nil && k.secretary.HasLLM() {
+		k.memWG.Add(1)
 		go func() {
-			afterCtx, afterCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer k.memWG.Done()
+			afterCtx, afterCancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer afterCancel()
 
 			result := k.secretary.AfterTurn(afterCtx, sessionID, secretary.AfterTurnInput{

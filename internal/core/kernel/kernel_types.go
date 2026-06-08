@@ -37,6 +37,7 @@ type Kernel struct {
 	activeSessionWorkflows map[string]string // sessionID → workflowID; guarded by mu
 	workflowGeneration     map[string]uint64 // sessionID → monotonic generation counter; guarded by mu
 	workflowWG             sync.WaitGroup
+	memWG                  sync.WaitGroup // tracks async post-turn memory goroutines so Close() drains them
 	workspaceChanges       map[string][]model.WorkspaceChangedPayload
 	events                 *events.Bus
 	sessionStore           session.Store
