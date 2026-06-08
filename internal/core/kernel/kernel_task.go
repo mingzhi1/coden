@@ -571,7 +571,7 @@ func (k *Kernel) runTasksConcurrent(
 	for levelIdx, levelTaskIdxs := range levels {
 		// Build a fresh WorkflowContext for each level so subsequent levels see
 		// files written by the previous level.
-		wfCtx := k.buildWorkflowContext(ctx, sessionID)
+		wfCtx := k.buildWorkflowContext(ctx, sessionID, intentSpec.Goal)
 		wfCtx.Discovery = model.DiscoveryContext{
 			Query:      intentSpec.Goal,
 			QueryID:    workflowID + ":level-discovery",
@@ -656,7 +656,7 @@ func (k *Kernel) runTasksConcurrent(
 		}
 
 		// Execute remaining tasks sequentially.
-		wfCtx := k.buildWorkflowContext(ctx, sessionID)
+		wfCtx := k.buildWorkflowContext(ctx, sessionID, intentSpec.Goal)
 		wfCtx.Discovery = model.DiscoveryContext{
 			Query:      intentSpec.Goal,
 			QueryID:    workflowID + ":appended",

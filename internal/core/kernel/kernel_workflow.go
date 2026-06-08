@@ -173,7 +173,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		"prompt_len", len(prompt))
 
 	// 构建 WorkflowContext 并注入到每次 worker 调用中。
-	wfCtx := k.buildWorkflowContext(ctx, sessionID)
+	wfCtx := k.buildWorkflowContext(ctx, sessionID, prompt)
 	ctx = model.WithWorkflowContext(ctx, wfCtx)
 
 	// ── Hook: pre_intent ────────────────────────────────────────────────

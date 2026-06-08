@@ -86,7 +86,7 @@ func TestBuildWorkflowContextInjectsPreviousTurns(t *testing.T) {
 		})
 	}
 
-	wfCtx := k.buildWorkflowContext(context.Background(), "session-ctx")
+	wfCtx := k.buildWorkflowContext(context.Background(), "session-ctx", "")
 
 	if len(wfCtx.PreviousTurns) != 3 {
 		t.Fatalf("expected 3 previous turns, got %d", len(wfCtx.PreviousTurns))

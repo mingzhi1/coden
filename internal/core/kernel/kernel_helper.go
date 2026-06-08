@@ -27,8 +27,9 @@ const (
 	TurnStatusCrashed  = "crashed"
 )
 
-// buildWorkflowContext 获取 workers 需要的上下文数据。
-func (k *Kernel) buildWorkflowContext(_ context.Context, sessionID string) model.WorkflowContext {
+// buildWorkflowContext 获取 workers 需要的上下文数据。query 用于让记忆检索
+// (TopInsights) 按当前任务相关性排序;为空时退回默认排序。
+func (k *Kernel) buildWorkflowContext(_ context.Context, sessionID, query string) model.WorkflowContext {
 	history := k.messages.List(sessionID, 20)
 
 	files, _ := k.workspace.ListFiles("", 200)
@@ -42,7 +43,7 @@ func (k *Kernel) buildWorkflowContext(_ context.Context, sessionID string) model
 
 	accumChanges := buildAccumChanges(previousTurns)
 
-	topInsights := k.formatTopInsights(sessionID)
+	topInsights := k.formatTopInsights(sessionID, query)
 
 	gitStatus := ""
 	if k.git != nil {
@@ -86,22 +87,119 @@ func buildAccumChanges(turns []model.TurnSummary) []model.FileChange {
 	return out
 }
 
-// formatTopInsights 加载会话的前 5 个活跃 insights。
-func (k *Kernel) formatTopInsights(sessionID string) string {
-	const topK = 5
-	ins := k.insights.ListBySession(sessionID, topK)
-	if len(ins) == 0 {
+// formatTopInsights selects the active insights most relevant to query and
+// renders them for the prompt. When query is non-empty it ranks by lexical
+// relevance fused with confidence (Reciprocal Rank Fusion) so memory is
+// query-aware rather than just "the highest-confidence five"; with no query it
+// falls back to the store's default ordering. Semantic (embedding) relevance is
+// a future upgrade — this is the zero-dependency lexical version.
+func (k *Kernel) formatTopInsights(sessionID, query string) string {
+	const (
+		topK       = 5
+		candidates = 50
+	)
+	var active []insightItem
+	for _, item := range k.insights.ListBySession(sessionID, candidates) {
+		if item.SupersededBy == "" {
+			active = append(active, insightItem{string(item.Category), item.Title, item.Content, item.Confidence})
+		}
+	}
+	if len(active) == 0 {
 		return ""
 	}
+
+	chosen := active
+	if q := strings.TrimSpace(query); q != "" && len(active) > topK {
+		chosen = rankInsightsRRF(active, q, topK)
+	} else if len(active) > topK {
+		chosen = active[:topK]
+	}
+
 	var sb strings.Builder
 	sb.WriteString("## Key insights from previous analysis\n")
-	for _, item := range ins {
-		if item.SupersededBy != "" {
-			continue
-		}
-		sb.WriteString(fmt.Sprintf("- [%s] **%s**: %s\n", item.Category, item.Title, item.Content))
+	for _, item := range chosen {
+		sb.WriteString(fmt.Sprintf("- [%s] **%s**: %s\n", item.category, item.title, item.content))
 	}
 	return sb.String()
+}
+
+type insightItem struct {
+	category, title, content string
+	confidence               float64
+}
+
+// rankInsightsRRF fuses a lexical-relevance ranking with a confidence ranking
+// via Reciprocal Rank Fusion (k=60), returning the top n. RRF needs no tuned
+// weights and is robust to the two scores being on different scales.
+func rankInsightsRRF(items []insightItem, query string, n int) []insightItem {
+	const rrfK = 60.0
+	qterms := lexTerms(query)
+
+	byRel := make([]int, len(items))
+	byConf := make([]int, len(items))
+	for i := range items {
+		byRel[i] = i
+		byConf[i] = i
+	}
+	rel := make([]int, len(items))
+	for i, it := range items {
+		rel[i] = lexOverlap(qterms, it.title+" "+it.content)
+	}
+	sort.SliceStable(byRel, func(a, b int) bool { return rel[byRel[a]] > rel[byRel[b]] })
+	sort.SliceStable(byConf, func(a, b int) bool { return items[byConf[a]].confidence > items[byConf[b]].confidence })
+
+	score := make([]float64, len(items))
+	for rank, idx := range byRel {
+		// Only matching insights earn relevance credit — an item with zero query
+		// overlap shouldn't rank up just for being the least irrelevant.
+		if rel[idx] == 0 {
+			continue
+		}
+		score[idx] += 1.0 / (rrfK + float64(rank))
+	}
+	for rank, idx := range byConf {
+		score[idx] += 1.0 / (rrfK + float64(rank))
+	}
+
+	order := make([]int, len(items))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return score[order[a]] > score[order[b]] })
+
+	out := make([]insightItem, 0, n)
+	for _, idx := range order {
+		if len(out) >= n {
+			break
+		}
+		out = append(out, items[idx])
+	}
+	return out
+}
+
+// lexTerms lowercases and splits a query into terms of length >= 3.
+func lexTerms(s string) []string {
+	var out []string
+	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r >= 0x4e00 && r <= 0x9fff)
+	}) {
+		if len([]rune(w)) >= 2 {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// lexOverlap counts how many query terms appear in text (case-insensitive).
+func lexOverlap(qterms []string, text string) int {
+	lower := strings.ToLower(text)
+	n := 0
+	for _, t := range qterms {
+		if strings.Contains(lower, t) {
+			n++
+		}
+	}
+	return n
 }
 
 // commitWorkflowSaga 实现 L4-07: Saga 事务提交。
