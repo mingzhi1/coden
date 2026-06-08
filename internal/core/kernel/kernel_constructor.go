@@ -70,7 +70,13 @@ func NewPersistentWithWorkflowDependencies(workspaceRoot, stateDBPath string, in
 		return nil, fmt.Errorf("ensure workspace metadata: %w", err)
 	}
 
-	workspaceDBPath := storagepath.WorkspaceDBPath(stateDBPath, workspaceRef.ID)
+	// Lazily migrate this workspace's legacy flat files (<uuid>.sqlite,
+	// <uuid>.artifacts) into the unified per-workspace subdir before opening it.
+	if migErr := storagepath.MigrateWorkspaceLayout(stateDBPath, workspaceRef.ID, workspaceRoot); migErr != nil {
+		slog.Warn("[kernel] workspace layout migration failed, continuing", "error", migErr)
+	}
+
+	workspaceDBPath := storagepath.WorkspaceDBPath(stateDBPath, workspaceRoot)
 	sessionStore, err := session.NewSQLiteStore(workspaceDBPath)
 	if err != nil {
 		return nil, fmt.Errorf("create workspace session store: %w", err)
@@ -135,7 +141,7 @@ func NewPersistentWithWorkflowDependencies(workspaceRoot, stateDBPath string, in
 	k := NewWithStores(workspaceRoot, stateDBPath, sessionStore, intentStore, messageStore, checkpointStore, turnStore, turnSummaryStore, objectStore, insightStore, inputter, planner, coder, executor, acceptor...)
 
 	// M13-01d: wire artifact manager into tool runtime for automatic persistence.
-	artifactDataDir := storagepath.ArtifactDataDir(stateDBPath, workspaceRef.ID)
+	artifactDataDir := storagepath.ArtifactDataDir(stateDBPath, workspaceRoot)
 	if mgr, err := artifact.NewManager(artifactDataDir); err == nil {
 		k.artifactMgr = mgr
 		k.tools.SetArtifactManager(mgr)

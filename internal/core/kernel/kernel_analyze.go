@@ -11,6 +11,7 @@ import (
 
 	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/core/model"
+	"github.com/mingzhi1/coden/internal/core/storagepath"
 	"github.com/mingzhi1/coden/internal/secretary"
 )
 
@@ -109,7 +110,7 @@ func (k *Kernel) runAnalyzeWorkflow(ctx context.Context, sessionID, workflowID s
 			}
 		}
 		if wsRoot := k.workspace.Root(); wsRoot != "" {
-			if memErr := insight.WriteMemoryFile(wsRoot, sessionID, k.insights); memErr != nil {
+			if memErr := insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights); memErr != nil {
 				slog.Warn("[analyze] failed to write memory file", "workflow_id", workflowID, "error", memErr)
 			} else {
 				clog.Session(sessionID).Info("memory file updated", "workflow_id", workflowID)
@@ -150,7 +151,7 @@ func (k *Kernel) runAnalyzeWorkflow(ctx context.Context, sessionID, workflowID s
 				}
 				if len(res.Insights) > 0 {
 					if wsRoot := k.workspace.Root(); wsRoot != "" {
-						_ = insight.WriteMemoryFile(wsRoot, sessionID, k.insights)
+						_ = insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights)
 					}
 				}
 			}()

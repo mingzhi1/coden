@@ -9,11 +9,10 @@ import (
 	"time"
 )
 
-const memoryFileName = "MEMORY.md"
-const memoryDir = ".coden"
 
-// WriteMemoryFile regenerates .coden/MEMORY.md in workspaceRoot from the
-// current session's active (non-superseded) insights.
+// WriteMemoryFile (re)writes the MEMORY.md at path from the current session's
+// active (non-superseded) insights. The caller chooses the location (now the
+// per-workspace home dir, ~/.coden/workspace/<key>/MEMORY.md).
 //
 // The file is rewritten atomically on each call so it always reflects the
 // latest insight state. It is intended to be called asynchronously after
@@ -29,7 +28,7 @@ const memoryDir = ".coden"
 //
 //	## Findings
 //	...
-func WriteMemoryFile(workspaceRoot, sessionID string, store Store) error {
+func WriteMemoryFile(path, sessionID string, store Store) error {
 	insights := store.ListBySession(sessionID, 0)
 	if len(insights) == 0 {
 		return nil
@@ -88,12 +87,10 @@ func WriteMemoryFile(workspaceRoot, sessionID string, store Store) error {
 		}
 	}
 
-	dir := filepath.Join(workspaceRoot, memoryDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("mkdir .coden: %w", err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir memory dir: %w", err)
 	}
 
-	path := filepath.Join(dir, memoryFileName)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(sb.String()), 0o644); err != nil {
 		return fmt.Errorf("write memory tmp: %w", err)

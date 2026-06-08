@@ -12,6 +12,7 @@ import (
 	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/hook"
 	"github.com/mingzhi1/coden/internal/core/model"
+	"github.com/mingzhi1/coden/internal/core/storagepath"
 	"github.com/mingzhi1/coden/internal/core/taskqueue"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
 	"github.com/mingzhi1/coden/internal/core/workflow"
@@ -730,7 +731,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 			// This gives workers a persistent, human-readable memory file they can
 			// reference across turns without re-reading raw history.
 			if wsRoot := k.workspace.Root(); wsRoot != "" {
-				if memErr := insight.WriteMemoryFile(wsRoot, sessionID, k.insights); memErr != nil {
+				if memErr := insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights); memErr != nil {
 					slog.Warn("[secretary] failed to write memory file", "error", memErr)
 				} else {
 					slog.Info("[secretary] memory file updated", "path", wsRoot+"/.coden/MEMORY.md")

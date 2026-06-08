@@ -11,12 +11,12 @@ import (
 func TestWriteMemoryFile_EmptyStore(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore()
-	err := WriteMemoryFile(dir, "s1", store)
+	err := WriteMemoryFile(filepath.Join(dir, "MEMORY.md"), "s1", store)
 	if err != nil {
 		t.Fatalf("unexpected error on empty store: %v", err)
 	}
 	// No file should be written when there are no insights.
-	_, statErr := os.Stat(filepath.Join(dir, ".coden", "MEMORY.md"))
+	_, statErr := os.Stat(filepath.Join(dir, "MEMORY.md"))
 	if !os.IsNotExist(statErr) {
 		t.Error("expected no MEMORY.md for empty store")
 	}
@@ -36,12 +36,12 @@ func TestWriteMemoryFile_CreatesFile(t *testing.T) {
 		UpdatedAt:  time.Now(),
 	})
 
-	err := WriteMemoryFile(dir, "s1", store)
+	err := WriteMemoryFile(filepath.Join(dir, "MEMORY.md"), "s1", store)
 	if err != nil {
 		t.Fatalf("WriteMemoryFile: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, ".coden", "MEMORY.md"))
+	data, err := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
 	if err != nil {
 		t.Fatalf("read MEMORY.md: %v", err)
 	}
@@ -82,12 +82,12 @@ func TestWriteMemoryFile_SkipsSuperseded(t *testing.T) {
 		UpdatedAt: time.Now(),
 	})
 
-	err := WriteMemoryFile(dir, "s1", store)
+	err := WriteMemoryFile(filepath.Join(dir, "MEMORY.md"), "s1", store)
 	if err != nil {
 		t.Fatalf("WriteMemoryFile: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Join(dir, ".coden", "MEMORY.md"))
+	data, _ := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
 	content := string(data)
 	if strings.Contains(content, "Old finding") {
 		t.Error("superseded insight should not appear in memory file")
@@ -117,12 +117,12 @@ func TestWriteMemoryFile_MultipleCategories(t *testing.T) {
 		})
 	}
 
-	err := WriteMemoryFile(dir, "s1", store)
+	err := WriteMemoryFile(filepath.Join(dir, "MEMORY.md"), "s1", store)
 	if err != nil {
 		t.Fatalf("WriteMemoryFile: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Join(dir, ".coden", "MEMORY.md"))
+	data, _ := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
 	content := string(data)
 
 	for _, heading := range []string{"## Decisions", "## Designs", "## Findings", "## Comparisons"} {
@@ -142,14 +142,14 @@ func TestWriteMemoryFile_IdempotentOnRewrite(t *testing.T) {
 	})
 
 	// Write twice — second write should not error and produce consistent content.
-	if err := WriteMemoryFile(dir, "s1", store); err != nil {
+	if err := WriteMemoryFile(filepath.Join(dir, "MEMORY.md"), "s1", store); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	if err := WriteMemoryFile(dir, "s1", store); err != nil {
+	if err := WriteMemoryFile(filepath.Join(dir, "MEMORY.md"), "s1", store); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Join(dir, ".coden", "MEMORY.md"))
+	data, _ := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
 	if !strings.Contains(string(data), "Some decision") {
 		t.Error("expected content after idempotent rewrite")
 	}
@@ -170,12 +170,12 @@ func TestWriteMemoryFile_IsolatedBySession(t *testing.T) {
 	})
 
 	// Write memory for session-A only.
-	err := WriteMemoryFile(dir, "session-A", store)
+	err := WriteMemoryFile(filepath.Join(dir, "MEMORY.md"), "session-A", store)
 	if err != nil {
 		t.Fatalf("WriteMemoryFile: %v", err)
 	}
 
-	data, _ := os.ReadFile(filepath.Join(dir, ".coden", "MEMORY.md"))
+	data, _ := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
 	content := string(data)
 	if !strings.Contains(content, "Session A decision") {
 		t.Error("expected session-A insight")

@@ -9,6 +9,7 @@ import (
 
 	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/core/model"
+	"github.com/mingzhi1/coden/internal/core/storagepath"
 	"github.com/mingzhi1/coden/internal/core/workflow"
 	"github.com/mingzhi1/coden/internal/secretary"
 )
@@ -172,7 +173,7 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 			}
 
 			if wsRoot := k.workspace.Root(); wsRoot != "" {
-				if memErr := insight.WriteMemoryFile(wsRoot, sessionID, k.insights); memErr != nil {
+				if memErr := insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights); memErr != nil {
 					slog.Warn("[secretary] question: failed to write memory file", "error", memErr)
 				}
 			}

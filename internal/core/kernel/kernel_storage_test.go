@@ -238,7 +238,7 @@ func TestPersistentKernelSplitsMainAndWorkspaceSQLite(t *testing.T) {
 		t.Fatalf("unexpected workspace metadata: %+v", workspaceRef)
 	}
 
-	workspaceDBPath := storagepath.WorkspaceDBPath(mainDBPath, workspaceRef.ID)
+	workspaceDBPath := storagepath.WorkspaceDBPath(mainDBPath, workspaceRoot)
 
 	sessionStore, err := session.NewSQLiteStore(workspaceDBPath)
 	if err != nil {
