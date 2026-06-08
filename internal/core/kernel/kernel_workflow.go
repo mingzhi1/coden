@@ -722,9 +722,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 					CreatedAt:  now,
 					UpdatedAt:  now,
 				}
-				if saveErr := k.insights.Save(modelIns); saveErr != nil {
-					slog.Warn("[secretary] failed to save LLM insight", "error", saveErr)
-				}
+				k.saveInsight(afterCtx, modelIns) // embed + semantic dedup + save
 			}
 
 			// Regenerate .coden/MEMORY.md from all active insights for this session.

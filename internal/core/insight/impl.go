@@ -2,8 +2,10 @@ package insight
 
 import (
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -90,7 +92,7 @@ func (s *sqliteStore) init() error {
 	if _, err := s.db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
 		return fmt.Errorf("set busy_timeout: %w", err)
 	}
-	_, err := s.db.Exec(`
+	if _, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS insights (
 	insight_id        TEXT PRIMARY KEY,
 	session_id        TEXT NOT NULL,
@@ -101,9 +103,41 @@ CREATE TABLE IF NOT EXISTS insights (
 	confidence        REAL NOT NULL DEFAULT 0.5,
 	superseded_by     TEXT NOT NULL DEFAULT '',
 	created_at_ns     INTEGER NOT NULL,
-	updated_at_ns     INTEGER NOT NULL
-)`)
-	return err
+	updated_at_ns     INTEGER NOT NULL,
+	embedding         BLOB
+)`); err != nil {
+		return err
+	}
+	// Migrate older databases that predate the embedding column.
+	if _, err := s.db.Exec(`ALTER TABLE insights ADD COLUMN embedding BLOB`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	return nil
+}
+
+// encodeVec/decodeVec serialize a float32 vector as little-endian bytes for the
+// SQLite blob column.
+func encodeVec(v []float32) []byte {
+	if len(v) == 0 {
+		return nil
+	}
+	b := make([]byte, len(v)*4)
+	for i, f := range v {
+		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(f))
+	}
+	return b
+}
+
+func decodeVec(b []byte) []float32 {
+	if len(b) < 4 {
+		return nil
+	}
+	v := make([]float32, len(b)/4)
+	for i := range v {
+		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
+	}
+	return v
 }
 
 func (s *sqliteStore) Save(ins Insight) error {
@@ -112,16 +146,17 @@ func (s *sqliteStore) Save(ins Insight) error {
 	tagsJSON, _ := json.Marshal(ins.Tags)
 	_, err := s.db.Exec(`
 INSERT INTO insights
-  (insight_id,session_id,category,title,content,tags_json,confidence,superseded_by,created_at_ns,updated_at_ns)
-VALUES (?,?,?,?,?,?,?,?,?,?)
+  (insight_id,session_id,category,title,content,tags_json,confidence,superseded_by,created_at_ns,updated_at_ns,embedding)
+VALUES (?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(insight_id) DO UPDATE SET
   category=excluded.category, title=excluded.title, content=excluded.content,
   tags_json=excluded.tags_json, confidence=excluded.confidence,
-  superseded_by=excluded.superseded_by, updated_at_ns=excluded.updated_at_ns
+  superseded_by=excluded.superseded_by, updated_at_ns=excluded.updated_at_ns,
+  embedding=excluded.embedding
 `,
 		ins.ID, ins.SessionID, string(ins.Category), ins.Title, ins.Content,
 		string(tagsJSON), ins.Confidence, ins.SupersededBy,
-		ins.CreatedAt.UnixNano(), ins.UpdatedAt.UnixNano())
+		ins.CreatedAt.UnixNano(), ins.UpdatedAt.UnixNano(), encodeVec(ins.Embedding))
 	return err
 }
 
@@ -136,23 +171,24 @@ func (s *sqliteStore) Supersede(oldID string, newIns Insight) error {
 	tagsJSON, _ := json.Marshal(newIns.Tags)
 	_, err := s.db.Exec(`
 INSERT INTO insights
-  (insight_id,session_id,category,title,content,tags_json,confidence,superseded_by,created_at_ns,updated_at_ns)
-VALUES (?,?,?,?,?,?,?,?,?,?)
+  (insight_id,session_id,category,title,content,tags_json,confidence,superseded_by,created_at_ns,updated_at_ns,embedding)
+VALUES (?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(insight_id) DO UPDATE SET
   category=excluded.category, title=excluded.title, content=excluded.content,
   tags_json=excluded.tags_json, confidence=excluded.confidence,
-  superseded_by=excluded.superseded_by, updated_at_ns=excluded.updated_at_ns
+  superseded_by=excluded.superseded_by, updated_at_ns=excluded.updated_at_ns,
+  embedding=excluded.embedding
 `,
 		newIns.ID, newIns.SessionID, string(newIns.Category), newIns.Title, newIns.Content,
 		string(tagsJSON), newIns.Confidence, newIns.SupersededBy,
-		newIns.CreatedAt.UnixNano(), newIns.UpdatedAt.UnixNano())
+		newIns.CreatedAt.UnixNano(), newIns.UpdatedAt.UnixNano(), encodeVec(newIns.Embedding))
 	return err
 }
 
 func (s *sqliteStore) ListBySession(sessionID string, limit int) []Insight {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	query := `SELECT insight_id,session_id,category,title,content,tags_json,confidence,superseded_by,created_at_ns,updated_at_ns
+	query := `SELECT insight_id,session_id,category,title,content,tags_json,confidence,superseded_by,created_at_ns,updated_at_ns,embedding
 FROM insights WHERE session_id=? ORDER BY updated_at_ns DESC`
 	var rows *sql.Rows
 	var err error
@@ -197,11 +233,13 @@ func scanInsights(rows *sql.Rows) []Insight {
 		var ins Insight
 		var cat, tagsJSON string
 		var createdNS, updatedNS int64
+		var emb []byte
 		if err := rows.Scan(&ins.ID, &ins.SessionID, &cat, &ins.Title, &ins.Content,
-			&tagsJSON, &ins.Confidence, &ins.SupersededBy, &createdNS, &updatedNS); err != nil {
+			&tagsJSON, &ins.Confidence, &ins.SupersededBy, &createdNS, &updatedNS, &emb); err != nil {
 			continue
 		}
 		ins.Category = Category(cat)
+		ins.Embedding = decodeVec(emb)
 		_ = json.Unmarshal([]byte(tagsJSON), &ins.Tags)
 		ins.CreatedAt = time.Unix(0, createdNS).UTC()
 		ins.UpdatedAt = time.Unix(0, updatedNS).UTC()

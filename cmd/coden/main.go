@@ -549,6 +549,12 @@ func newKernel(ctx context.Context, workspaceRoot, stateDBPath string, opts laun
 	if chatter := reg.Chatter(); chatter != nil {
 		k.SetSecretaryLLM(llm.NewSecretaryAdapter(chatter))
 	}
+	// Enable semantic memory (dense insight retrieval + dedup) when an embeddings
+	// endpoint is configured (llm.embedding). No-op otherwise — memory stays lexical.
+	if emb := loadLLMConfig(workspaceRoot).Embedding; emb.BaseURL != "" && emb.APIKey != "" && emb.Model != "" {
+		k.SetEmbedder(llm.NewHTTPEmbedder(emb.BaseURL, emb.APIKey, emb.Model))
+		slog.Info("[kernel] semantic memory enabled", "model", emb.Model)
+	}
 	k.SetAllowShell(opts.AllowShell)
 
 	// Load unified configuration (user defaults + workspace overrides).

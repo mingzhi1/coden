@@ -25,6 +25,9 @@ type Insight struct {
 	SupersededBy string    `json:"superseded_by,omitempty"` // ID of replacing insight
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// Embedding is the dense vector for semantic retrieval/dedup. Stored as a
+	// SQLite blob, not JSON-serialized. Empty when no embedder is configured.
+	Embedding []float32 `json:"-"`
 }
 
 // Store manages insights (dual in-memory + SQLite).

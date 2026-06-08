@@ -50,6 +50,17 @@ type LLMConfig struct {
 	Pool        PoolConfig               `yaml:"pool"`
 	Routing     map[string][]string      `yaml:"routing"`
 	TokenBudget TokenBudgetConfig        `yaml:"token_budget"`
+	Embedding   EmbeddingConfig          `yaml:"embedding"`
+}
+
+// EmbeddingConfig configures the embeddings endpoint for semantic memory (dense
+// insight retrieval + semantic dedup). Any OpenAI-compatible /embeddings
+// endpoint works (DashScope compatible-mode, OpenAI, SiliconFlow, …). Disabled
+// when fields are empty — memory then falls back to lexical retrieval only.
+type EmbeddingConfig struct {
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	Model   string `yaml:"model"`
 }
 
 // ServerConfig controls the standalone llm-server sidecar.

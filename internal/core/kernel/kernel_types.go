@@ -47,6 +47,7 @@ type Kernel struct {
 	turnSummaries          turnsummary.Store
 	objects                objectstore.Store
 	insights               insight.Store // M8-11: per-session analysis insight accumulation
+	embedder               Embedder      // optional: dense vectors for semantic memory (nil = lexical only)
 	mainDBPath             string
 	workspace              *workspace.Service
 	tools                  *toolruntime.Runtime
@@ -111,6 +112,16 @@ func (k *Kernel) SetSecretaryLLM(l secretary.LLM) {
 		k.secretary.SetLLM(l)
 	}
 }
+
+// Embedder turns text into dense vectors for semantic memory. Implemented by
+// llm.HTTPEmbedder; defined here so the kernel doesn't depend on the llm package.
+type Embedder interface {
+	Embed(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+// SetEmbedder enables semantic memory (dense insight retrieval + dedup). When
+// unset, memory retrieval/dedup stay lexical-only.
+func (k *Kernel) SetEmbedder(e Embedder) { k.embedder = e }
 
 // SetFailurePolicy configures what happens when a task fails after exhausting retries.
 // Valid values: "stop" (default — abandon remaining tasks), "skip" (continue with next task),

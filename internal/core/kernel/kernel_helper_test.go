@@ -1,23 +1,39 @@
 package kernel
 
-import "testing"
+import (
+	"testing"
 
-func TestRankInsightsRRF_QueryAware(t *testing.T) {
-	items := []insightItem{
-		{category: "finding", title: "RAG index uses FTS5", content: "bm25 ranking over chunks", confidence: 0.4},
-		{category: "decision", title: "Use SQLite for state", content: "avoids ops complexity", confidence: 0.95},
-		{category: "finding", title: "TUI event loop", content: "bubbletea update model", confidence: 0.9},
+	"github.com/mingzhi1/coden/internal/core/insight"
+)
+
+func TestRankInsightsFused_QueryAware(t *testing.T) {
+	items := []insight.Insight{
+		{Category: "finding", Title: "RAG index uses FTS5", Content: "bm25 ranking over chunks", Confidence: 0.4},
+		{Category: "decision", Title: "Use SQLite for state", Content: "avoids ops complexity", Confidence: 0.95},
+		{Category: "finding", Title: "TUI event loop", Content: "bubbletea update model", Confidence: 0.9},
 	}
 
-	// Query about RAG should surface the low-confidence RAG insight first, even
-	// though a different insight has higher confidence — proving relevance, not
-	// just confidence, drives ordering.
-	got := rankInsightsRRF(items, "how does the rag fts5 index work", 2)
+	// Lexical-only (no query vector): a RAG query surfaces the low-confidence RAG
+	// insight first, proving relevance — not confidence — drives ordering.
+	got := rankInsightsFused(items, "how does the rag fts5 index work", nil, 2)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(got))
 	}
-	if got[0].title != "RAG index uses FTS5" {
-		t.Errorf("expected RAG insight ranked first for a RAG query, got %q", got[0].title)
+	if got[0].Title != "RAG index uses FTS5" {
+		t.Errorf("expected RAG insight ranked first for a RAG query, got %q", got[0].Title)
+	}
+}
+
+func TestRankInsightsFused_Semantic(t *testing.T) {
+	// Query embedding close to item[1]'s embedding should pull it to the top even
+	// with no lexical overlap and lower confidence.
+	items := []insight.Insight{
+		{Title: "alpha", Content: "x", Confidence: 0.9, Embedding: []float32{1, 0, 0}},
+		{Title: "beta", Content: "y", Confidence: 0.1, Embedding: []float32{0, 1, 0}},
+	}
+	got := rankInsightsFused(items, "zzz", []float32{0, 1, 0}, 1)
+	if len(got) != 1 || got[0].Title != "beta" {
+		t.Errorf("expected semantic match 'beta' first, got %+v", got)
 	}
 }
 
@@ -28,5 +44,14 @@ func TestLexOverlap(t *testing.T) {
 	}
 	if n := lexOverlap(q, "completely unrelated text"); n != 0 {
 		t.Errorf("expected 0 overlaps, got %d", n)
+	}
+}
+
+func TestCosine(t *testing.T) {
+	if s := cosine([]float32{1, 0}, []float32{1, 0}); s < 0.999 {
+		t.Errorf("self-cosine should be ~1, got %f", s)
+	}
+	if s := cosine([]float32{1, 0}, []float32{0, 1}); s != 0 {
+		t.Errorf("orthogonal cosine should be 0, got %f", s)
 	}
 }

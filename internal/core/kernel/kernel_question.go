@@ -167,9 +167,7 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 					CreatedAt:  now,
 					UpdatedAt:  now,
 				}
-				if saveErr := k.insights.Save(modelIns); saveErr != nil {
-					slog.Warn("[secretary] question: failed to save insight", "error", saveErr)
-				}
+				k.saveInsight(afterCtx, modelIns) // embed + semantic dedup + save
 			}
 
 			if wsRoot := k.workspace.Root(); wsRoot != "" {

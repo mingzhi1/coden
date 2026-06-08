@@ -145,9 +145,7 @@ func (k *Kernel) runAnalyzeWorkflow(ctx context.Context, sessionID, workflowID s
 						CreatedAt:  now,
 						UpdatedAt:  now,
 					}
-					if saveErr := k.insights.Save(modelIns); saveErr != nil {
-						slog.Warn("[analyze] failed to save LLM insight", "workflow_id", workflowID, "error", saveErr)
-					}
+					k.saveInsight(afterCtx, modelIns) // embed + semantic dedup + save
 				}
 				if len(res.Insights) > 0 {
 					if wsRoot := k.workspace.Root(); wsRoot != "" {

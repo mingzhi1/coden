@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/core/model"
 	clog "github.com/mingzhi1/coden/internal/log"
 )
@@ -29,7 +32,7 @@ const (
 
 // buildWorkflowContext 获取 workers 需要的上下文数据。query 用于让记忆检索
 // (TopInsights) 按当前任务相关性排序;为空时退回默认排序。
-func (k *Kernel) buildWorkflowContext(_ context.Context, sessionID, query string) model.WorkflowContext {
+func (k *Kernel) buildWorkflowContext(ctx context.Context, sessionID, query string) model.WorkflowContext {
 	history := k.messages.List(sessionID, 20)
 
 	files, _ := k.workspace.ListFiles("", 200)
@@ -43,7 +46,7 @@ func (k *Kernel) buildWorkflowContext(_ context.Context, sessionID, query string
 
 	accumChanges := buildAccumChanges(previousTurns)
 
-	topInsights := k.formatTopInsights(sessionID, query)
+	topInsights := k.formatTopInsights(ctx, sessionID, query)
 
 	gitStatus := ""
 	if k.git != nil {
@@ -88,20 +91,19 @@ func buildAccumChanges(turns []model.TurnSummary) []model.FileChange {
 }
 
 // formatTopInsights selects the active insights most relevant to query and
-// renders them for the prompt. When query is non-empty it ranks by lexical
-// relevance fused with confidence (Reciprocal Rank Fusion) so memory is
-// query-aware rather than just "the highest-confidence five"; with no query it
-// falls back to the store's default ordering. Semantic (embedding) relevance is
-// a future upgrade — this is the zero-dependency lexical version.
-func (k *Kernel) formatTopInsights(sessionID, query string) string {
+// renders them for the prompt. It fuses (RRF) up to three rankings — lexical
+// overlap, semantic cosine (when an embedder is configured), and confidence — so
+// memory is query-aware rather than "the highest-confidence five". With no query
+// it falls back to the store's default ordering.
+func (k *Kernel) formatTopInsights(ctx context.Context, sessionID, query string) string {
 	const (
 		topK       = 5
 		candidates = 50
 	)
-	var active []insightItem
-	for _, item := range k.insights.ListBySession(sessionID, candidates) {
-		if item.SupersededBy == "" {
-			active = append(active, insightItem{string(item.Category), item.Title, item.Content, item.Confidence})
+	var active []insight.Insight
+	for _, it := range k.insights.ListBySession(sessionID, candidates) {
+		if it.SupersededBy == "" {
+			active = append(active, it)
 		}
 	}
 	if len(active) == 0 {
@@ -110,64 +112,75 @@ func (k *Kernel) formatTopInsights(sessionID, query string) string {
 
 	chosen := active
 	if q := strings.TrimSpace(query); q != "" && len(active) > topK {
-		chosen = rankInsightsRRF(active, q, topK)
+		chosen = k.rankInsights(ctx, active, q, topK)
 	} else if len(active) > topK {
 		chosen = active[:topK]
 	}
 
 	var sb strings.Builder
 	sb.WriteString("## Key insights from previous analysis\n")
-	for _, item := range chosen {
-		sb.WriteString(fmt.Sprintf("- [%s] **%s**: %s\n", item.category, item.title, item.content))
+	for _, it := range chosen {
+		sb.WriteString(fmt.Sprintf("- [%s] **%s**: %s\n", it.Category, it.Title, it.Content))
 	}
 	return sb.String()
 }
 
-type insightItem struct {
-	category, title, content string
-	confidence               float64
+// rankInsights embeds the query (when an embedder is available) and returns the
+// top n insights by fused lexical+semantic+confidence relevance.
+func (k *Kernel) rankInsights(ctx context.Context, items []insight.Insight, query string, n int) []insight.Insight {
+	var queryVec []float32
+	if k.embedder != nil {
+		if vs, err := k.embedder.Embed(ctx, []string{query}); err == nil && len(vs) == 1 {
+			queryVec = vs[0]
+		}
+	}
+	return rankInsightsFused(items, query, queryVec, n)
 }
 
-// rankInsightsRRF fuses a lexical-relevance ranking with a confidence ranking
-// via Reciprocal Rank Fusion (k=60), returning the top n. RRF needs no tuned
-// weights and is robust to the two scores being on different scales.
-func rankInsightsRRF(items []insightItem, query string, n int) []insightItem {
+// rankInsightsFused fuses lexical, semantic, and confidence rankings via
+// Reciprocal Rank Fusion (k=60). Lexical/semantic credit goes only to items that
+// actually match (overlap>0 / has an embedding), so an irrelevant item can't
+// rank up just for being least-irrelevant; confidence always contributes. Pure
+// function (queryVec passed in) so it's unit-testable without an embedder.
+func rankInsightsFused(items []insight.Insight, query string, queryVec []float32, n int) []insight.Insight {
 	const rrfK = 60.0
-	qterms := lexTerms(query)
-
-	byRel := make([]int, len(items))
-	byConf := make([]int, len(items))
-	for i := range items {
-		byRel[i] = i
-		byConf[i] = i
-	}
-	rel := make([]int, len(items))
-	for i, it := range items {
-		rel[i] = lexOverlap(qterms, it.title+" "+it.content)
-	}
-	sort.SliceStable(byRel, func(a, b int) bool { return rel[byRel[a]] > rel[byRel[b]] })
-	sort.SliceStable(byConf, func(a, b int) bool { return items[byConf[a]].confidence > items[byConf[b]].confidence })
-
 	score := make([]float64, len(items))
-	for rank, idx := range byRel {
-		// Only matching insights earn relevance credit — an item with zero query
-		// overlap shouldn't rank up just for being the least irrelevant.
-		if rel[idx] == 0 {
-			continue
+
+	qterms := lexTerms(query)
+	lex := make([]float64, len(items))
+	for i := range items {
+		lex[i] = float64(lexOverlap(qterms, items[i].Title+" "+items[i].Content))
+	}
+	fuseRanker(score, len(items), func(i int) float64 { return lex[i] }, func(i int) bool { return lex[i] > 0 }, rrfK)
+
+	if len(queryVec) > 0 {
+		// Only items actually similar to the query earn semantic credit. Without
+		// this floor, a barely-related item still gets a rank-based RRF point that
+		// can cancel out other signals; gating mirrors the lexical zero-overlap rule.
+		const semanticFloor = 0.3
+		sims := make([]float64, len(items))
+		any := false
+		for i := range items {
+			if len(items[i].Embedding) > 0 {
+				sims[i] = cosine(queryVec, items[i].Embedding)
+				if sims[i] >= semanticFloor {
+					any = true
+				}
+			}
 		}
-		score[idx] += 1.0 / (rrfK + float64(rank))
+		if any {
+			fuseRanker(score, len(items), func(i int) float64 { return sims[i] }, func(i int) bool { return sims[i] >= semanticFloor }, rrfK)
+		}
 	}
-	for rank, idx := range byConf {
-		score[idx] += 1.0 / (rrfK + float64(rank))
-	}
+
+	fuseRanker(score, len(items), func(i int) float64 { return items[i].Confidence }, nil, rrfK)
 
 	order := make([]int, len(items))
 	for i := range order {
 		order[i] = i
 	}
 	sort.SliceStable(order, func(a, b int) bool { return score[order[a]] > score[order[b]] })
-
-	out := make([]insightItem, 0, n)
+	out := make([]insight.Insight, 0, n)
 	for _, idx := range order {
 		if len(out) >= n {
 			break
@@ -175,6 +188,67 @@ func rankInsightsRRF(items []insightItem, query string, n int) []insightItem {
 		out = append(out, items[idx])
 	}
 	return out
+}
+
+// fuseRanker ranks n items by scoreOf (desc) and adds RRF points to each
+// eligible item. eligible==nil means every item gets credit.
+func fuseRanker(score []float64, n int, scoreOf func(int) float64, eligible func(int) bool, rrfK float64) {
+	order := make([]int, n)
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return scoreOf(order[a]) > scoreOf(order[b]) })
+	for rank, idx := range order {
+		if eligible != nil && !eligible(idx) {
+			continue
+		}
+		score[idx] += 1.0 / (rrfK + float64(rank))
+	}
+}
+
+// cosine returns the cosine similarity of two equal-length float32 vectors.
+func cosine(a, b []float32) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot, na, nb float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		na += float64(a[i]) * float64(a[i])
+		nb += float64(b[i]) * float64(b[i])
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+}
+
+// saveInsight embeds (when an embedder is configured), de-duplicates against
+// existing active insights (a semantic near-duplicate supersedes the old one),
+// and persists. Falls back to a plain Save when no embedder is set.
+func (k *Kernel) saveInsight(ctx context.Context, ins insight.Insight) {
+	if k.embedder != nil && len(ins.Embedding) == 0 {
+		if vs, err := k.embedder.Embed(ctx, []string{ins.Title + "\n" + ins.Content}); err == nil && len(vs) == 1 {
+			ins.Embedding = vs[0]
+		}
+	}
+	if len(ins.Embedding) > 0 {
+		const dedupThreshold = 0.92
+		for _, ex := range k.insights.ListBySession(ins.SessionID, 0) {
+			if ex.SupersededBy != "" || ex.ID == ins.ID || len(ex.Embedding) == 0 {
+				continue
+			}
+			if cosine(ins.Embedding, ex.Embedding) >= dedupThreshold {
+				if err := k.insights.Supersede(ex.ID, ins); err == nil {
+					return // newer insight supersedes the near-duplicate
+				}
+				break
+			}
+		}
+	}
+	if err := k.insights.Save(ins); err != nil {
+		slog.Warn("[kernel] save insight failed", "error", err)
+	}
 }
 
 // lexTerms lowercases and splits a query into terms of length >= 3.

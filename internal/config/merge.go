@@ -124,6 +124,15 @@ func mergeLLMConfig(dst, src *LLMConfig) {
 	if src.TokenBudget.RetryRatio > 0 {
 		dst.TokenBudget.RetryRatio = src.TokenBudget.RetryRatio
 	}
+	if strings.TrimSpace(src.Embedding.BaseURL) != "" {
+		dst.Embedding.BaseURL = src.Embedding.BaseURL
+	}
+	if strings.TrimSpace(src.Embedding.APIKey) != "" {
+		dst.Embedding.APIKey = src.Embedding.APIKey
+	}
+	if strings.TrimSpace(src.Embedding.Model) != "" {
+		dst.Embedding.Model = src.Embedding.Model
+	}
 }
 
 func mergeStorageConfig(dst, src *StorageConfig) {
