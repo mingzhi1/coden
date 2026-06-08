@@ -103,6 +103,13 @@ type Config struct {
 	CodexArgs    []string
 	CodexEnv     map[string]string
 	CodexCwd     string
+
+	// Claude CLI specific fields (only used when Provider == "claude-cli").
+	ClaudeName    string
+	ClaudeCommand string
+	ClaudeArgs    []string
+	ClaudeEnv     map[string]string
+	ClaudeCwd     string
 }
 
 // New creates a ChatProvider from config. Auto-detects if Provider is empty.
@@ -140,6 +147,14 @@ func New(cfg Config) (ChatProvider, string) {
 			Args:    cfg.CodexArgs,
 			Env:     cfg.CodexEnv,
 			CWD:     cfg.CodexCwd,
+		}), model
+	case "claude-cli", "claude-code", "claude_cli":
+		return NewClaudeCLI(ClaudeCLIConfig{
+			Name:    cfg.ClaudeName,
+			Command: cfg.ClaudeCommand,
+			Args:    cfg.ClaudeArgs,
+			Env:     cfg.ClaudeEnv,
+			CWD:     cfg.ClaudeCwd,
 		}), model
 	case "anthropic":
 		return NewAnthropic(cfg.APIKey, cfg.BaseURL, httpCli), model

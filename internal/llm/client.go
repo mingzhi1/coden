@@ -45,6 +45,13 @@ type Config struct {
 	CodexArgs    []string
 	CodexEnv     map[string]string
 	CodexCwd     string
+
+	// Claude CLI-specific fields (only used when Provider == "claude-cli").
+	ClaudeName    string
+	ClaudeCommand string
+	ClaudeArgs    []string
+	ClaudeEnv     map[string]string
+	ClaudeCwd     string
 }
 
 // New creates a Client from config.
@@ -64,6 +71,11 @@ func New(cfg Config) *Client {
 		CodexArgs:    cfg.CodexArgs,
 		CodexEnv:     cfg.CodexEnv,
 		CodexCwd:     cfg.CodexCwd,
+		ClaudeName:    cfg.ClaudeName,
+		ClaudeCommand: cfg.ClaudeCommand,
+		ClaudeArgs:    cfg.ClaudeArgs,
+		ClaudeEnv:     cfg.ClaudeEnv,
+		ClaudeCwd:     cfg.ClaudeCwd,
 	})
 	return &Client{model: model, name: backend.Name(), backend: backend}
 }
@@ -542,6 +554,17 @@ func PoolFromConfig(cfg config.LLMConfig, workspaceCwd string) *Pool {
 				CodexCwd:     workspaceCwd,
 			}
 		}
+		if t := entry.EffectiveType(); t == "claude-cli" || t == "claude-code" {
+			return Config{
+				Provider:      "claude-cli",
+				Model:         entry.DefaultModel,
+				ClaudeName:    name,
+				ClaudeCommand: entry.Command,
+				ClaudeArgs:    entry.Args,
+				ClaudeEnv:     entry.Env,
+				ClaudeCwd:     workspaceCwd,
+			}
+		}
 		// HTTP provider
 		return Config{
 			Provider: name,
@@ -592,6 +615,17 @@ func BrokerFromConfig(cfg config.LLMConfig, workspaceCwd string) *Broker {
 				CodexArgs:    entry.Args,
 				CodexEnv:     entry.Env,
 				CodexCwd:     workspaceCwd,
+			}
+		}
+		if t := entry.EffectiveType(); t == "claude-cli" || t == "claude-code" {
+			return Config{
+				Provider:      "claude-cli",
+				Model:         entry.DefaultModel,
+				ClaudeName:    name,
+				ClaudeCommand: entry.Command,
+				ClaudeArgs:    entry.Args,
+				ClaudeEnv:     entry.Env,
+				ClaudeCwd:     workspaceCwd,
 			}
 		}
 		return Config{

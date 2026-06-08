@@ -284,7 +284,7 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 		// Execute reads and mutations immediately; feed all results back to LLM.
 		var resultSummary strings.Builder
 
-		resultSummary.WriteString(executeReadsParallel(ctx, c.executor, reads, readBudgetChars, round+1, c.push, c.outputCompressor))
+		resultSummary.WriteString(executeReadsParallel(ctx, "coder", c.executor, reads, readBudgetChars, round+1, c.push, c.outputCompressor))
 
 		// Read-only mode: drop mutations without executing them, and tell the
 		// model they were not run so it stops re-issuing writes and concludes.
@@ -359,11 +359,12 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 // the same order as the input slice so that LLM feedback is deterministic.
 // If an individual read fails, a warning is logged and an error entry is
 // included in the output — other reads are not affected.
-func executeReadsParallel(ctx context.Context, executor toolruntime.Executor, reads []workflow.ToolCall, readBudgetChars int, round int, pushFn func(string, string, string), oc *outputcompressor.Compressor) string {
+func executeReadsParallel(ctx context.Context, role string, executor toolruntime.Executor, reads []workflow.ToolCall, readBudgetChars int, round int, pushFn func(string, string, string), oc *outputcompressor.Compressor) string {
 	if len(reads) == 0 {
 		return ""
 	}
-	slog.Info("[llm:coder] executing reads in parallel", "round", round, "count", len(reads))
+	logPrefix := "[llm:" + role + "]"
+	slog.Info(logPrefix+" executing reads in parallel", "round", round, "count", len(reads))
 
 	results := make([]string, len(reads))
 	var wg sync.WaitGroup
@@ -376,10 +377,10 @@ func executeReadsParallel(ctx context.Context, executor toolruntime.Executor, re
 			sem <- struct{}{}        // acquire slot
 			defer func() { <-sem }() // release slot
 
-			slog.Info("[llm:coder] executing read tool call", "round", round, "kind", call.Request.Kind, "target", toolCallTarget(call))
+			slog.Info(logPrefix+" executing read tool call", "round", round, "kind", call.Request.Kind, "target", toolCallTarget(call))
 			result, execErr := executor.Execute(ctx, call.Request)
 			if execErr != nil {
-				slog.Warn("[llm:coder] read tool call failed", "round", round, "kind", call.Request.Kind, "target", toolCallTarget(call), "error", execErr)
+				slog.Warn(logPrefix+" read tool call failed", "round", round, "kind", call.Request.Kind, "target", toolCallTarget(call), "error", execErr)
 				results[i] = fmt.Sprintf("\n### %s %s\nError: %s\n",
 					call.Request.Kind, toolCallTarget(call), execErr.Error())
 				return
@@ -395,8 +396,8 @@ func executeReadsParallel(ctx context.Context, executor toolruntime.Executor, re
 				results[i] = fmt.Sprintf("\n### %s %s\n%s\n",
 					call.Request.Kind, toolCallTarget(call), oc.Compress(call.Request.Kind, "", result.Output, readBudgetChars, ""))
 			}
-			slog.Info("[llm:coder] read tool call completed", "round", round, "kind", call.Request.Kind, "target", toolCallTarget(call), "output_len", len(result.Output), "spilled", result.SpilledPath != "")
-			pushFn("info", "coder", fmt.Sprintf("round %d: %s %s → %s",
+			slog.Info(logPrefix+" read tool call completed", "round", round, "kind", call.Request.Kind, "target", toolCallTarget(call), "output_len", len(result.Output), "spilled", result.SpilledPath != "")
+			pushFn("info", role, fmt.Sprintf("round %d: %s %s → %s",
 				round, call.Request.Kind, toolCallTarget(call), result.Summary))
 		}(i, call)
 	}

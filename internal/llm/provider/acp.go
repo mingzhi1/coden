@@ -13,6 +13,11 @@ import (
 	"github.com/mingzhi1/coden/internal/acp"
 )
 
+// maxAcpReasoningToolCalls bounds how many tool-call attempts a reasoning-only
+// ACP turn may emit before coden gives up and lets the broker fall back. An
+// agent that needs tools coden can't provide will otherwise loop indefinitely.
+const maxAcpReasoningToolCalls = 4
+
 // Acp implements ChatProvider via the ACP (Agent Client Protocol) over stdio.
 //
 // Instead of sending HTTP requests to a cloud API, it communicates with a
@@ -151,8 +156,20 @@ func (p *Acp) Chat(ctx context.Context, model string, messages []Message) (strin
 				thoughtChunks++ // Thinking — skip content, but count it.
 			case "tool_call":
 				toolCalls++
-				slog.Warn("[acp] unexpected tool_call in reasoning mode",
-					"name", p.providerName, "session", sessionID)
+				slog.Warn("[acp] tool_call in reasoning mode (coden provides no tools here)",
+					"name", p.providerName, "session", sessionID, "count", toolCalls)
+				// Reasoning-only contract: the agent has no tools in this mode, so
+				// coden declines every tool/permission request. A well-behaved
+				// completion just answers; an agentic model (Claude via ACP) instead
+				// keeps retrying tools, looping until the turn stalls. Bail fast once
+				// it's clearly stuck in a tool loop without producing any text, so the
+				// broker falls back to a working provider instead of hanging the whole
+				// workflow. (The real fix is to stop the agent from attempting tools
+				// at all — pending ACP capability/permission support.)
+				if toolCalls >= maxAcpReasoningToolCalls && sb.Len() == 0 {
+					conn.Cancel(sessionID)
+					return "", fmt.Errorf("acp(%s): agent attempted %d tool calls in reasoning-only mode without emitting text — this provider cannot serve reasoning roles over ACP (route the role to an HTTP provider instead)", p.providerName, toolCalls)
+				}
 			}
 		case "promptResponse":
 			stopReason = notification.StopReason

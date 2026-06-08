@@ -34,7 +34,10 @@ func NewLLMAnalyzer(chatter Chatter, executor toolruntime.Executor) *LLMAnalyzer
 	return &LLMAnalyzer{chatter: chatter, executor: executor, outputCompressor: outputcompressor.New()}
 }
 
-const maxAnalyzerRounds = 5
+// Analyze is read-only and low-risk, so it gets a deliberately generous loop:
+// whole-project questions ("analyze this project") need many reads to build a
+// real picture. These are intentionally larger than the Coder's budgets.
+const maxAnalyzerRounds = 20
 
 // Analyze investigates the code read-only and returns the analysis prose.
 func (a *LLMAnalyzer) Analyze(ctx context.Context, intent model.IntentSpec) (string, error) {
@@ -70,10 +73,10 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, intent model.IntentSpec) (str
 // with plain prose — that prose is the final analysis.
 func (a *LLMAnalyzer) investigate(ctx context.Context, messages []Message) (string, error) {
 	const (
-		availableTokens   = 30000
+		availableTokens   = 120000
 		toolHistoryBudget = availableTokens * 40 / 100
 	)
-	readBudgetChars := 3000
+	readBudgetChars := 12000
 
 	var lastProse string
 	degenerateCount := 0
@@ -130,7 +133,7 @@ func (a *LLMAnalyzer) investigate(ctx context.Context, messages []Message) (stri
 		}
 
 		var resultSummary strings.Builder
-		resultSummary.WriteString(executeReadsParallel(ctx, a.executor, reads, readBudgetChars, round+1, a.push, a.outputCompressor))
+		resultSummary.WriteString(executeReadsParallel(ctx, "analyzer", a.executor, reads, readBudgetChars, round+1, a.push, a.outputCompressor))
 		if len(mutations) > 0 {
 			for _, m := range mutations {
 				fmt.Fprintf(&resultSummary, "\n### %s %s\n(read-only analysis: NOT executed — do not modify files; report your findings as prose)\n", m.Request.Kind, toolCallTarget(m))
@@ -140,7 +143,7 @@ func (a *LLMAnalyzer) investigate(ctx context.Context, messages []Message) (stri
 		messages = append(messages,
 			Message{Role: "assistant", Content: reply},
 			Message{Role: "user", Content: "Tool results:\n" + resultSummary.String() +
-				"\n\nContinue investigating, or if you have enough information reply with your final analysis as plain prose (no JSON, no tool_calls)."},
+				"\n\nKeep investigating — read more files, trace the key flows, and build a complete picture before concluding. Only once you have thoroughly explored the relevant code should you reply with your final analysis as plain prose (no JSON, no tool_calls)."},
 		)
 	}
 
