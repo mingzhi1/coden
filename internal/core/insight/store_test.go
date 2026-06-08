@@ -1,6 +1,7 @@
 package insight_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -121,6 +122,33 @@ We will use SQLite for persistence. This avoids operational complexity.
 		}
 		if i.Confidence <= 0 {
 			t.Errorf("expected positive confidence: %+v", i)
+		}
+	}
+}
+
+func TestExtractInsights_MarkdownHeadings(t *testing.T) {
+	// Ordinary analysis prose with no explicit markers — only markdown headings.
+	// Previously this yielded ZERO insights (memory never accumulated); now the
+	// h2/h3 headings are captured as findings.
+	text := `# CodeN 架构分析
+
+## 模块分层
+模块路径 github.com/mingzhi1/coden,代码分三层。
+
+## 运行流
+Kernel 单写者调度无状态 Worker。
+
+### 工具运行时
+LocalExecutor 按 kind 路由到各处理器。
+`
+	ins := insight.ExtractInsights("turn-md", text, time.Now())
+	if len(ins) < 2 {
+		t.Fatalf("expected headings to yield insights, got %d", len(ins))
+	}
+	// Heading text should be cleaned of the leading '#'.
+	for _, i := range ins {
+		if strings.HasPrefix(i.Title, "#") {
+			t.Errorf("heading title should be stripped of '#': %q", i.Title)
 		}
 	}
 }
