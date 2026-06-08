@@ -11,6 +11,7 @@ import (
 
 	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/core/model"
+	"github.com/mingzhi1/coden/internal/secretary"
 )
 
 // runAnalyzeWorkflow handles Kind=analyze intents: a read-only investigation of
@@ -113,6 +114,46 @@ func (k *Kernel) runAnalyzeWorkflow(ctx context.Context, sessionID, workflowID s
 			} else {
 				clog.Session(sessionID).Info("memory file updated", "workflow_id", workflowID)
 			}
+		}
+
+		// Secretary AfterTurn: LLM-powered insight extraction (async, non-fatal).
+		// The regex pass above is a cheap fallback; the Light model finds the real
+		// decisions/findings in the analysis prose, then we regenerate MEMORY.md to
+		// include them. Mirrors the code-workflow path so analyze isn't second-class.
+		if k.secretary != nil && k.secretary.HasLLM() {
+			analysis := content
+			go func() {
+				afterCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				res := k.secretary.AfterTurn(afterCtx, sessionID, secretary.AfterTurnInput{
+					WorkflowID:   workflowID,
+					Goal:         intent.Goal,
+					WorkerOutput: analysis,
+					Status:       checkpointResult.Status,
+				})
+				now := time.Now().UTC()
+				for i, ins := range res.Insights {
+					modelIns := insight.Insight{
+						ID:         fmt.Sprintf("sec-%s-%d-%d", workflowID, now.UnixNano(), i),
+						SessionID:  sessionID,
+						Category:   insight.Category(ins.Category),
+						Title:      ins.Title,
+						Content:    ins.Content,
+						Tags:       ins.Tags,
+						Confidence: ins.Confidence,
+						CreatedAt:  now,
+						UpdatedAt:  now,
+					}
+					if saveErr := k.insights.Save(modelIns); saveErr != nil {
+						slog.Warn("[analyze] failed to save LLM insight", "workflow_id", workflowID, "error", saveErr)
+					}
+				}
+				if len(res.Insights) > 0 {
+					if wsRoot := k.workspace.Root(); wsRoot != "" {
+						_ = insight.WriteMemoryFile(wsRoot, sessionID, k.insights)
+					}
+				}
+			}()
 		}
 	}
 }
