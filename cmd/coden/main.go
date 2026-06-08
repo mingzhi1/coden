@@ -183,6 +183,14 @@ func run(args []string) error {
 	if resolvedStateDBPath == "" {
 		resolvedStateDBPath = defaultStateDBPath(*workspaceRoot)
 	}
+	// Keep all per-workspace state co-located: state.sqlite/artifacts/MEMORY derive
+	// their base from the main-DB dir, while RAG/spill derive from CODEN_HOME
+	// (the launcher that builds them has no main-DB path). Pin CODEN_HOME to the
+	// main-DB dir so a custom --state-db relocates RAG/spill too, instead of
+	// splitting them off to ~/.coden. (No-op in the default case.)
+	if os.Getenv("CODEN_HOME") == "" {
+		_ = os.Setenv("CODEN_HOME", filepath.Dir(resolvedStateDBPath))
+	}
 
 	opts := dependencyOptions(*workspaceRoot, *inputMode, *plannerMode, *coderMode, *acceptorMode, *executorMode)
 	opts.AllowShell = *allowShell

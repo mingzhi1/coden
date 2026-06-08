@@ -9,10 +9,8 @@ import (
 	"time"
 
 	"github.com/mingzhi1/coden/internal/core/discovery"
-	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/hook"
 	"github.com/mingzhi1/coden/internal/core/model"
-	"github.com/mingzhi1/coden/internal/core/storagepath"
 	"github.com/mingzhi1/coden/internal/core/taskqueue"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
 	"github.com/mingzhi1/coden/internal/core/workflow"
@@ -677,68 +675,13 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		Evidence:   checkpointResult.Evidence,
 	})
 
-	// M8-11 / N-07: 从 worker 原始 LLM 输出中零 LLM 成本提取洞察。
-	// 非致命：保存失败不应中止工作流。
-	if llmOutputStr != "" {
-		now := time.Now().UTC()
-		for _, ins := range insight.ExtractInsights(workflowID, llmOutputStr, now) {
-			ins.SessionID = sessionID
-			if saveErr := k.insights.Save(ins); saveErr != nil {
-				slog.Warn("[workflow] failed to save insight", "workflow_id", workflowID, "error", saveErr)
-			}
-		}
+	// Persist memory (regex fallback + async Secretary extraction) via the shared
+	// pipeline.
+	taskTitles := make([]string, len(tasks))
+	for i, t := range tasks {
+		taskTitles[i] = t.Title
 	}
-
-	// Secretary AfterTurn: LLM-powered post-turn analysis (async, non-fatal).
-	// Upgrades the regex-based insight extraction with Light-model intelligence.
-	if k.secretary != nil && k.secretary.HasLLM() {
-		k.memWG.Add(1)
-		go func() {
-			defer k.memWG.Done()
-			afterCtx, afterCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer afterCancel()
-
-			taskTitles := make([]string, len(tasks))
-			for i, t := range tasks {
-				taskTitles[i] = t.Title
-			}
-
-			result := k.secretary.AfterTurn(afterCtx, sessionID, secretary.AfterTurnInput{
-				WorkflowID:   workflowID,
-				Goal:         intentSpec.Goal,
-				TaskTitles:   taskTitles,
-				WorkerOutput: llmOutputStr,
-				Status:       checkpointResult.Status,
-			})
-
-			// Save LLM-extracted insights (supplements regex extraction above).
-			now := time.Now().UTC()
-			for _, ins := range result.Insights {
-				modelIns := insight.Insight{
-					ID:         fmt.Sprintf("sec-%s-%d", workflowID, now.UnixNano()),
-					SessionID:  sessionID,
-					Category:   insight.Category(ins.Category),
-					Title:      ins.Title,
-					Content:    ins.Content,
-					Confidence: ins.Confidence,
-					CreatedAt:  now,
-					UpdatedAt:  now,
-				}
-				k.saveInsight(afterCtx, modelIns) // embed + semantic dedup + save
-			}
-
-			// Regenerate .coden/MEMORY.md from all active insights for this session.
-			// This gives workers a persistent, human-readable memory file they can
-			// reference across turns without re-reading raw history.
-			if wsRoot := k.workspace.Root(); wsRoot != "" {
-				if memErr := insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights); memErr != nil {
-					slog.Warn("[secretary] failed to write memory file", "error", memErr)
-				} else {
-					slog.Info("[secretary] memory file updated", "path", wsRoot+"/.coden/MEMORY.md")
-				}
-			}
-		}()
-	}
+	k.persistTurnMemory(ctx, sessionID, workflowID, intentSpec.Goal, taskTitles, llmOutputStr, checkpointResult.Status)
 }
 
 // finishPlanOnly commits a plan_only workflow: the reviewed plan IS the
@@ -780,50 +723,10 @@ func (k *Kernel) finishPlanOnly(ctx context.Context, sessionID, workflowID strin
 	})
 
 	// Persist memory from the plan too — a plan's decisions/rationale are worth
-	// remembering. Mirrors the analyze/code/question paths so plan_only isn't
-	// second-class (it used to return without touching memory).
-	planText := assistantMessage.Content
-	if planText == "" {
-		return
+	// remembering. Shared pipeline (regex fallback + async Secretary extraction).
+	taskTitles := make([]string, len(tasks))
+	for i, t := range tasks {
+		taskTitles[i] = t.Title
 	}
-	now := time.Now().UTC()
-	for _, ins := range insight.ExtractInsights(workflowID, planText, now) {
-		ins.SessionID = sessionID
-		if err := k.insights.Save(ins); err != nil {
-			slog.Warn("[plan] failed to save insight", "workflow_id", workflowID, "error", err)
-		}
-	}
-	if wsRoot := k.workspace.Root(); wsRoot != "" {
-		_ = insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights)
-	}
-	if k.secretary != nil && k.secretary.HasLLM() {
-		taskTitles := make([]string, len(tasks))
-		for i, t := range tasks {
-			taskTitles[i] = t.Title
-		}
-		k.memWG.Add(1)
-		go func() {
-			defer k.memWG.Done()
-			afterCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			res := k.secretary.AfterTurn(afterCtx, sessionID, secretary.AfterTurnInput{
-				WorkflowID: workflowID, Goal: intent.Goal, TaskTitles: taskTitles,
-				WorkerOutput: planText, Status: checkpointResult.Status,
-			})
-			ts := time.Now().UTC()
-			for i, ins := range res.Insights {
-				k.saveInsight(afterCtx, insight.Insight{
-					ID:        fmt.Sprintf("sec-plan-%s-%d-%d", workflowID, ts.UnixNano(), i),
-					SessionID: sessionID, Category: insight.Category(ins.Category),
-					Title: ins.Title, Content: ins.Content, Tags: ins.Tags,
-					Confidence: ins.Confidence, CreatedAt: ts, UpdatedAt: ts,
-				})
-			}
-			if len(res.Insights) > 0 {
-				if wsRoot := k.workspace.Root(); wsRoot != "" {
-					_ = insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights)
-				}
-			}
-		}()
-	}
+	k.persistTurnMemory(ctx, sessionID, workflowID, intent.Goal, taskTitles, assistantMessage.Content, checkpointResult.Status)
 }

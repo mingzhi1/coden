@@ -54,22 +54,6 @@ func TestTokenize(t *testing.T) {
 	}
 }
 
-func TestTermFrequency(t *testing.T) {
-	text := "the quick brown fox jumps over the lazy dog"
-	
-	// "the" is now a stop word, so tf should be 0
-	if tf := termFrequency("the", text); tf != 0 {
-		t.Errorf("Expected tf('the')=0 (stop word), got %f", tf)
-	}
-	
-	if tf := termFrequency("fox", text); tf != 1 {
-		t.Errorf("Expected tf('fox')=1, got %f", tf)
-	}
-	
-	if tf := termFrequency("missing", text); tf != 0 {
-		t.Errorf("Expected tf('missing')=0, got %f", tf)
-	}
-}
 
 func TestIndexSearch(t *testing.T) {
 	dir := t.TempDir()

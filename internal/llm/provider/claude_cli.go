@@ -14,7 +14,13 @@ import (
 
 // builtinClaudeTools are the tools the `claude` CLI exposes by default. Passing
 // them to --disallowed-tools as BARE names removes each tool from the model's
-// context entirely. With no tools to call, Claude Code's agent loop collapses
+// context entirely.
+//
+// ⚠️ This list is version-pinned to claude CLI 2.1.x. If a future release adds a
+// new built-in tool not listed here, it WON'T be disallowed — the model regains a
+// callable tool and the "pure brain" contract breaks (the exact ACP failure this
+// avoids). Re-check against `claude --help` when bumping the CLI; if the CLI ever
+// supports a category/wildcard disallow, prefer that. With no tools to call, Claude Code's agent loop collapses
 // into a single-turn text/JSON completion — exactly the "pure brain" role coden
 // needs. This is what ACP could NOT do: there, the agent emits tool_calls from
 // its built-in toolset regardless of client capabilities, and coden loops

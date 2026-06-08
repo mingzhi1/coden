@@ -9,10 +9,7 @@ import (
 
 	clog "github.com/mingzhi1/coden/internal/log"
 
-	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/core/model"
-	"github.com/mingzhi1/coden/internal/core/storagepath"
-	"github.com/mingzhi1/coden/internal/secretary"
 )
 
 // runAnalyzeWorkflow handles Kind=analyze intents: a read-only investigation of
@@ -97,66 +94,9 @@ func (k *Kernel) runAnalyzeWorkflow(ctx context.Context, sessionID, workflowID s
 		Evidence:   checkpointResult.Evidence,
 	})
 
-	// Extract insights from the analysis (zero-LLM-cost regex pass) and regenerate
-	// MEMORY.md. The analysis is often the most valuable thing to remember, yet
-	// the analyze path previously skipped this entirely (only code/question turns
-	// wrote memory) — so findings never persisted across turns.
-	if content != "" {
-		now := time.Now().UTC()
-		for _, ins := range insight.ExtractInsights(workflowID, content, now) {
-			ins.SessionID = sessionID
-			if saveErr := k.insights.Save(ins); saveErr != nil {
-				slog.Warn("[analyze] failed to save insight", "workflow_id", workflowID, "error", saveErr)
-			}
-		}
-		if wsRoot := k.workspace.Root(); wsRoot != "" {
-			if memErr := insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights); memErr != nil {
-				slog.Warn("[analyze] failed to write memory file", "workflow_id", workflowID, "error", memErr)
-			} else {
-				clog.Session(sessionID).Info("memory file updated", "workflow_id", workflowID)
-			}
-		}
-
-		// Secretary AfterTurn: LLM-powered insight extraction (async, non-fatal).
-		// The regex pass above is a cheap fallback; the Light model finds the real
-		// decisions/findings in the analysis prose, then we regenerate MEMORY.md to
-		// include them. Mirrors the code-workflow path so analyze isn't second-class.
-		if k.secretary != nil && k.secretary.HasLLM() {
-			analysis := content
-			k.memWG.Add(1)
-			go func() {
-				defer k.memWG.Done()
-				afterCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-				defer cancel()
-				res := k.secretary.AfterTurn(afterCtx, sessionID, secretary.AfterTurnInput{
-					WorkflowID:   workflowID,
-					Goal:         intent.Goal,
-					WorkerOutput: analysis,
-					Status:       checkpointResult.Status,
-				})
-				now := time.Now().UTC()
-				for i, ins := range res.Insights {
-					modelIns := insight.Insight{
-						ID:         fmt.Sprintf("sec-%s-%d-%d", workflowID, now.UnixNano(), i),
-						SessionID:  sessionID,
-						Category:   insight.Category(ins.Category),
-						Title:      ins.Title,
-						Content:    ins.Content,
-						Tags:       ins.Tags,
-						Confidence: ins.Confidence,
-						CreatedAt:  now,
-						UpdatedAt:  now,
-					}
-					k.saveInsight(afterCtx, modelIns) // embed + semantic dedup + save
-				}
-				if len(res.Insights) > 0 {
-					if wsRoot := k.workspace.Root(); wsRoot != "" {
-						_ = insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights)
-					}
-				}
-			}()
-		}
-	}
+	// The analysis is often the most valuable thing to remember. Persist memory
+	// (regex fallback + async Secretary extraction) via the shared pipeline.
+	k.persistTurnMemory(ctx, sessionID, workflowID, intent.Goal, nil, content, checkpointResult.Status)
 }
 
 // seedAnalyzeDiscovery runs the Discovery/Search phase for an analyze intent and

@@ -528,18 +528,6 @@ func isStopWord(w string) bool {
 	return false
 }
 
-// termFrequency counts occurrences of term in text.
-func termFrequency(term, text string) float64 {
-	terms := tokenize(text)
-	count := 0
-	for _, t := range terms {
-		if t == term {
-			count++
-		}
-	}
-	return float64(count)
-}
-
 // IndexConfig configures the RAG index.
 type IndexConfig struct {
 	RootDir string

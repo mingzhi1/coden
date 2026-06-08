@@ -7,11 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/core/model"
-	"github.com/mingzhi1/coden/internal/core/storagepath"
 	"github.com/mingzhi1/coden/internal/core/workflow"
-	"github.com/mingzhi1/coden/internal/secretary"
 )
 
 // runQuestionWorkflow handles Kind=question intents by getting a direct LLM
@@ -129,54 +126,7 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 		Evidence:   checkpointResult.Evidence,
 	})
 
-	// Extract insights from the answer (zero-LLM-cost regex pass).
-	llmOutputStr := llmOut.String()
-	if llmOutputStr != "" {
-		now := time.Now().UTC()
-		for _, ins := range insight.ExtractInsights(workflowID, llmOutputStr, now) {
-			ins.SessionID = sessionID
-			if saveErr := k.insights.Save(ins); saveErr != nil {
-				slog.Warn("[question] failed to save insight", "workflow_id", workflowID, "error", saveErr)
-			}
-		}
-	}
-
-	// Secretary AfterTurn: LLM-powered post-turn analysis (async, non-fatal).
-	if k.secretary != nil && k.secretary.HasLLM() {
-		k.memWG.Add(1)
-		go func() {
-			defer k.memWG.Done()
-			afterCtx, afterCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer afterCancel()
-
-			result := k.secretary.AfterTurn(afterCtx, sessionID, secretary.AfterTurnInput{
-				WorkflowID:   workflowID,
-				Goal:         intent.Goal,
-				TaskTitles:   []string{intent.Goal},
-				WorkerOutput: llmOutputStr,
-				Status:       checkpointResult.Status,
-			})
-
-			now := time.Now().UTC()
-			for _, ins := range result.Insights {
-				modelIns := insight.Insight{
-					ID:         fmt.Sprintf("sec-q-%s-%d", workflowID, now.UnixNano()),
-					SessionID:  sessionID,
-					Category:   insight.Category(ins.Category),
-					Title:      ins.Title,
-					Content:    ins.Content,
-					Confidence: ins.Confidence,
-					CreatedAt:  now,
-					UpdatedAt:  now,
-				}
-				k.saveInsight(afterCtx, modelIns) // embed + semantic dedup + save
-			}
-
-			if wsRoot := k.workspace.Root(); wsRoot != "" {
-				if memErr := insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights); memErr != nil {
-					slog.Warn("[secretary] question: failed to write memory file", "error", memErr)
-				}
-			}
-		}()
-	}
+	// Persist memory (regex fallback + async Secretary extraction) via the shared
+	// pipeline.
+	k.persistTurnMemory(ctx, sessionID, workflowID, intent.Goal, []string{intent.Goal}, llmOut.String(), checkpointResult.Status)
 }

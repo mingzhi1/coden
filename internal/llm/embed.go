@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -99,23 +98,13 @@ func (e *HTTPEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, 
 			vecs[d.Index] = d.Embedding
 		}
 	}
+	// Guard against non-conforming endpoints (e.g. duplicate/zero indices) that
+	// would leave some slots nil while passing the count check above — better to
+	// fail than to silently drop an embedding.
+	for i, v := range vecs {
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embed: missing vector at index %d (got %d data items)", i, len(out.Data))
+		}
+	}
 	return vecs, nil
-}
-
-// Cosine returns the cosine similarity of two equal-length vectors in [-1, 1].
-// Returns 0 for mismatched/empty vectors.
-func Cosine(a, b []float32) float64 {
-	if len(a) == 0 || len(a) != len(b) {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		na += float64(a[i]) * float64(a[i])
-		nb += float64(b[i]) * float64(b[i])
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }

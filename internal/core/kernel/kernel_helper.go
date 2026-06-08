@@ -15,7 +15,9 @@ import (
 
 	"github.com/mingzhi1/coden/internal/core/insight"
 	"github.com/mingzhi1/coden/internal/core/model"
+	"github.com/mingzhi1/coden/internal/core/storagepath"
 	clog "github.com/mingzhi1/coden/internal/log"
+	"github.com/mingzhi1/coden/internal/secretary"
 )
 
 // Turn status constants. "fail" comes from CheckpointResult.Status (acceptor
@@ -224,8 +226,9 @@ func cosine(a, b []float32) float64 {
 }
 
 // saveInsight embeds (when an embedder is configured), de-duplicates against
-// existing active insights (a semantic near-duplicate supersedes the old one),
-// and persists. Falls back to a plain Save when no embedder is set.
+// ALL existing active insights (every semantic near-duplicate is superseded by
+// the newer one, so memory converges instead of accumulating clusters), and
+// persists. Falls back to a plain Save when no embedder is set.
 func (k *Kernel) saveInsight(ctx context.Context, ins insight.Insight) {
 	if k.embedder != nil && len(ins.Embedding) == 0 {
 		if vs, err := k.embedder.Embed(ctx, []string{ins.Title + "\n" + ins.Content}); err == nil && len(vs) == 1 {
@@ -234,20 +237,93 @@ func (k *Kernel) saveInsight(ctx context.Context, ins insight.Insight) {
 	}
 	if len(ins.Embedding) > 0 {
 		const dedupThreshold = 0.92
+		superseded := false
 		for _, ex := range k.insights.ListBySession(ins.SessionID, 0) {
 			if ex.SupersededBy != "" || ex.ID == ins.ID || len(ex.Embedding) == 0 {
 				continue
 			}
 			if cosine(ins.Embedding, ex.Embedding) >= dedupThreshold {
-				if err := k.insights.Supersede(ex.ID, ins); err == nil {
-					return // newer insight supersedes the near-duplicate
+				// Supersede every near-duplicate; Supersede also upserts ins, so
+				// after the loop the new insight is present and all dups are retired.
+				if err := k.insights.Supersede(ex.ID, ins); err != nil {
+					slog.Warn("[kernel] supersede insight failed", "error", err)
+					continue
 				}
-				break
+				superseded = true
 			}
+		}
+		if superseded {
+			return
 		}
 	}
 	if err := k.insights.Save(ins); err != nil {
 		slog.Warn("[kernel] save insight failed", "error", err)
+	}
+}
+
+// persistTurnMemory is the single post-turn memory pipeline shared by all
+// workflow paths (analyze / code / question / plan_only): a cheap regex pass for
+// fallback insights, then an async Secretary LLM extraction (drained by Close via
+// memWG). Replaces four near-identical copies that had already drifted (3 ID
+// schemes, a stale log line, inconsistent dedup). Policy: regex insights are the
+// cheap lexical fallback (plain Save, no embed); the Secretary's high-value
+// insights go through saveInsight (embed + semantic dedup).
+func (k *Kernel) persistTurnMemory(ctx context.Context, sessionID, workflowID, goal string, taskTitles []string, workerOutput, status string) {
+	if strings.TrimSpace(workerOutput) == "" {
+		return
+	}
+	now := time.Now().UTC()
+	for _, ins := range insight.ExtractInsights(workflowID, workerOutput, now) {
+		ins.SessionID = sessionID
+		if err := k.insights.Save(ins); err != nil {
+			slog.Warn("[memory] save regex insight failed", "workflow_id", workflowID, "error", err)
+		}
+	}
+	k.writeMemory(sessionID)
+
+	if k.secretary == nil || !k.secretary.HasLLM() {
+		return
+	}
+	k.memWG.Add(1)
+	go func() {
+		defer k.memWG.Done()
+		afterCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		res := k.secretary.AfterTurn(afterCtx, sessionID, secretary.AfterTurnInput{
+			WorkflowID:   workflowID,
+			Goal:         goal,
+			TaskTitles:   taskTitles,
+			WorkerOutput: workerOutput,
+			Status:       status,
+		})
+		ts := time.Now().UTC()
+		for i, ins := range res.Insights {
+			k.saveInsight(afterCtx, insight.Insight{
+				ID:         fmt.Sprintf("sec-%s-%d-%d", workflowID, ts.UnixNano(), i),
+				SessionID:  sessionID,
+				Category:   insight.Category(ins.Category),
+				Title:      ins.Title,
+				Content:    ins.Content,
+				Tags:       ins.Tags,
+				Confidence: ins.Confidence,
+				CreatedAt:  ts,
+				UpdatedAt:  ts,
+			})
+		}
+		if len(res.Insights) > 0 {
+			k.writeMemory(sessionID)
+		}
+	}()
+}
+
+// writeMemory regenerates the workspace's MEMORY.md from the session's insights.
+func (k *Kernel) writeMemory(sessionID string) {
+	wsRoot := k.workspace.Root()
+	if wsRoot == "" {
+		return
+	}
+	if err := insight.WriteMemoryFile(storagepath.MemoryFilePath(k.mainDBPath, wsRoot), sessionID, k.insights); err != nil {
+		slog.Warn("[memory] write MEMORY.md failed", "session", sessionID, "error", err)
 	}
 }
 
