@@ -1,0 +1,45 @@
+# coden eval suite — a repeatable regression net.
+#
+# Each case runs `coden --plain` headless against a workspace and asserts on
+# observable signals (workflow path, checkpoint, analysis size, RAG usage,
+# memory persistence). The seed cases target the exact failure modes hit during
+# the RAG/memory/provider overhaul, so a regression re-surfaces here.
+#
+# Run:  go run ./cmd/coden-eval                 # all cases, default workspace = repo
+#       go run ./cmd/coden-eval -cases eval/cases.yaml -workspace .
+# Uses your ~/.coden/config.yaml (real LLM calls — slow + metered).
+#
+# expect fields (all optional):
+#   path         analyze | plan_only | question | code   (which workflow ran)
+#   checkpoint   pass | fail                              (default: pass)
+#   min_chars    minimum analysis length (analyze path only)
+#   rag_hits_min minimum rag_search hits (RAG actually used)
+#   insights_min minimum insights extracted (memory persisted)
+
+- name: analyze-uses-rag-and-memory
+  prompt: "分析下这个项目的检索(RAG)实现"
+  expect:
+    path: analyze
+    checkpoint: pass
+    min_chars: 1500       # guards: "analyze does too little"
+    rag_hits_min: 1       # guards: RAG not used / empty index
+    insights_min: 1       # guards: memory not persisted (headless drain)
+
+- name: plan-only-routes-correctly
+  prompt: "规划如何给这个项目增加配置热重载,只出方案,先别写代码"
+  expect:
+    path: plan_only       # guards: intent misrouting (plan vs code)
+    checkpoint: pass
+    rag_hits_min: 1
+    insights_min: 1
+
+- name: question-direct-answer
+  prompt: "这个项目用什么编程语言和数据库?"
+  expect:
+    path: question        # guards: over-routing a simple Q into analyze/code
+    checkpoint: pass
+
+- name: greeting-no-crash
+  prompt: "你好"
+  expect:
+    checkpoint: pass      # guards: greeting hanging/crashing (the ACP loop bug)
