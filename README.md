@@ -164,16 +164,22 @@ Kernel                             Kernel
                                                      └─ provider_others.go   (DeepSeek/MiniMax/Copilot)
 ```
 
-**ACP（Agent Communication Protocol）** 是 Claude Code 原生协议：
+**接入 Claude(复用 Claude Code 订阅,无需 API Key)：用 `claude-cli` provider**
 
 ```
-coden-llm-server
-  └→ provider_acp.go
-      └→ acp_conn.go  ──ndJSON stdio──→  claude 子进程
-                                          （复用 Claude Code 本地鉴权，无需 API Key）
+type: claude-cli  →  claude_cli.go
+  └→ 子进程: claude -p --disallowed-tools <全部> --permission-mode dontAsk
+                      --output-format json   （单轮纯补全,coden 当 orchestrator）
 ```
 
-ACP 模式的优势：复用 Claude Code 已登录的会话，本地开发零配置接入 Claude。
+coden 需要的是「纯大脑」:发消息、收文本/JSON,工具由 coden 自己的 executor 跑。
+`claude -p` 把工具从模型上下文移除,agent 循环塌成一次性补全,完美契合,且复用
+Claude Code 本地登录。
+
+> **ACP 已弃用(reasoning 角色)**:`claude-agent-acp` 把 Claude 当成自驱 agent,
+> 无论 client 声明什么能力都强发 `tool_call`,coden 的 reasoning-only 桥只能拒,导致
+> 死循环。`provider_acp.go` 仍在(带 fail-fast 兜底),但请改用 `claude-cli`。详见
+> [docs](docs/) 里的 provider 说明。
 
 Sidecar 启用方式：
 
@@ -206,9 +212,10 @@ llm:
 |---|------|
 | grep | 字符串/标识符，零索引，始终可用 |
 | LSP | definition / references / symbols，结构事实 |
-| RAG | 语义召回，BM25，大仓库跨文件检索 |
+| RAG | SQLite **FTS5 持久化索引**（bm25 排序），大仓库跨文件检索 |
 
-RAG 索引只包含验收通过的代码，写入期间标记 stale。
+RAG 索引持久化在 `~/.coden/workspace/<key>/rag.sqlite`(不污染仓库工作树),
+重启增量 reconcile:T1 比 mtime+size,T2 比内容 hash,只重索引真正变更的文件。
 
 **RAG 索引生命周期**：
 
@@ -343,22 +350,33 @@ go run ./cmd/coden -plain -prompt "bootstrap CodeN" -allow-shell
 llm:
   # providers 是 map（key = provider 名），不是数组
   providers:
-    anthropic:
-      type: http              # http（默认）| acp
-      api_key: $ANTHROPIC_API_KEY
-      default_model: claude-opus-4
-    openai:
-      api_key: $OPENAI_API_KEY
-      default_model: gpt-4o
+    claude-opus:              # 复用 Claude Code 订阅，无需 API Key
+      type: claude-cli        # http（默认）| claude-cli | anthropic | acp(弃用)
+      command: claude
+      default_model: opus
+    mimo-pro:
+      type: http              # 任意 OpenAI 兼容端点
+      base_url: https://.../v1
+      api_key: $MIMO_API_KEY
+      default_model: mimo-v2-pro
 
   # pool 按档次声明 provider 优先级链（名字引用上面 providers 的 key）
   pool:
-    primary: [anthropic, openai]   # Strong 档：Planner / Critic / Acceptor
-    light:   [anthropic]           # Light 档：Intent / Coder / Secretary
+    primary: [claude-opus, mimo-pro]   # Strong 档：Planner / Critic / Acceptor / Analyzer
+    light:   [mimo-pro]                # Light 档：Inputter / Responder / Secretary
 
-  # routing 按角色覆盖 pool（异构 Critic 在这里实现：让 critic 走与 planner 不同的 provider）
+  # routing 按角色覆盖 pool
   routing:
-    critic: [openai, deepseek]     # critic 优先用非 anthropic，实现"反自恋"
+    coder:     [claude-opus, mimo-pro]
+    secretary: [mimo-pro]              # 后台抽取,用快的 HTTP(别走 claude-cli 的 spawn)
+    critic:    [mimo-pro]              # 异构 critic（与 planner 不同 provider，"反自恋"）
+
+  # 语义记忆:配置后启用 dense 检索 + 语义去重；省略则退回纯词法。
+  # 任意 OpenAI 兼容 /embeddings 端点（DashScope / SiliconFlow / OpenAI…）。
+  embedding:
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key: $DASHSCOPE_API_KEY
+    model: text-embedding-v4
 ```
 
 > 异构 Critic 是**优先级偏好**而非硬约束：若只配了一个 provider，critic 会回退到同一家。
@@ -379,8 +397,8 @@ llm:
 | Search Agent | `█████████░` 95% | SA-01~09 全部完成，meso-level discovery 完成 |
 | 三层检索 | `████████░░` 85% | grep/LSP/RAG 全部实现，RAG stale 标记完成，写后同步完成 |
 | Secretary | `███████░░░` 75% | ContextGate/ExecGate/AfterTurn 完成，MEMORY.md 写入完成，权限模型待强化 |
-| TUI | `████████░░` 80% | 双栏四面板布局（Chat+Input / Workers+Changed）、事件驱动、History Tab 完成，slash command 扩展中 |
-| LLM Server Sidecar | `█████████░` 90% | TCP sidecar、ACP/Anthropic/OpenAI/DeepSeek 完成，crash 监控完成（自动重启，上限 3 次，指数退避） |
+| TUI | `████████░░` 82% | 双栏四面板布局（Chat+Input / Workers+Changed）、事件驱动、History Tab 完成；每轮中间「思考过程」运行时实时显示、完成后折叠为一行摘要（`⋯ N steps · N tools · N files · 时长`），聊天保持干净的 YOU↔CODE 对话；slash command 扩展中 |
+| LLM Server Sidecar | `█████████░` 90% | TCP sidecar、ACP/Anthropic/OpenAI/DeepSeek 完成，crash 监控完成（自动重启，上限 3 次，指数退避 500ms/1s/2s） |
 | Artifact 管理 | `████████░░` 85% | M13 Phase 1-3 完成：存储/查询/引用/GC，Phase 4（导出/TUI）待完善 |
 | Web Kanban | `███████░░░` 70% | HTTP/WS server + 完整 UI、Board/Card CRUD API、Session API（列表/创建/变更/Submit）完成，Event 回写 Card 状态待完成 |
 
