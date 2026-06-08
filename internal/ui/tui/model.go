@@ -198,6 +198,20 @@ type Model struct {
 	// Claude Code-like tool tracking.
 	activeToolName string // name of tool currently executing (empty when idle)
 	toolCallCount  int    // total tool calls in current workflow
+
+	// progressLines holds the CURRENT turn's transient "thinking process"
+	// (workflow steps, tool calls, worker/checkpoint updates, "working…").
+	// They render live below the conversation while the workflow runs, then
+	// collapse into a single summary line in chatLines when the turn
+	// completes. Durable conversation (user/assistant messages, the final
+	// checkpoint line, errors) goes to chatLines instead. This keeps the chat
+	// a clean YOU↔CODE transcript instead of an ever-growing event firehose.
+	progressLines []string
+	// turnStepCount counts completed workflow steps this turn, for the summary.
+	turnStepCount int
+	// turnSummaryAnchor is the chatLines index where the collapsed summary is
+	// inserted (right after the user message). -1 when no turn is active.
+	turnSummaryAnchor int
 }
 
 type panelFocus string
@@ -286,13 +300,14 @@ func NewModel(sessionID, prompt string) *Model {
 	}
 
 	return &Model{
-		sessionID:  sessionID,
-		status:     "idle",
-		followChat: true,
-		focus:      focusInput,
-		plain:      plain.New(),
-		spinner:    spin,
-		ti:         ti,
+		sessionID:         sessionID,
+		status:            "idle",
+		followChat:        true,
+		focus:             focusInput,
+		plain:             plain.New(),
+		spinner:           spin,
+		ti:                ti,
+		turnSummaryAnchor: -1,
 	}
 }
 

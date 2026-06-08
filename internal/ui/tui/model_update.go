@@ -214,23 +214,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case EventMsg:
-		m.chatLines = append(m.chatLines, m.renderEventLines(msg.Event)...)
-		if len(m.chatLines) > maxChatLines {
-			// Calculate how many lines we're removing to adjust scroll position
-			removedLines := len(m.chatLines) - maxChatLines
-			m.chatLines = m.chatLines[removedLines:]
-			// Adjust scroll position to maintain relative view
-			if m.followChat {
-				m.chatScroll = m.maxChatScroll()
-			} else if m.chatScroll > 0 {
-				m.chatScroll = max(0, m.chatScroll-removedLines)
-			}
-		}
+		// Durable conversation goes to chatLines; transient progress (tool/step/
+		// worker/checkpoint updates) goes to the collapsible progress region.
+		m.routeEventLines(msg.Event.Topic, m.renderEventLines(msg.Event))
 		m.applyEvent(msg.Event)
 		// Track turns for History tab from live message events.
 		if msg.Event.Topic == model.EventMessageCreated {
 			if p, ok := decodeEventPayload[model.MessageCreatedPayload](msg.Event); ok {
-				m.appendTurnFromMessage(strings.TrimSpace(p.Role), strings.TrimSpace(p.Content))
+				role := strings.TrimSpace(p.Role)
+				m.appendTurnFromMessage(role, strings.TrimSpace(p.Content))
+				// Anchor the collapsed summary right after the user message so
+				// it lands between the prompt and the assistant's answer.
+				if role == "user" {
+					m.turnSummaryAnchor = len(m.chatLines)
+				}
 			}
 		}
 		if payload, ok := decodeEventPayload[model.CheckpointUpdatedPayload](msg.Event); ok && payload.WorkflowID != "" {
@@ -273,6 +270,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.workers[i].Status = "done"
 				}
 			}
+			// Fold this turn's transient "thinking process" into one summary line.
+			m.collapseTurnProgress()
 		}
 		m.checkpoint = &msg.Result
 		m.updateLastTurnFromCheckpoint(msg.Result)
@@ -332,10 +331,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.checkpointLoader(msg.WorkflowID))
 			}
 		}
+		// "working…" is transient status — keep it in the collapsible progress
+		// region so it disappears once the turn folds into its summary.
 		if msg.WorkflowID != "" {
-			m.chatLines = append(m.chatLines, chatMetaLine("system", fmt.Sprintf("working... (%s)", msg.WorkflowID)))
+			m.progressLines = append(m.progressLines, chatMetaLine("system", fmt.Sprintf("working... (%s)", msg.WorkflowID)))
 		} else {
-			m.chatLines = append(m.chatLines, chatMetaLine("system", "working..."))
+			m.progressLines = append(m.progressLines, chatMetaLine("system", "working..."))
 		}
 		if m.followChat {
 			m.chatScroll = m.maxChatScroll()

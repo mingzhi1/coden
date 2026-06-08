@@ -293,7 +293,7 @@ func (m *Model) chatViewportRows() int {
 }
 
 func (m *Model) maxChatScroll() int {
-	total := len(m.chatLines)
+	total := len(m.chatRenderLines())
 	visible := m.chatViewportRows()
 	return max(0, total-visible)
 }

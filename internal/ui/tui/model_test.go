@@ -762,6 +762,68 @@ func TestModelCtrlXCancelFailureShowsError(t *testing.T) {
 	}
 }
 
+// TestTurnProgressCollapsesIntoSummary verifies that a turn's transient
+// "thinking process" (tool/step progress) shows live while running, then folds
+// into a single summary line between the prompt and the answer once the
+// workflow checkpoints — leaving a clean YOU ↔ CODE transcript.
+func TestTurnProgressCollapsesIntoSummary(t *testing.T) {
+	m := NewModel("demo-session", "")
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 28})
+	m.status = "running"
+	m.activeWorkflowID = "wf-1"
+
+	apply := func(seq uint64, topic string, payload any) {
+		next, _ := m.Update(EventMsg{Event: testEvent(seq, topic, payload)})
+		m = next.(*Model)
+	}
+
+	// User prompt (durable) — sets the summary anchor.
+	apply(1, model.EventMessageCreated, model.MessageCreatedPayload{Role: "user", Content: "fix the bug"})
+	// Transient progress for the turn.
+	apply(2, model.EventToolStarted, model.ToolStartedPayload{WorkflowID: "wf-1", ToolCallID: "c1", Tool: "write_file", Path: "kernel.go"})
+	apply(3, model.EventToolFinished, model.ToolFinishedPayload{WorkflowID: "wf-1", ToolCallID: "c1", Tool: "write_file", Path: "kernel.go", Status: "written", DurationMS: 12})
+	apply(4, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{WorkflowID: "wf-1", Step: "code", Status: "done"})
+	// Assistant answer (durable).
+	apply(5, model.EventMessageCreated, model.MessageCreatedPayload{Role: "assistant", Content: "done, patched kernel.go"})
+
+	// While running, the per-tool progress is visible.
+	if len(m.progressLines) == 0 {
+		t.Fatal("expected live progress lines during the running turn")
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "write_file") {
+		t.Fatal("expected live tool progress to show while running")
+	}
+
+	// Terminal checkpoint folds the progress away.
+	next, _ := m.Update(CheckpointMsg{Result: model.CheckpointResult{WorkflowID: "wf-1", SessionID: "demo-session", Status: "pass"}})
+	m = next.(*Model)
+
+	if len(m.progressLines) != 0 {
+		t.Fatalf("expected progress region cleared after checkpoint, got %d lines", len(m.progressLines))
+	}
+	joined := strings.Join(m.chatLines, "\n")
+	if strings.Contains(ansi.Strip(joined), "write_file") {
+		t.Fatalf("per-tool progress should not persist in the transcript:\n%s", ansi.Strip(joined))
+	}
+	// A single collapsed summary line is present.
+	summaryIdx, answerIdx := -1, -1
+	for i, line := range m.chatLines {
+		plain := ansi.Strip(line)
+		if summaryIdx == -1 && strings.Contains(plain, "⋯") && strings.Contains(plain, "tools") {
+			summaryIdx = i
+		}
+		if strings.Contains(plain, "patched kernel.go") {
+			answerIdx = i
+		}
+	}
+	if summaryIdx == -1 {
+		t.Fatalf("expected a collapsed summary line:\n%s", ansi.Strip(joined))
+	}
+	if answerIdx == -1 || summaryIdx >= answerIdx {
+		t.Fatalf("summary should appear before the answer (summary=%d answer=%d):\n%s", summaryIdx, answerIdx, ansi.Strip(joined))
+	}
+}
+
 func TestCheckpointUpdatedLoadsCheckpointAndUpdatesSummary(t *testing.T) {
 	m := NewModel("demo-session", "").WithCheckpointLoader(func(workflowID string) tea.Cmd {
 		return func() tea.Msg {

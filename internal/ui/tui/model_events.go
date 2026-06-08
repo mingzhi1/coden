@@ -62,6 +62,9 @@ func (m *Model) beginSubmit(prompt string) tea.Cmd {
 	m.changed = nil
 	m.activeToolName = ""
 	m.toolCallCount = 0
+	m.progressLines = nil
+	m.turnStepCount = 0
+	m.turnSummaryAnchor = -1
 	m.activeWorkflowID = ""
 	m.latestRun = nil
 	m.pendingCheckpointWorkflowID = ""
@@ -233,6 +236,9 @@ func (m *Model) applyEvent(event model.Event) {
 				m.currentStep = p.Step
 			} else if p.Status == "done" || p.Status == "skipped" {
 				m.currentStep = ""
+				if p.Status == "done" {
+					m.turnStepCount++
+				}
 			}
 		}
 	case model.EventWorkflowStarted:
@@ -344,6 +350,122 @@ func (m *Model) applyEvent(event model.Event) {
 		// Known events that don't need state tracking:
 		// message.created, workflow.step_updated, worker.message
 	}
+}
+
+// maxProgressLines caps the transient progress region so a long-running
+// workflow can't grow it without bound before the turn collapses.
+const maxProgressLines = 2000
+
+// isDurableChatEvent reports whether an event's rendered lines belong in the
+// permanent conversation (chatLines) rather than the collapsible per-turn
+// progress region (progressLines). Only user/assistant messages and terminal
+// errors are durable; everything else is transient "thinking process".
+func isDurableChatEvent(topic string) bool {
+	switch topic {
+	case model.EventMessageCreated, model.EventWorkflowFailed, model.EventWorkflowCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
+// routeEventLines appends an event's rendered lines to either the durable
+// conversation or the transient progress region, recording the user-message
+// anchor used to position the collapsed summary.
+func (m *Model) routeEventLines(topic string, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	if isDurableChatEvent(topic) {
+		m.chatLines = append(m.chatLines, lines...)
+		m.capChatLines()
+		return
+	}
+	m.progressLines = append(m.progressLines, lines...)
+	if len(m.progressLines) > maxProgressLines {
+		m.progressLines = m.progressLines[len(m.progressLines)-maxProgressLines:]
+	}
+}
+
+// capChatLines trims the durable conversation to maxChatLines, adjusting the
+// scroll position so the visible window stays put.
+func (m *Model) capChatLines() {
+	if len(m.chatLines) <= maxChatLines {
+		return
+	}
+	removed := len(m.chatLines) - maxChatLines
+	m.chatLines = m.chatLines[removed:]
+	if m.followChat {
+		m.chatScroll = m.maxChatScroll()
+	} else if m.chatScroll > 0 {
+		m.chatScroll = max(0, m.chatScroll-removed)
+	}
+}
+
+// chatRenderLines returns the durable conversation followed by the current
+// turn's live progress region. Used by both the renderer and scroll math so
+// they agree on the total line count.
+func (m *Model) chatRenderLines() []string {
+	if len(m.progressLines) == 0 {
+		return m.chatLines
+	}
+	out := make([]string, 0, len(m.chatLines)+len(m.progressLines))
+	out = append(out, m.chatLines...)
+	out = append(out, m.progressLines...)
+	return out
+}
+
+// collapseTurnProgress discards the turn's transient progress region and folds
+// it into a single summary line inserted right after the user message. Called
+// when a workflow reaches its terminal checkpoint.
+func (m *Model) collapseTurnProgress() {
+	m.progressLines = nil
+	summary := m.turnSummaryLine()
+	if summary != "" {
+		idx := m.turnSummaryAnchor
+		if idx < 0 || idx > len(m.chatLines) {
+			idx = len(m.chatLines)
+		}
+		tail := append([]string{summary, ""}, m.chatLines[idx:]...)
+		m.chatLines = append(m.chatLines[:idx:idx], tail...)
+		m.capChatLines()
+	}
+	m.turnSummaryAnchor = -1
+	if m.followChat {
+		m.chatScroll = m.maxChatScroll()
+	}
+}
+
+// turnSummaryLine renders the one-line collapse of a turn's work, e.g.
+// "⋯ 4 steps · 3 tools · 2 files · 1.2s". Returns "" when nothing of note
+// happened (a direct chat reply), so no summary line is added.
+func (m *Model) turnSummaryLine() string {
+	var parts []string
+	if m.turnStepCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d steps", m.turnStepCount))
+	}
+	if m.toolCallCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d tools", m.toolCallCount))
+	}
+	if n := len(m.changed); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d files", n))
+	}
+	if !m.workflowStartedAt.IsZero() {
+		parts = append(parts, formatTurnDuration(time.Since(m.workflowStartedAt)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return chatMetaLine("system", "⋯ "+strings.Join(parts, " · "))
+}
+
+// formatTurnDuration renders a turn elapsed time compactly: sub-second values
+// in milliseconds, otherwise seconds with one decimal.
+func formatTurnDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
 func (m *Model) applyLoadedObjectDetails(items []api.ObjectDetail) {
@@ -716,6 +838,10 @@ func (m *Model) applyWorkflowTerminated(workflowID string) {
 	m.spinnerActive = false
 	m.currentStep = ""
 	m.activeToolName = ""
+	// Drop the transient progress region; the durable error/cancel line already
+	// records the outcome, so no summary is folded in here.
+	m.progressLines = nil
+	m.turnSummaryAnchor = -1
 	for i := range m.workers {
 		if m.workers[i].Status == "running" {
 			m.workers[i].Status = "done"

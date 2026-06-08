@@ -301,7 +301,7 @@ func (m *Model) renderTurnDetail(width, visibleRows int) []string {
 }
 
 func (m *Model) renderChatLines(width, visibleRows int) []string {
-	all := append([]string(nil), m.chatLines...)
+	all := append([]string(nil), m.chatRenderLines()...)
 	if len(all) == 0 {
 		all = append(all, chatMetaLine("system", "start chatting"))
 	}
