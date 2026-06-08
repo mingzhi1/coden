@@ -141,8 +141,8 @@ func (s *Sidecar) monitor(ctx context.Context) {
 		slog.Warn("[sidecar] process exited unexpectedly, restarting",
 			"exit_error", err, "restart", restarts, "max", maxRestarts)
 
-		// Brief delay before restart.
-		delay := time.Duration(restarts) * 500 * time.Millisecond
+		// Brief delay before restart, exponential backoff: 500ms, 1s, 2s.
+		delay := 500 * time.Millisecond << (restarts - 1)
 		select {
 		case <-ctx.Done():
 			return
