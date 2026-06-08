@@ -9,12 +9,22 @@
 #       go run ./cmd/coden-eval -cases eval/cases.yaml -workspace .
 # Uses your ~/.coden/config.yaml (real LLM calls — slow + metered).
 #
+# A case is either single-turn (`prompt` + `expect`) or multi-turn (`turns:` — a
+# list of {prompt, expect}). In a multi-turn case the first turn opens a fresh
+# session and every later turn appends to it in a NEW process, so coden must
+# reload the session from disk — exercising session persistence + cross-turn
+# memory. A case-level `expect.build` (if set) runs once after the final turn.
+#
 # expect fields (all optional):
-#   path         analyze | plan_only | question | code   (which workflow ran)
-#   checkpoint   pass | fail                              (default: pass)
-#   min_chars    minimum analysis length (analyze path only)
-#   rag_hits_min minimum rag_search hits (RAG actually used)
-#   insights_min minimum insights extracted (memory persisted)
+#   path             analyze | plan_only | question | code  (which workflow ran)
+#   checkpoint       pass | fail                             (default: pass)
+#   min_chars        minimum analysis length (analyze path only)
+#   rag_hits_min     minimum rag_search hits (RAG actually used)
+#   insights_min     minimum insights extracted (memory persisted)
+#   recall_min       minimum insights recalled from a PRIOR turn (cross-turn memory)
+#   tasks_min        minimum planner tasks in the DAG
+#   files_written_min minimum write_file/edit_file calls (coder wrote)
+#   build            shell cmd run in the workspace post-run; must exit 0
 
 - name: analyze-uses-rag-and-memory
   prompt: "分析下这个项目的检索(RAG)实现"
@@ -43,3 +53,63 @@
   prompt: "你好"
   expect:
     checkpoint: pass      # guards: greeting hanging/crashing (the ACP loop bug)
+
+# The ONLY case that exercises the full multi-agent pipeline end-to-end:
+# inputter → searcher → planner → critic → replanner → coder → acceptor →
+# secretary. Runs against a throwaway copy of eval/fixtures/calc (the coder's
+# writes never touch the repo), then a real `go build` gates the coder's output.
+- name: code-gen-implements-and-builds
+  prompt: "在 calc.go 里实现 Multiply(a, b int) int 函数,返回 a*b,确保 go build 通过"
+  fixture: eval/fixtures/calc
+  allow_shell: true
+  expect:
+    path: code
+    checkpoint: pass
+    tasks_min: 1          # planner produced a DAG
+    files_written_min: 1  # coder actually wrote a file
+    build: "go build ./..."   # the produced code must compile
+
+# ── Multi-turn cases ─────────────────────────────────────────────────────────
+# Each turn after the first APPENDS to the same session in a NEW process, so the
+# session must be reloaded from disk. These guard the conversational paths the
+# single-shot cases above can't reach: session persistence + cross-turn memory.
+
+# Turn 1 analyzes (persists insights). Turn 2 is a follow-up question whose
+# answer depends on turn 1 — it must recall the persisted insights (recall>=1)
+# and stay on the cheap question path (not re-run a full analyze).
+- name: memory-recall-across-turns
+  workspace: .
+  turns:
+    - prompt: "分析下这个项目的检索(RAG)实现,用了什么存储引擎和排序算法"
+      expect:
+        path: analyze
+        checkpoint: pass
+        insights_min: 1     # turn 1 must persist memory (RAG usage is guarded by
+                            # the dedicated analyze case; the analyzer's tool
+                            # choice here is non-deterministic)…
+    - prompt: "基于你刚才的分析,再用一句话总结 RAG 的存储引擎是什么"
+      expect:
+        path: question
+        checkpoint: pass
+        recall_min: 1       # …and turn 2 (new process) must recall it
+
+# Two coding turns against ONE throwaway calc module: turn 2 builds on turn 1's
+# file. A single final `go build` gates the accumulated result — if turn 2 lost
+# the session's accumulated context and clobbered turn 1's Multiply, the build
+# would still pass, so each turn also asserts it wrote a file on the code path.
+- name: multi-turn-code-accumulates
+  fixture: eval/fixtures/calc
+  allow_shell: true
+  turns:
+    - prompt: "在 calc.go 里实现 Multiply(a, b int) int,返回 a*b"
+      expect:
+        path: code
+        checkpoint: pass
+        files_written_min: 1
+    - prompt: "再在 calc.go 里加一个 Divide(a, b int) int,返回 a/b(b 为 0 时返回 0)"
+      expect:
+        path: code
+        checkpoint: pass
+        files_written_min: 1
+  expect:
+    build: "go build ./..."   # both turns' code must compile together

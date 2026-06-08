@@ -189,14 +189,20 @@ func declaredTaskFiles(tasks []model.Task) []string {
 	return files
 }
 
+// discoveryMode classifies a query into a retrieval mode. "identifier" (grep, no
+// RAG) is reserved for queries that are genuinely a single code token; ANY
+// natural-language goal — multi-word English OR non-ASCII text like Chinese —
+// is "semantic" so it earns a deterministic RAG layer. (The previous heuristic
+// keyed on an ASCII space, so space-free Chinese goals fell through to
+// "identifier" and silently skipped RAG.)
 func discoveryMode(query string, targetFiles []string) string {
 	switch {
 	case len(targetFiles) > 0:
 		return "symbol"
-	case strings.Contains(query, " "):
-		return "semantic"
-	default:
+	case discovery.LooksLikeIdentifier(query):
 		return "identifier"
+	default:
+		return "semantic"
 	}
 }
 

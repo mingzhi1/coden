@@ -347,14 +347,20 @@ func defaultKinds(query string, targetFiles []string, mode string) []string {
 		return []string{"rag", "grep"}
 	case len(targetFiles) > 0:
 		return []string{"grep", "lsp"}
-	case looksLikeIdentifier(query):
+	case LooksLikeIdentifier(query):
 		return []string{"grep"}
 	default:
 		return []string{"grep", "rag"}
 	}
 }
 
-func looksLikeIdentifier(query string) bool {
+// LooksLikeIdentifier reports whether query is a single code token (e.g.
+// "IndexConfig", "core/rag") rather than a natural-language phrase. It is the
+// single source of truth for the identifier-vs-semantic distinction that drives
+// retrieval-layer selection: anything that is NOT a bare identifier (multi-word
+// English, or any non-ASCII/CJK text) is treated as semantic and earns a RAG
+// layer. Returns false for empty, spaced, or non-ASCII-letter queries.
+func LooksLikeIdentifier(query string) bool {
 	query = strings.TrimSpace(query)
 	if query == "" || strings.Contains(query, " ") {
 		return false

@@ -119,6 +119,10 @@ func (k *Kernel) formatTopInsights(ctx context.Context, sessionID, query string)
 		chosen = active[:topK]
 	}
 
+	slog.Info("[kernel] recalled insights",
+		"session", sessionID, "count", len(chosen), "candidates", len(active),
+		"query_aware", strings.TrimSpace(query) != "" && k.embedder != nil)
+
 	var sb strings.Builder
 	sb.WriteString("## Key insights from previous analysis\n")
 	for _, it := range chosen {

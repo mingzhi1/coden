@@ -68,6 +68,11 @@ func TestDiscoveryMode(t *testing.T) {
 		{"foo", nil, "identifier"},
 		{"hello world", nil, "semantic"},
 		{"foo", []string{"a.go"}, "symbol"},
+		// Regression: a space-free natural-language goal (Chinese) must be
+		// semantic so it earns a RAG layer — the old heuristic keyed on an ASCII
+		// space and misclassified this as "identifier" (grep only, RAG skipped).
+		{"分析下这个项目的检索实现", nil, "semantic"},
+		{"core/rag", nil, "identifier"}, // a bare path token stays identifier
 	}
 	for _, tc := range cases {
 		got := discoveryMode(tc.query, tc.targets)
