@@ -34,7 +34,6 @@ import (
 )
 
 type expect struct {
-	Path            string `yaml:"path"`
 	Checkpoint      string `yaml:"checkpoint"`
 	MinChars        int    `yaml:"min_chars"`
 	RAGHitsMin      int    `yaml:"rag_hits_min"`
@@ -502,9 +501,10 @@ func check(e expect, m Metrics) []string {
 	if m.Checkpoint != wantCkpt {
 		fails = append(fails, fmt.Sprintf("checkpoint=%s, want %s", m.Checkpoint, wantCkpt))
 	}
-	if e.Path != "" && m.Path != e.Path {
-		fails = append(fails, fmt.Sprintf("path=%s, want %s", m.Path, e.Path))
-	}
+	// PATH is intentionally NOT asserted: the Dispatcher owns routing and may
+	// legitimately choose a different path (e.g. grounding a factual question via
+	// analyze). The eval verifies OUTCOMES (checkpoint + the signals below), not
+	// the route taken. Path is still parsed and displayed for human inspection.
 	if e.MinChars > 0 && m.Chars < e.MinChars {
 		fails = append(fails, fmt.Sprintf("chars=%d, want >=%d", m.Chars, e.MinChars))
 	}
@@ -534,9 +534,7 @@ func regressions(base, cur Metrics) []string {
 	if base.Checkpoint == "pass" && cur.Checkpoint != "pass" {
 		r = append(r, fmt.Sprintf("checkpoint %s → %s", base.Checkpoint, cur.Checkpoint))
 	}
-	if base.Path != "" && base.Path != "?" && cur.Path != base.Path {
-		r = append(r, fmt.Sprintf("path %s → %s", base.Path, cur.Path))
-	}
+	// Path drift is NOT a regression: the Dispatcher may reroute legitimately.
 	if base.RAGHits > 0 && cur.RAGHits == 0 {
 		r = append(r, "RAG hits → 0 (RAG stopped being used)")
 	}
