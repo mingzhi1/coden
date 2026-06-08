@@ -26,6 +26,13 @@ func contextSummary(ctx context.Context) string {
 	historyBudget := contextBudget * 60 / 100
 	retryBudget := contextBudget * 10 / 100
 
+	// Project profile first: durable, cached facts (languages, toolchain, overview,
+	// style) that orient the agent before any per-run context.
+	if wc.ProjectProfile != "" {
+		sb.WriteString(wc.ProjectProfile)
+		sb.WriteString("\n")
+	}
+
 	if len(wc.FileTree) > 0 {
 		kept, _ := tokenbudget.TruncateFileTree(wc.FileTree, fileTreeBudget)
 		if len(kept) > 0 {

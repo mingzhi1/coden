@@ -606,6 +606,19 @@ type WorkflowContext struct {
 	// sets CoderModeReadOnly for read-only intents (e.g. analyze) so the Coder
 	// executes only read tools and never write_file/edit_file/run_shell.
 	CoderMode CoderMode
+
+	// RoleObjectives is the per-role purpose the workflow Dispatcher assigned for
+	// this run, keyed by role name ("analyzer", "planner", "coder", …). It is a
+	// concrete, bounded brief that sharpens the raw intent goal so each agent
+	// knows exactly what to produce and when it is done. Empty for a role means
+	// "fall back to the intent goal". Set once at workflow start from the plan.
+	RoleObjectives map[string]string
+
+	// ProjectProfile is a pre-formatted block of durable, slow-changing facts
+	// about the workspace (languages, toolchain/build commands, a prose overview,
+	// and code style), cached across runs. It lets agents start informed instead
+	// of rediscovering the basics every workflow. Empty when no profile is built.
+	ProjectProfile string
 }
 
 // CoderMode controls the agentic Coder's tool execution policy.

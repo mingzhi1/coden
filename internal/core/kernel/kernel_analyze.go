@@ -96,7 +96,7 @@ func (k *Kernel) runAnalyzeWorkflow(ctx context.Context, sessionID, workflowID s
 
 	// The analysis is often the most valuable thing to remember. Persist memory
 	// (regex fallback + async Secretary extraction) via the shared pipeline.
-	k.persistTurnMemory(ctx, sessionID, workflowID, intent.Goal, nil, content, checkpointResult.Status)
+	k.persistTurnMemory(ctx, sessionID, workflowID, intent.Goal, nil, content, checkpointResult.Status, nil)
 }
 
 // seedAnalyzeDiscovery runs the Discovery/Search phase for an analyze intent and

@@ -19,8 +19,10 @@ const (
 	RoleCoder     = "coder"
 	RoleAcceptor  = "acceptor"
 	RoleReplanner = "replanner"
-	RoleResponder = "responder" // final user-facing response; Light tier (not in strongRoles)
-	RoleAnalyzer  = "analyzer"  // read-only code investigation & diagnosis; Strong tier
+	RoleResponder  = "responder"  // final user-facing response; Light tier (not in strongRoles)
+	RoleAnalyzer   = "analyzer"   // read-only code investigation & diagnosis; Strong tier
+	RoleDispatcher = "dispatcher" // designs the run's flow + per-role objectives; Strong tier
+	RoleProfiler   = "profiler"   // one-time project overview/style summary; Light tier
 )
 
 // strongRoles identifies which roles default to the primary (strong) pool tier.
@@ -29,8 +31,9 @@ var strongRoles = map[string]bool{
 	RolePlanner:   true, // decides WHAT to build
 	RoleCritic:    true, // cross-reviews the plan (anti-narcissism)
 	RoleAcceptor:  true, // decides whether the build is correct
-	RoleReplanner: true, // revises the plan based on critic + discovery
-	RoleAnalyzer:  true, // diagnoses code (analyze intent) — quality matters
+	RoleReplanner:  true, // revises the plan based on critic + discovery
+	RoleAnalyzer:   true, // diagnoses code (analyze intent) — quality matters
+	RoleDispatcher: true, // designs flow + writes each agent's objective — reasoning-heavy
 }
 
 // shortReplyRoles are free-text roles whose legitimate output is often shorter

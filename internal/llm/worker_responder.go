@@ -45,9 +45,28 @@ func (r *LLMResponder) Respond(ctx context.Context, intent model.IntentSpec, tas
 	} else if len(tasks) == 0 {
 		b.WriteString("\nNo code changes were required (greeting / question / chat). Answer the user directly.\n")
 	} else {
-		b.WriteString("\nWork done:\n")
+		// Split into completed vs not, so the Responder reports real progress
+		// (and can propose next steps) instead of a flat "work done" list.
+		var done, pending []model.Task
 		for _, t := range tasks {
-			fmt.Fprintf(&b, "- [%s] %s\n", t.Status, t.Title)
+			if t.Status == model.TaskStatusPassed {
+				done = append(done, t)
+			} else {
+				pending = append(pending, t)
+			}
+		}
+		b.WriteString("\nCompleted:\n")
+		if len(done) == 0 {
+			b.WriteString("- (none)\n")
+		}
+		for _, t := range done {
+			fmt.Fprintf(&b, "- %s\n", t.Title)
+		}
+		if len(pending) > 0 {
+			b.WriteString("Not completed:\n")
+			for _, t := range pending {
+				fmt.Fprintf(&b, "- [%s] %s\n", t.Status, t.Title)
+			}
 		}
 		fmt.Fprintf(&b, "Checkpoint: %s\n", cp.Status)
 		if len(cp.ArtifactPaths) > 0 {
@@ -56,7 +75,13 @@ func (r *LLMResponder) Respond(ctx context.Context, intent model.IntentSpec, tas
 		if len(cp.Evidence) > 0 {
 			fmt.Fprintf(&b, "Evidence: %s\n", strings.Join(cp.Evidence, "; "))
 		}
-		b.WriteString("\nSummarize for the user what was accomplished, concisely.\n")
+		if cp.Status != "pass" || len(pending) > 0 {
+			// Partial / failed: report progress and propose a concrete next step.
+			b.WriteString("\nThe work is INCOMPLETE or FAILED. Tell the user: what is done, what is not, " +
+				"why (use the evidence), and a concrete NEXT STEP to finish or fix it. Be specific and brief.\n")
+		} else {
+			b.WriteString("\nSummarize for the user what was accomplished, concisely.\n")
+		}
 	}
 
 	reply, err := RecoverableChat(ctx, r.chatter, RoleResponder, []Message{

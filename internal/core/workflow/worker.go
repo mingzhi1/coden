@@ -17,6 +17,7 @@ const (
 	RoleReplanner Role = "replanner"    // Refines tasks with concrete steps after discovery
 	RoleCoder     Role = "coder"
 	RoleAcceptor  Role = "acceptor"
+	RoleAnalyzer  Role = "analyzer" // Read-only investigator for analyze intents
 )
 
 type WorkerMetadata struct {

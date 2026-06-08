@@ -15,6 +15,11 @@ import (
 type AfterTurnResult struct {
 	Insights        []ExtractedInsight // structured insights from worker output
 	CompressedTurns []CompressedTurn   // compressed old turn summaries
+	// ProfileStale signals that this turn's code changes materially altered the
+	// project such that the cached ProjectProfile (overview/style) is likely
+	// inaccurate and should be rebuilt. The kernel acts on this (invalidation);
+	// the Secretary only decides.
+	ProfileStale bool
 }
 
 // ExtractedInsight is a structured insight extracted by the Secretary.
@@ -54,7 +59,73 @@ func (s *Secretary) AfterTurn(ctx context.Context, sessionID string, input After
 		result.Insights = insights
 	}
 
+	// 2. Re-check the cached ProjectProfile: did this turn's code changes
+	// materially alter the project so the cached overview/style is now stale?
+	// Only meaningful when the turn actually wrote files (its own writes are a
+	// reliable signal here, unlike a reconstructed cross-turn diff).
+	if len(input.ChangedFiles) > 0 {
+		result.ProfileStale = s.judgeProfileStale(ctx, sessionID, input)
+	}
+
 	return result
+}
+
+// judgeProfileStale decides whether this turn's changes materially altered the
+// project — i.e. enough that a one-paragraph project overview would now be
+// inaccurate. Conservative: returns false on any uncertainty/error so the
+// profile is rebuilt only when a change is clearly structural, not on trivial
+// edits. The kernel acts on the result (cache invalidation).
+func (s *Secretary) judgeProfileStale(ctx context.Context, sessionID string, input AfterTurnInput) bool {
+	if s.llm == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	files := input.ChangedFiles
+	if len(files) > 30 {
+		files = files[:30]
+	}
+	prompt := fmt.Sprintf(`A cached one-paragraph OVERVIEW describes this project (its purpose,
+architecture, main components, storage/build tech). The latest change just
+modified these files:
+
+%s
+
+Goal of the change: %s
+
+Question: did this change MATERIALLY alter the project's architecture or identity
+— e.g. a new subsystem/package, a new storage or runtime tech, a restructured
+layout, a new major capability — such that the cached overview is now inaccurate?
+A localized bug fix, a single new function, or tweaks to existing files do NOT count.
+
+Reply with ONLY JSON: {"stale": true|false}`,
+		strings.Join(files, "\n"),
+		input.Goal,
+	)
+
+	reply, err := s.llm.Chat(ctx, "secretary", []LLMMessage{
+		{Role: "system", Content: "You decide if a project's cached overview is stale after a code change. Reply with JSON only."},
+		{Role: "user", Content: prompt},
+	})
+	if err != nil {
+		slog.Warn("[secretary] profile-stale judgment failed", "session", sessionID, "error", err)
+		return false
+	}
+	reply = strings.TrimSpace(reply)
+	reply = strings.TrimPrefix(reply, "```json")
+	reply = strings.TrimPrefix(reply, "```")
+	reply = strings.TrimSuffix(reply, "```")
+	var parsed struct {
+		Stale bool `json:"stale"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(reply)), &parsed); err != nil {
+		return false
+	}
+	if parsed.Stale {
+		slog.Info("[secretary] project profile judged stale after change", "session", sessionID, "files", len(input.ChangedFiles))
+	}
+	return parsed.Stale
 }
 
 // AfterTurnInput provides the Secretary with context for post-turn processing.
@@ -64,6 +135,7 @@ type AfterTurnInput struct {
 	TaskTitles   []string // what was planned
 	WorkerOutput string   // raw LLM output from workers
 	Status       string   // "pass" / "fail"
+	ChangedFiles []string // files this turn wrote (reliable: coden's own writes)
 }
 
 // extractInsights uses the Light model to find structured insights in worker output.

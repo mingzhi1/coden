@@ -128,5 +128,5 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 
 	// Persist memory (regex fallback + async Secretary extraction) via the shared
 	// pipeline.
-	k.persistTurnMemory(ctx, sessionID, workflowID, intent.Goal, []string{intent.Goal}, llmOut.String(), checkpointResult.Status)
+	k.persistTurnMemory(ctx, sessionID, workflowID, intent.Goal, []string{intent.Goal}, llmOut.String(), checkpointResult.Status, nil)
 }

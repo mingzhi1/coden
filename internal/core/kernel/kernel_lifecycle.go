@@ -159,6 +159,19 @@ func (k *Kernel) SetAnalyzer(a workflow.Analyzer) {
 	k.workflow.SetAnalyzer(a)
 }
 
+// SetDispatcher configures the Dispatcher that chooses each run's WorkflowPlan
+// (mode + participating roles). When nil, the kernel uses the deterministic
+// LocalDispatcher (static policy table).
+func (k *Kernel) SetDispatcher(d workflow.Dispatcher) {
+	k.workflow.SetDispatcher(d)
+}
+
+// SetProfiler configures the one-time project Profiler that fills the cached
+// ProjectProfile's overview/style. When nil, the profile stays heuristic-only.
+func (k *Kernel) SetProfiler(p workflow.Profiler) {
+	k.workflow.SetProfiler(p)
+}
+
 // Start 执行一次性启动任务：
 //   - L4-08: 扫描孤儿 turns（状态=running）并标记为 "crashed"
 //
