@@ -1,45 +1,46 @@
-// Package rag provides RAG indexing and search.
+// Package rag provides RAG indexing and search backed by SQLite FTS5.
+//
+// The index is persisted on disk (<rootDir>/.coden/rag.sqlite) instead of being
+// rebuilt in memory every process. This kills the previous "rebuild-from-scratch
+// + background race" problem: a fresh process loads the existing index instantly
+// and only re-indexes files that changed while it was down (see Build, which
+// reconciles by comparing each file's mtime+size against the stored row).
+//
+// FTS5 provides BM25 ranking natively (bm25()), so the hand-rolled BM25 scoring
+// is gone. Matching quality is preserved by storing a code-tokenized `body`
+// column (camelCase/snake_case split via tokenize) alongside the raw content.
 package rag
 
 import (
 	"context"
-	"math"
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+
+	_ "modernc.org/sqlite" // pure-Go SQLite driver (FTS5 enabled)
 )
 
-// Index provides BM25-based semantic search over chunks.
+// Index provides BM25-based search over code chunks, persisted in SQLite FTS5.
 type Index struct {
+	config  IndexConfig
 	rootDir string
+	dbPath  string
 
-	// In-memory index (for MVP)
-	chunks   []Chunk
-	chunkMap map[string][]int // path -> chunk indices
+	initOnce sync.Once
+	initErr  error
+	db       *sql.DB
 
-	// BM25 parameters
-	k1 float64 // Term frequency saturation
-	b  float64 // Length normalization
+	mu sync.Mutex // serializes writes (Build / IncrementalUpdate)
 
-	// Term statistics
-	termFreq  map[string]int   // Document frequency for each term
-	termIndex map[string][]int // term -> chunk indices
-	totalDocs int
-	avgDocLen float64
-
-	// State
-	version   int
-	lastBuilt time.Time
-	dirty     map[string]bool // Paths needing re-indexing
-
-	// Configuration
-	config IndexConfig
-
-	mu sync.RWMutex
+	dmu     sync.Mutex
+	dirty   map[string]bool // paths pending re-index (set by checkpoint flow)
+	version int
+	built   time.Time
 }
 
 // NewIndex creates a new RAG index with default configuration.
@@ -48,36 +49,125 @@ func NewIndex(rootDir string) *Index {
 }
 
 // NewIndexWithConfig creates a new RAG index with the given configuration.
+// The SQLite database is opened lazily on first use so this never fails.
+//
+// The database location is config.DBPath when set (callers point this at
+// ~/.coden/workspace/ to keep the repo clean and co-locate it with the other
+// per-workspace derived state); otherwise it falls back to the in-repo
+// <rootDir>/.coden/rag.sqlite.
 func NewIndexWithConfig(config IndexConfig) *Index {
+	dbPath := strings.TrimSpace(config.DBPath)
+	if dbPath == "" {
+		dbPath = filepath.Join(config.RootDir, ".coden", "rag.sqlite")
+	}
 	return &Index{
-		rootDir:   config.RootDir,
-		chunks:    make([]Chunk, 0),
-		chunkMap:  make(map[string][]int),
-		termFreq:  make(map[string]int),
-		termIndex: make(map[string][]int),
-		k1:        config.BM25K1,
-		b:         config.BM25B,
-		dirty:     make(map[string]bool),
-		config:    config,
+		config:  config,
+		rootDir: config.RootDir,
+		dbPath:  dbPath,
+		dirty:   make(map[string]bool),
 	}
 }
 
-// Build performs a full index build by walking rootDir.
+// ensureDB opens the SQLite database and creates the schema once.
+func (idx *Index) ensureDB() (*sql.DB, error) {
+	idx.initOnce.Do(func() {
+		if err := os.MkdirAll(filepath.Dir(idx.dbPath), 0o755); err != nil {
+			idx.initErr = fmt.Errorf("rag: create db dir: %w", err)
+			return
+		}
+		dsn := idx.dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+		db, err := sql.Open("sqlite", dsn)
+		if err != nil {
+			idx.initErr = fmt.Errorf("rag: open db: %w", err)
+			return
+		}
+		if err := initSchema(db); err != nil {
+			db.Close()
+			idx.initErr = fmt.Errorf("rag: init schema: %w", err)
+			return
+		}
+		idx.db = db
+	})
+	return idx.db, idx.initErr
+}
+
+func initSchema(db *sql.DB) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS rag_files (
+			path  TEXT PRIMARY KEY,
+			mtime INTEGER NOT NULL,
+			size  INTEGER NOT NULL,
+			hash  TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks USING fts5 (
+			path UNINDEXED,
+			start_line UNINDEXED,
+			end_line UNINDEXED,
+			raw UNINDEXED,
+			body
+		)`,
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil {
+			return err
+		}
+	}
+	// Migrate older databases that predate the hash column. A duplicate-column
+	// error means it already exists, which is fine.
+	if _, err := db.Exec(`ALTER TABLE rag_files ADD COLUMN hash TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	return nil
+}
+
+// Build reconciles the on-disk index with the current working tree: it indexes
+// new files, re-indexes changed files (mtime or size differs from the stored
+// row), and drops files that no longer exist. On a fresh database this indexes
+// everything; on restart it is cheap (a stat walk that only touches changed
+// files). This is what makes the persistent index correct across restarts.
 func (idx *Index) Build(ctx context.Context) error {
+	db, err := idx.ensureDB()
+	if err != nil {
+		return err
+	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Reset index
-	idx.chunks = idx.chunks[:0]
-	idx.chunkMap = make(map[string][]int)
-	idx.termFreq = make(map[string]int)
-	idx.termIndex = make(map[string][]int)
+	// Snapshot stored file states.
+	type fstate struct {
+		mtime int64
+		size  int64
+		hash  string
+	}
+	stored := make(map[string]fstate)
+	rows, err := db.QueryContext(ctx, `SELECT path, mtime, size, hash FROM rag_files`)
+	if err != nil {
+		return fmt.Errorf("rag: load files: %w", err)
+	}
+	for rows.Next() {
+		var p string
+		var fs fstate
+		if err := rows.Scan(&p, &fs.mtime, &fs.size, &fs.hash); err != nil {
+			rows.Close()
+			return err
+		}
+		stored[p] = fs
+	}
+	rows.Close()
 
 	chunker := NewChunker()
+	seen := make(map[string]bool)
 
-	err := filepath.WalkDir(idx.rootDir, func(path string, d os.DirEntry, err error) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	walkErr := filepath.WalkDir(idx.rootDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -86,9 +176,8 @@ func (idx *Index) Build(ctx context.Context) error {
 		}
 		if d.IsDir() {
 			base := d.Name()
-			// Check if directory is in exclude list
-			for _, excludeDir := range idx.config.ExcludeDirs {
-				if base == excludeDir {
+			for _, ex := range idx.config.ExcludeDirs {
+				if base == ex {
 					return filepath.SkipDir
 				}
 			}
@@ -99,280 +188,282 @@ func (idx *Index) Build(ctx context.Context) error {
 		if !idx.isIndexable(rel) {
 			return nil
 		}
-		// Check file size limit
-		if idx.config.MaxFileSize > 0 {
-			info, infoErr := d.Info()
-			if infoErr == nil && info.Size() > idx.config.MaxFileSize {
-				return nil
-			}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return nil
 		}
+		if idx.config.MaxFileSize > 0 && info.Size() > idx.config.MaxFileSize {
+			return nil
+		}
+		seen[rel] = true
+		mtime, size := info.ModTime().UnixNano(), info.Size()
+		s, ok := stored[rel]
+		// T1: cheap stat check — mtime+size unchanged → skip without reading.
+		if ok && s.mtime == mtime && s.size == size {
+			return nil
+		}
+		// T1 says possibly changed; read once to compute the T2 hash.
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return nil
 		}
+		h := hashContent(string(data))
+		// T2: content identical (only mtime/size drifted, e.g. git checkout/touch)
+		// → just refresh the stored mtime/size, skip the expensive re-chunk + write.
+		if ok && s.hash == h {
+			return upsertFileMeta(tx, rel, mtime, size, h)
+		}
+		// Content genuinely changed (or new file) → re-chunk and re-index.
 		chunks, chunkErr := chunker.ChunkFile(rel, string(data))
 		if chunkErr != nil {
 			return nil
 		}
-		for _, c := range chunks {
-			idx.addChunk(c)
-		}
-		return nil
+		return reindexFile(tx, rel, chunks, mtime, size, h)
 	})
+	if walkErr != nil {
+		return walkErr
+	}
 
-	idx.version++
-	idx.lastBuilt = time.Now()
-	idx.recalculateStats()
+	// Drop files that disappeared.
+	for p := range stored {
+		if !seen[p] {
+			if err := deleteFile(tx, p); err != nil {
+				return err
+			}
+		}
+	}
 
-	return err
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	idx.bump()
+	return nil
 }
 
-// IncrementalUpdate updates the index for specific paths.
+// IncrementalUpdate re-indexes specific paths (used by the checkpoint flow for
+// freshly modified files). Deleted files are removed from the index.
 func (idx *Index) IncrementalUpdate(paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	db, err := idx.ensureDB()
+	if err != nil {
+		return err
+	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
 	chunker := NewChunker()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
-	for _, relPath := range paths {
-		// Remove old chunks for this path
-		if indices, ok := idx.chunkMap[relPath]; ok {
-			for _, i := range indices {
-				if i < len(idx.chunks) {
-					idx.chunks[i].Content = "" // soft delete
-				}
+	for _, rel := range paths {
+		rel = filepath.ToSlash(rel)
+		abs := filepath.Join(idx.rootDir, filepath.FromSlash(rel))
+		info, statErr := os.Stat(abs)
+		if statErr != nil {
+			if err := deleteFile(tx, rel); err != nil {
+				return err
 			}
-			delete(idx.chunkMap, relPath)
+			continue
 		}
-
-		// Re-chunk the file if it still exists
-		absPath := filepath.Join(idx.rootDir, filepath.FromSlash(relPath))
-		data, err := os.ReadFile(absPath)
-		if err != nil {
-			continue // file deleted, removal is enough
+		data, readErr := os.ReadFile(abs)
+		if readErr != nil {
+			continue
 		}
-		chunks, chunkErr := chunker.ChunkFile(relPath, string(data))
+		chunks, chunkErr := chunker.ChunkFile(rel, string(data))
 		if chunkErr != nil {
 			continue
 		}
-		for _, c := range chunks {
-			idx.addChunk(c)
+		if err := reindexFile(tx, rel, chunks, info.ModTime().UnixNano(), info.Size(), hashContent(string(data))); err != nil {
+			return err
 		}
 	}
-
-	idx.version++
-	idx.recalculateStats()
-
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	idx.bump()
 	return nil
 }
 
-// MarkDirty marks paths as needing re-indexing.
-func (idx *Index) MarkDirty(paths []string) {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	for _, path := range paths {
-		idx.dirty[path] = true
+// reindexFile replaces all chunks for rel and upserts its file state, within tx.
+func reindexFile(tx *sql.Tx, rel string, chunks []Chunk, mtime, size int64, hash string) error {
+	if _, err := tx.Exec(`DELETE FROM rag_chunks WHERE path = ?`, rel); err != nil {
+		return err
 	}
+	for _, c := range chunks {
+		body := strings.Join(tokenize(c.Content), " ")
+		if _, err := tx.Exec(
+			`INSERT INTO rag_chunks(path, start_line, end_line, raw, body) VALUES (?,?,?,?,?)`,
+			c.Path, c.StartLine, c.EndLine, c.Content, body,
+		); err != nil {
+			return err
+		}
+	}
+	return upsertFileMeta(tx, rel, mtime, size, hash)
 }
 
-// ClearDirty clears dirty status for paths.
-func (idx *Index) ClearDirty(paths []string) {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	for _, path := range paths {
-		delete(idx.dirty, path)
-	}
+// upsertFileMeta records a file's mtime/size/hash without touching its chunks.
+// Used by the T2 path when content is unchanged but mtime/size drifted.
+func upsertFileMeta(tx *sql.Tx, rel string, mtime, size int64, hash string) error {
+	_, err := tx.Exec(
+		`INSERT INTO rag_files(path, mtime, size, hash) VALUES (?,?,?,?)
+		 ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, size=excluded.size, hash=excluded.hash`,
+		rel, mtime, size, hash,
+	)
+	return err
 }
 
-// GetDirty returns dirty paths.
-func (idx *Index) GetDirty() []string {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
-	paths := make([]string, 0, len(idx.dirty))
-	for path := range idx.dirty {
-		paths = append(paths, path)
+func deleteFile(tx *sql.Tx, rel string) error {
+	if _, err := tx.Exec(`DELETE FROM rag_chunks WHERE path = ?`, rel); err != nil {
+		return err
 	}
-	return paths
+	_, err := tx.Exec(`DELETE FROM rag_files WHERE path = ?`, rel)
+	return err
 }
 
-// Search performs BM25 search.
+// Search performs an FTS5 BM25 search. The returned Score is the negated bm25()
+// value (FTS5 returns more-negative for better matches), so higher Score = more
+// relevant, consistent with the previous in-memory implementation.
 func (idx *Index) Search(query string, topK int) ([]ScoredChunk, error) {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
-	if len(idx.chunks) == 0 {
+	db, err := idx.ensureDB()
+	if err != nil {
+		return nil, err
+	}
+	terms := tokenize(query)
+	if len(terms) == 0 {
 		return nil, nil
 	}
+	// Quote each token so FTS5 treats it as a literal (avoids operator/keyword
+	// collisions like NEAR), and OR them for recall comparable to the old union.
+	quoted := make([]string, len(terms))
+	for i, t := range terms {
+		quoted[i] = `"` + t + `"`
+	}
+	match := strings.Join(quoted, " OR ")
 
-	// Tokenize query
-	queryTerms := tokenize(query)
-	if len(queryTerms) == 0 {
-		return nil, nil
+	if topK <= 0 {
+		topK = idx.config.DefaultTopK
 	}
 
-	// Score all chunks
-	scores := make(map[int]float64)
-
-	for _, term := range queryTerms {
-		idf := idx.idf(term)
-
-		// Find chunks containing this term
-		chunkIndices, ok := idx.termIndex[term]
-		if !ok {
-			continue
-		}
-
-		for _, chunkIdx := range chunkIndices {
-			if chunkIdx >= len(idx.chunks) || idx.chunks[chunkIdx].Content == "" {
-				continue // Skip deleted
-			}
-
-			chunk := idx.chunks[chunkIdx]
-			tf := termFrequency(term, chunk.Content)
-			docLen := len(tokenize(chunk.Content))
-
-			// BM25 formula
-			score := idf * (tf * (idx.k1 + 1)) /
-				(tf + idx.k1*(1-idx.b+idx.b*float64(docLen)/idx.avgDocLen))
-
-			scores[chunkIdx] += score
-		}
+	rows, err := db.Query(
+		`SELECT path, start_line, end_line, raw, bm25(rag_chunks)
+		   FROM rag_chunks WHERE rag_chunks MATCH ?
+		   ORDER BY bm25(rag_chunks) LIMIT ?`,
+		match, topK,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("rag: search: %w", err)
 	}
+	defer rows.Close()
 
-	// Convert to scored chunks
 	var results []ScoredChunk
-	for chunkIdx, score := range scores {
-		results = append(results, ScoredChunk{
-			Chunk: idx.chunks[chunkIdx],
-			Score: score,
-		})
+	for rows.Next() {
+		var c Chunk
+		var bm float64
+		if err := rows.Scan(&c.Path, &c.StartLine, &c.EndLine, &c.Content, &bm); err != nil {
+			return nil, err
+		}
+		results = append(results, ScoredChunk{Chunk: c, Score: -bm})
 	}
-
-	// Sort by score descending
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
-	})
-
-	// Return top K
-	if len(results) > topK {
-		results = results[:topK]
-	}
-
-	return results, nil
+	return results, rows.Err()
 }
 
-// ScoredChunk is a chunk with a relevance score.
+// ScoredChunk is a chunk with a relevance score (higher = more relevant).
 type ScoredChunk struct {
 	Chunk Chunk
 	Score float64
 }
 
-// Version returns the current index version.
+// MarkDirty records paths that need re-indexing on the next IncrementalUpdate.
+func (idx *Index) MarkDirty(paths []string) {
+	idx.dmu.Lock()
+	defer idx.dmu.Unlock()
+	for _, p := range paths {
+		idx.dirty[filepath.ToSlash(p)] = true
+	}
+}
+
+// ClearDirty clears dirty status for paths.
+func (idx *Index) ClearDirty(paths []string) {
+	idx.dmu.Lock()
+	defer idx.dmu.Unlock()
+	for _, p := range paths {
+		delete(idx.dirty, filepath.ToSlash(p))
+	}
+}
+
+// GetDirty returns the current dirty paths.
+func (idx *Index) GetDirty() []string {
+	idx.dmu.Lock()
+	defer idx.dmu.Unlock()
+	paths := make([]string, 0, len(idx.dirty))
+	for p := range idx.dirty {
+		paths = append(paths, p)
+	}
+	return paths
+}
+
+func (idx *Index) bump() {
+	idx.dmu.Lock()
+	idx.version++
+	idx.built = time.Now()
+	idx.dmu.Unlock()
+}
+
+// Version returns the current index version (bumped on each build/update).
 func (idx *Index) Version() int {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
+	idx.dmu.Lock()
+	defer idx.dmu.Unlock()
 	return idx.version
 }
 
-// Config returns the index configuration.
-func (idx *Index) Config() IndexConfig {
-	return idx.config
-}
-
-// LastBuilt returns when the index was last built.
+// LastBuilt returns when the index was last built or updated.
 func (idx *Index) LastBuilt() time.Time {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return idx.lastBuilt
+	idx.dmu.Lock()
+	defer idx.dmu.Unlock()
+	return idx.built
 }
 
-// Stats returns index statistics.
-func (idx *Index) Stats() (chunks, terms int) {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return len(idx.chunks), len(idx.termFreq)
+// Config returns the index configuration.
+func (idx *Index) Config() IndexConfig { return idx.config }
+
+// Stats returns (chunks, files) currently indexed.
+func (idx *Index) Stats() (chunks, files int) {
+	db, err := idx.ensureDB()
+	if err != nil {
+		return 0, 0
+	}
+	_ = db.QueryRow(`SELECT count(*) FROM rag_chunks`).Scan(&chunks)
+	_ = db.QueryRow(`SELECT count(*) FROM rag_files`).Scan(&files)
+	return chunks, files
 }
 
-// recalculateStats recalculates document statistics.
-func (idx *Index) recalculateStats() {
-	totalLen := 0
-	validDocs := 0
-
-	for _, chunk := range idx.chunks {
-		if chunk.Content == "" {
-			continue
-		}
-		validDocs++
-		totalLen += len(tokenize(chunk.Content))
+// Close releases the underlying database handle.
+func (idx *Index) Close() error {
+	if idx.db != nil {
+		return idx.db.Close()
 	}
-
-	idx.totalDocs = validDocs
-	if validDocs > 0 {
-		idx.avgDocLen = float64(totalLen) / float64(validDocs)
-	} else {
-		idx.avgDocLen = 0
-	}
-}
-
-// idf calculates inverse document frequency.
-func (idx *Index) idf(term string) float64 {
-	df, ok := idx.termFreq[term]
-	if !ok {
-		return 0
-	}
-
-	// IDF formula: log((N - n + 0.5) / (n + 0.5) + 1)
-	n := float64(df)
-	N := float64(idx.totalDocs)
-
-	return math.Log((N-n+0.5)/(n+0.5) + 1)
-}
-
-// addChunk adds a chunk to the index.
-func (idx *Index) addChunk(chunk Chunk) {
-	chunkIdx := len(idx.chunks)
-	idx.chunks = append(idx.chunks, chunk)
-
-	// Update path -> indices mapping
-	idx.chunkMap[chunk.Path] = append(idx.chunkMap[chunk.Path], chunkIdx)
-
-	// Tokenize and update term index (deduplicated per chunk)
-	terms := tokenize(chunk.Content)
-	seen := make(map[string]bool)
-
-	for _, term := range terms {
-		if !seen[term] {
-			seen[term] = true
-			idx.termIndex[term] = append(idx.termIndex[term], chunkIdx)
-			idx.termFreq[term]++
-		}
-	}
+	return nil
 }
 
 // isIndexable checks if a file should be indexed using config's extensions and
 // exclude patterns. Falls back to IsIndexableFile when no extensions configured.
 func (idx *Index) isIndexable(path string) bool {
-	// Always exclude known binary paths
 	if !IsIndexableFile(path) {
 		return false
 	}
-
-	// Check exclude patterns
 	lower := strings.ToLower(path)
 	for _, pattern := range idx.config.ExcludePatterns {
-		// Simple glob: "*.min.js" matches files ending with ".min.js"
 		if strings.HasPrefix(pattern, "*") {
-			suffix := strings.ToLower(pattern[1:])
-			if strings.HasSuffix(lower, suffix) {
+			if strings.HasSuffix(lower, strings.ToLower(pattern[1:])) {
 				return false
 			}
 		}
 	}
-
-	// If IndexableExtensions is configured, use allowlist
 	if len(idx.config.IndexableExtensions) > 0 {
 		ext := strings.ToLower(filepath.Ext(path))
 		for _, allowed := range idx.config.IndexableExtensions {
@@ -382,56 +473,31 @@ func (idx *Index) isIndexable(path string) bool {
 		}
 		return false
 	}
-
 	return true
 }
 
-// tokenize splits text into terms, including CamelCase splitting.
+// tokenize splits text into terms, including CamelCase splitting. Used both to
+// build the FTS5 `body` column and to tokenize search queries so identifiers
+// like ExecuteRipgrep match a query for "ripgrep".
 func tokenize(text string) []string {
-	// Split CamelCase before lowercasing: "ExecuteRipgrep" → "Execute Ripgrep"
 	text = splitCamelCase(text)
 	text = strings.ToLower(text)
 
-	// Replace common separators with spaces
 	replacer := strings.NewReplacer(
-		"_", " ",
-		"-", " ",
-		".", " ",
-		"/", " ",
-		"(", " ",
-		")", " ",
-		"{", " ",
-		"}", " ",
-		"[", " ",
-		"]", " ",
-		":", " ",
-		";", " ",
-		",", " ",
-		"\"", " ",
-		"'", " ",
-		"`", " ",
-		"*", " ",
-		"&", " ",
-		"=", " ",
-		"<", " ",
-		">", " ",
-		"!", " ",
-		"#", " ",
-		"@", " ",
+		"_", " ", "-", " ", ".", " ", "/", " ", "(", " ", ")", " ",
+		"{", " ", "}", " ", "[", " ", "]", " ", ":", " ", ";", " ",
+		",", " ", "\"", " ", "'", " ", "`", " ", "*", " ", "&", " ",
+		"=", " ", "<", " ", ">", " ", "!", " ", "#", " ", "@", " ",
 	)
 	text = replacer.Replace(text)
 
-	// Split and filter
 	words := strings.Fields(text)
 	var terms []string
-
 	for _, w := range words {
-		// Filter out very short words and common Go noise
 		if len(w) >= 2 && !isStopWord(w) {
 			terms = append(terms, w)
 		}
 	}
-
 	return terms
 }
 
@@ -476,7 +542,11 @@ func termFrequency(term, text string) float64 {
 
 // IndexConfig configures the RAG index.
 type IndexConfig struct {
-	RootDir       string
+	RootDir string
+	// DBPath is the SQLite file backing the index. When empty it defaults to
+	// <RootDir>/.coden/rag.sqlite; callers set it to a ~/.coden/workspace/ path
+	// to keep the index out of the repo working tree.
+	DBPath        string
 	MaxChunkLines int
 	BM25K1        float64
 	BM25B         float64
@@ -502,12 +572,13 @@ func DefaultIndexConfig(rootDir string) IndexConfig {
 		BM25K1:        1.5,
 		BM25B:         0.75,
 
-		// Search defaults
 		DefaultTopK: 10,
 		MaxTopK:     100,
-		MinScore:    0.1,
+		// FTS5 bm25() magnitudes are corpus-dependent and unrelated to the old
+		// in-memory scale; MATCH + topK already bound relevance, so default to no
+		// hard score floor.
+		MinScore: 0,
 
-		// Indexing defaults
 		MaxFileSize:         1048576, // 1MB
 		ChunkOverlap:        10,
 		IndexableExtensions: []string{".go", ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".java"},

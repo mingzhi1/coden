@@ -356,7 +356,9 @@ func DefaultToolsConfig() *ToolsConfig {
 				B:           0.75,
 				DefaultTopK: 10,
 				MaxTopK:     100,
-				MinScore:    0.1,
+				// FTS5 bm25() magnitudes are corpus-dependent; MATCH + topK already
+				// bound relevance, so no hard score floor (0.1 nuked all results).
+				MinScore: 0,
 			},
 			Embedding: RAGEmbeddingConfig{
 				Enabled:   false,

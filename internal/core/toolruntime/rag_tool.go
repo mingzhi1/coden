@@ -9,6 +9,7 @@ import (
 	"github.com/mingzhi1/coden/internal/config"
 	"github.com/mingzhi1/coden/internal/core/rag"
 	"github.com/mingzhi1/coden/internal/core/retrieval"
+	"github.com/mingzhi1/coden/internal/core/storagepath"
 )
 
 // RAGTool implements Executor for RAG operations.
@@ -100,9 +101,9 @@ func (t *RAGTool) executeIndexBuild(ctx context.Context, req Request) (Result, e
 		return Result{}, err
 	}
 
-	chunks, terms := t.index.Stats()
+	chunks, files := t.index.Stats()
 	return Result{
-		Summary: fmt.Sprintf("built RAG index with %d chunks, %d terms", chunks, terms),
+		Summary: fmt.Sprintf("built RAG index with %d chunks across %d files", chunks, files),
 	}, nil
 }
 
@@ -160,9 +161,16 @@ func createRAGTool(rootDir string, cfg *config.ToolsConfig) (*RAGTool, error) {
 		return nil, fmt.Errorf("RAG is disabled in configuration")
 	}
 
+	// Store the index in ~/.coden/workspace/ (keyed by workspace root) rather
+	// than polluting the repo working tree, co-locating it with the other
+	// per-workspace derived state. Falls back to the in-repo default if the home
+	// root can't be resolved.
+	dbPath := storagepath.RAGDBPath(rootDir)
+
 	// Convert config.RAGConfig to rag.IndexConfig
 	indexConfig := rag.IndexConfig{
 		RootDir:       rootDir,
+		DBPath:        dbPath,
 		MaxChunkLines: cfg.RAG.Indexing.ChunkSize,
 		BM25K1:        cfg.RAG.Search.K1,
 		BM25B:         cfg.RAG.Search.B,

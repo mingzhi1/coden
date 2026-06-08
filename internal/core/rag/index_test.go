@@ -2,8 +2,25 @@ package rag
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
+
+// writeIndexFiles writes name→content files under dir for index tests.
+func writeIndexFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestTokenize(t *testing.T) {
 	tests := []struct {
@@ -55,68 +72,49 @@ func TestTermFrequency(t *testing.T) {
 }
 
 func TestIndexSearch(t *testing.T) {
-	idx := NewIndex(".")
-	
-	// Manually add chunks
-	idx.mu.Lock()
-	idx.addChunk(Chunk{
-		Path:      "a.go",
-		StartLine: 1,
-		EndLine:   10,
-		Content:   "func Kernel() error { return nil }",
-		Hash:      "hash1",
+	dir := t.TempDir()
+	writeIndexFiles(t, dir, map[string]string{
+		"a.go": "package x\n\nfunc Kernel() error { return nil }\n",
+		"b.go": "package x\n\ntype Workflow struct { tasks []Task }\n",
+		"c.go": "package x\n\nfunc Submit(w *Workflow) { w.run() }\n",
 	})
-	idx.addChunk(Chunk{
-		Path:      "b.go",
-		StartLine: 1,
-		EndLine:   10,
-		Content:   "type Workflow struct { tasks []Task }",
-		Hash:      "hash2",
-	})
-	idx.addChunk(Chunk{
-		Path:      "c.go",
-		StartLine: 1,
-		EndLine:   10,
-		Content:   "func Submit(w *Workflow) { w.run() }",
-		Hash:      "hash3",
-	})
-	idx.recalculateStats()
-	idx.mu.Unlock()
-	
-	// Search for "kernel"
+
+	idx := NewIndex(dir)
+	defer idx.Close()
+	if err := idx.Build(context.Background()); err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	// Search for "kernel" — only a.go contains it.
 	results, err := idx.Search("kernel", 5)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
-	
 	if len(results) == 0 {
-		t.Error("Expected results for 'kernel'")
+		t.Fatal("Expected results for 'kernel'")
 	}
-	
-	// Top result should be a.go
-	if len(results) > 0 && results[0].Chunk.Path != "a.go" {
+	if results[0].Chunk.Path != "a.go" {
 		t.Errorf("Expected a.go as top result, got %s", results[0].Chunk.Path)
 	}
-	
-	// Search for "workflow"
+
+	// Search for "workflow" — b.go and c.go contain it.
 	results, err = idx.Search("workflow", 5)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
-	
 	if len(results) == 0 {
 		t.Error("Expected results for 'workflow'")
 	}
 }
 
 func TestIndexEmpty(t *testing.T) {
-	idx := NewIndex(".")
-	
+	idx := NewIndex(t.TempDir())
+	defer idx.Close()
+
 	results, err := idx.Search("anything", 5)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
-	
 	if len(results) != 0 {
 		t.Errorf("Expected 0 results for empty index, got %d", len(results))
 	}
@@ -242,16 +240,83 @@ func TestMergeAdjacentChunks(t *testing.T) {
 }
 
 func TestIndexBuild(t *testing.T) {
-	idx := NewIndex(".")
-	ctx := context.Background()
-	
-	err := idx.Build(ctx)
-	if err != nil {
+	dir := t.TempDir()
+	writeIndexFiles(t, dir, map[string]string{
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+
+	idx := NewIndex(dir)
+	defer idx.Close()
+	if err := idx.Build(context.Background()); err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
-	
 	if idx.Version() != 1 {
 		t.Errorf("Expected version 1, got %d", idx.Version())
+	}
+
+	// Restart reconcile: a second Build with no changes must be a no-op stat
+	// walk that still succeeds and finds the previously-indexed content.
+	if err := idx.Build(context.Background()); err != nil {
+		t.Fatalf("re-Build failed: %v", err)
+	}
+	results, err := idx.Search("main", 5)
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("Expected the persisted index to still find 'main' after re-build")
+	}
+}
+
+func TestDirtyHashTierSkipsReindex(t *testing.T) {
+	dir := t.TempDir()
+	writeIndexFiles(t, dir, map[string]string{
+		"a.go": "package x\n\nfunc Distinctivetoken() {}\n",
+	})
+	idx := NewIndex(dir)
+	defer idx.Close()
+	ctx := context.Background()
+	if err := idx.Build(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := idx.ensureDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRowID := func() int64 {
+		var id int64
+		if err := db.QueryRow(`SELECT rowid FROM rag_chunks WHERE path='a.go' ORDER BY rowid LIMIT 1`).Scan(&id); err != nil {
+			t.Fatalf("rowid query: %v", err)
+		}
+		return id
+	}
+	before := firstRowID()
+
+	// Bump mtime without changing content (simulates git checkout / touch).
+	future := time.Now().Add(2 * time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "a.go"), future, future); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Build(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// T2: hash unchanged → chunks must NOT be re-inserted (rowid stable).
+	if after := firstRowID(); after != before {
+		t.Errorf("expected T2 hash-match to skip reindex, but chunk rowid changed %d -> %d", before, after)
+	}
+
+	// Genuinely change content → must re-index and become searchable.
+	writeIndexFiles(t, dir, map[string]string{"a.go": "package x\n\nfunc Changedsymbol() {}\n"})
+	if err := idx.Build(ctx); err != nil {
+		t.Fatal(err)
+	}
+	res, err := idx.Search("changedsymbol", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) == 0 {
+		t.Error("expected changed content to be re-indexed and searchable")
 	}
 }
 
