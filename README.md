@@ -2,7 +2,7 @@
 
 > **⚠️ Work In Progress** — 核心架构稳定，部分功能仍在开发中
 
-AI 编程系统。不是 AI wrapper，不是平权 Swarm——是一个拥有唯一状态的 Core，调度多个无状态 Worker，通过真实工具触达代码库。
+AI 编程系统。不是单体 Agent Loop，不是平权 Swarm——一个拥有唯一状态的 Core：每轮由 Dispatcher 设计流程、给每个无状态 Worker 明确目的，再由 Core 经真实工具执行。**LLM 提议，代码裁决。**
 
 ---
 
@@ -13,12 +13,12 @@ AI 编程系统。不是 AI wrapper，不是平权 Swarm——是一个拥有唯
 | 架构 | 单 Kernel + 无状态 Worker | 单体 Agent Loop | 平权 Swarm |
 | 状态归属 | Kernel 唯一写入者 | Agent 自持状态 | 各 Agent 自持 |
 | LLM 角色 | 分层（强/轻/异构 Critic） | 单模型兜底 | 角色平权 |
-| 调度权 | 代码控制，LLM 不可干预 | LLM 决定下一步 | LLM 互相调用 |
+| 执行调度 | Kernel 掌控循环（Dispatcher 设计流程，但 LLM 不驱动执行、不持状态） | LLM 决定下一步 | LLM 互相调用 |
 | 工具执行 | Kernel 子系统，零 LLM 成本 | LLM 发起工具调用 | LLM 发起工具调用 |
-| Critic | 强制异构 Provider（反自恋） | 无 | 无 |
+| Critic | 优先异构 Provider（反自恋；单 provider 时回退同家） | 无 | 无 |
 | 验收 | 独立 Acceptor Worker | 自我验证 | 自我验证 |
 
-**核心哲学**：LLM 只能产出 spec/plan/patch，不能决定调度、提交、验收。调度权永远在代码里。
+**核心哲学**：LLM 产出 spec/plan/patch，并由 Dispatcher 设计本轮流程；但**执行、状态写入、提交、验收**始终在 Kernel 手里（Dispatcher 失败回退确定性策略表）。LLM 提议，代码裁决。
 
 ---
 
