@@ -9,7 +9,7 @@ import (
 // searcherWorker wraps a Searcher as a first-class workflow.Worker (SA-10).
 //
 // This enables the Search phase to be independently scheduled, replaced, and
-// tested in the same way as Planner, Coder, and Acceptor workers.  It supports
+// tested in the same way as Planner, Executor, and Acceptor workers.  It supports
 // three implementation forms: local (LocalSearcher), RPC, or LLM-backed.
 type searcherWorker struct {
 	searcher Searcher

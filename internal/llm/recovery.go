@@ -58,7 +58,7 @@ type SideQuerier interface {
 //	NOTE: Layer 2 only works when chatter is a *Broker (SetRole requires it).
 //
 // Truncation recovery (finish_reason=length) is handled separately by
-// the coder worker and is NOT part of this wrapper.
+// the executor worker and is NOT part of this wrapper.
 func RecoverableChat(ctx context.Context, chatter Chatter, role string, messages []Message, config RecoveryConfig) (string, error) {
 	reply, err := chatter.Chat(ctx, role, messages)
 	if err == nil {

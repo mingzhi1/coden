@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/mingzhi1/coden/internal/agent/code"
+	agentexec "github.com/mingzhi1/coden/internal/agent/executor"
 	"github.com/mingzhi1/coden/internal/core/workflow"
 	"github.com/mingzhi1/coden/internal/rpc/transport"
 )
@@ -21,7 +21,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	srv := code.NewServer(workflow.NewLocalCoder())
+	srv := agentexec.NewServer(workflow.NewLocalExecutor())
 
 	if *serve == "" {
 		srv.ServeConn(ctx, transport.Stdio())

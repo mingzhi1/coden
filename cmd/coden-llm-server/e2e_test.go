@@ -31,7 +31,7 @@ func startTestServer(t *testing.T, ctx context.Context, mock *mockProvider) stri
 	t.Helper()
 	srv := &Server{
 		provider: map[string]ChatProvider{"mock": mock},
-		router:   NewRouter(map[string]ChatProvider{"mock": mock}, map[string][]string{"coder": {"mock"}}),
+		router:   NewRouter(map[string]ChatProvider{"mock": mock}, map[string][]string{"executor": {"mock"}}),
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -74,7 +74,7 @@ func TestE2E_ChatRoundTrip(t *testing.T) {
 
 	// Send llm/chat request
 	req, _ := protocol.NewRequest(1, "llm/chat", map[string]any{
-		"role_hint": "coder",
+		"role_hint": "executor",
 		"messages":  []map[string]string{{"role": "user", "content": "test"}},
 	})
 	if err := codec.WriteMessage(req); err != nil {
@@ -127,7 +127,7 @@ func TestE2E_ChatTruncated(t *testing.T) {
 	defer codec.Close()
 
 	req, _ := protocol.NewRequest(2, "llm/chat", map[string]any{
-		"role_hint": "coder",
+		"role_hint": "executor",
 		"messages":  []map[string]string{{"role": "user", "content": "test"}},
 	})
 	if err := codec.WriteMessage(req); err != nil {
@@ -177,7 +177,7 @@ llm:
       api_key: "test-key-123"
       default_model: "gpt-4o-mini"
   routing:
-    coder: [openai]
+    executor: [openai]
     light: [openai]
 `
 	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0644); err != nil {
@@ -190,9 +190,9 @@ llm:
 	}
 
 	// The openai provider should be configured from the YAML api_key
-	p, name := srv.router.Resolve("coder")
+	p, name := srv.router.Resolve("executor")
 	if p == nil {
-		t.Fatal("expected coder route to resolve")
+		t.Fatal("expected executor route to resolve")
 	}
-	t.Logf("resolved coder -> provider=%s", name)
+	t.Logf("resolved executor -> provider=%s", name)
 }

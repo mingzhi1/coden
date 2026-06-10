@@ -11,7 +11,7 @@ import (
 // Registry manages loaded skills with thread-safe access.
 //
 // The core design principle: skills are NOT injected uniformly.
-// Each skill declares which workers it targets (coder, planner, acceptor, inputter),
+// Each skill declares which workers it targets (executor, planner, acceptor, inputter),
 // and its Source trust level imposes a hard ceiling on those targets.
 //
 // Usage:
@@ -21,8 +21,8 @@ import (
 //	reg.LoadFromDir(".coden/skills", SourceProject)
 //	RegisterBuiltins(reg)
 //
-//	// In the Coder worker:
-//	prompt := reg.FormatForWorker(TargetCoder, touchedPaths)
+//	// In the Executor worker:
+//	prompt := reg.FormatForWorker(TargetExecutor, touchedPaths)
 //
 //	// In the Acceptor worker (only trusted skills visible):
 //	prompt := reg.FormatForWorker(TargetAcceptor, touchedPaths)
@@ -85,15 +85,15 @@ func (r *Registry) LoadFromDir(dir string, source Source) error {
 
 // LoadRules loads a RULES.md file as an implicit skill with elevated targets.
 // RULES.md is project-owned but treated as an explicit opt-in, so it is
-// allowed to target both coder and planner (same as SourceProject ceiling).
+// allowed to target both executor and planner (same as SourceProject ceiling).
 func (r *Registry) LoadRules(path string, source Source) error {
 	s, err := LoadRulesFile(path, source)
 	if err != nil {
 		return err
 	}
-	// RULES.md targets coder + planner by default (project convention guide).
+	// RULES.md targets executor + planner by default (project convention guide).
 	if len(s.Frontmatter.Targets) == 0 {
-		s.Frontmatter.Targets = []Target{TargetCoder, TargetPlanner}
+		s.Frontmatter.Targets = []Target{TargetExecutor, TargetPlanner}
 	}
 	s.Validate()
 	r.mu.Lock()
@@ -232,7 +232,7 @@ func (r *Registry) FormatForWorker(target Target, touchedPaths []string) string 
 // principle of least privilege. Use FormatForWorker(target, paths) instead.
 // Kept only for backward compatibility during migration.
 func (r *Registry) FormatForPrompt(touchedPaths []string) string {
-	return r.FormatForWorker(TargetCoder, touchedPaths)
+	return r.FormatForWorker(TargetExecutor, touchedPaths)
 }
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ func (testInputter) Build(_ context.Context, sessionID, prompt string) (model.In
 func TestBuildIntentUsesInputter(t *testing.T) {
 	t.Parallel()
 
-	engine := NewWithInputter(testInputter{}, NewLocalPlanner(), NewLocalCoder())
+	engine := NewWithInputter(testInputter{}, NewLocalPlanner(), NewLocalExecutor())
 
 	intent, err := engine.BuildIntent(context.Background(), "session-1", "hello")
 	if err != nil {
@@ -39,7 +39,7 @@ func TestBuildIntentUsesInputter(t *testing.T) {
 func TestCodeHandlesZeroTasks(t *testing.T) {
 	t.Parallel()
 
-	engine := New(NewLocalPlanner(), NewLocalCoder())
+	engine := New(NewLocalPlanner(), NewLocalExecutor())
 
 	plan, err := engine.Code(context.Background(), "wf-1", model.IntentSpec{
 		ID:        "intent-1",

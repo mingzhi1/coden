@@ -47,7 +47,7 @@ func (s *Secretary) AssembleContext(sessionID string, target Target, touchedPath
 			continue
 		}
 
-		// Check 2: Skill declares this target? (or default = coder only)
+		// Check 2: Skill declares this target? (or default = executor only)
 		if !skillTargetsWorker(sk, target) {
 			continue
 		}
@@ -148,12 +148,12 @@ func FormatContextBlocks(target Target, blocks []ContextBlock) string {
 }
 
 // skillTargetsWorker checks if a skill declares the given target.
-// If the skill has no Targets in frontmatter, defaults to coder only.
+// If the skill has no Targets in frontmatter, defaults to executor only.
 func skillTargetsWorker(sk *skill.Skill, target Target) bool {
 	declared := sk.Frontmatter.Targets
 	if len(declared) == 0 {
-		// Default: coder only
-		return target == TargetCoder
+		// Default: executor only
+		return target == TargetExecutor
 	}
 	for _, t := range declared {
 		if string(t) == string(target) {

@@ -48,6 +48,11 @@ func (c *LLMCritic) Critique(ctx context.Context, workflowID string, intent mode
 	userMsg := fmt.Sprintf("## Goal\n%s\n\n## Success Criteria\n%s\n## Proposed Tasks\n%s",
 		intent.Goal, criteria.String(), taskList.String())
 
+	// Workflow-assigned objective: what this review should scrutinize hardest.
+	if obj := strings.TrimSpace(model.WorkflowContextFrom(ctx).RoleObjectives[string(workflow.RoleCritic)]); obj != "" {
+		userMsg += "\n## Review focus (scrutinize this first)\n" + obj + "\n"
+	}
+
 	// Provide workspace file tree so the critic can validate file paths.
 	if wc := model.WorkflowContextFrom(ctx); len(wc.FileTree) > 0 {
 		const maxTreeFiles = 80

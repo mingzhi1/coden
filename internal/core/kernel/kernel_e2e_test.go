@@ -86,7 +86,7 @@ func TestCriticReplannerIntegration(t *testing.T) {
 	critic := &criticStub{}
 	replanner := &replannerStub{}
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	k.SetCritic(critic)
 	k.SetReplanner(replanner)
 	defer k.Close()
@@ -153,7 +153,7 @@ func TestAcceptorRetryThenPass(t *testing.T) {
 	t.Parallel()
 
 	acceptor := &retryAcceptor{rejectCount: 1} // reject first, pass second
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, acceptor)
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, acceptor)
 	k.maxTaskRetries = 3 // allow retries
 	defer k.Close()
 
@@ -221,7 +221,7 @@ func TestAcceptorRejectExhaustsRetries(t *testing.T) {
 
 	acceptor := &retryAcceptor{rejectCount: 100} // always reject
 	executor := &countingExecutor{}
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, executor, acceptor)
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, executor, acceptor)
 	k.maxTaskRetries = 1 // allow 1 retry (2 total attempts)
 	defer k.Close()
 
@@ -263,13 +263,13 @@ done:
 	}
 }
 
-// skipAcceptCoder returns a preExecuted CodePlan that includes a success_cmd.
+// skipAcceptExecutor returns a preExecuted CodePlan that includes a success_cmd.
 // The kernel should skip accept for pre-executed mutations with success_cmd.
-type skipAcceptCoder struct {
+type skipAcceptExecutor struct {
 	receivedRetryFeedback string
 }
 
-func (c *skipAcceptCoder) Build(_ context.Context, wfID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
+func (c *skipAcceptExecutor) Build(_ context.Context, wfID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
 	return workflow.CodePlan{
 		ToolCalls: []workflow.ToolCall{{
 			ToolCallID: "tool-" + wfID,
@@ -282,6 +282,6 @@ func (c *skipAcceptCoder) Build(_ context.Context, wfID string, intent model.Int
 	}, nil
 }
 
-func (c *skipAcceptCoder) TakeMessages() []model.WorkerMessage {
-	return []model.WorkerMessage{{Kind: "info", Role: "coder", Content: "code produced"}}
+func (c *skipAcceptExecutor) TakeMessages() []model.WorkerMessage {
+	return []model.WorkerMessage{{Kind: "info", Role: "executor", Content: "code produced"}}
 }

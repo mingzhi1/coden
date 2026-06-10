@@ -38,8 +38,8 @@ func NewRouter(providers map[string]ChatProvider, routing map[string][]string) *
 	if len(r.routes) == 0 {
 		for name, p := range providers {
 			if p.IsConfigured() {
-				r.routes["coder"] = append(r.routes["coder"], p)
-				slog.Info("[router] auto-route", "role", "coder", "provider", name)
+				r.routes["executor"] = append(r.routes["executor"], p)
+				slog.Info("[router] auto-route", "role", "executor", "provider", name)
 			}
 		}
 	}
@@ -51,8 +51,8 @@ func NewRouter(providers map[string]ChatProvider, routing map[string][]string) *
 func (r *Router) Resolve(roleHint string) (ChatProvider, string) {
 	chain, ok := r.routes[roleHint]
 	if !ok {
-		// Fallback: try "coder" route
-		chain = r.routes["coder"]
+		// Fallback: try "executor" route
+		chain = r.routes["executor"]
 	}
 	if len(chain) == 0 {
 		return nil, ""
@@ -65,7 +65,7 @@ func (r *Router) Resolve(roleHint string) (ChatProvider, string) {
 func (r *Router) ChatWithFallback(ctx context.Context, roleHint string, model string, messages []Message) (*chatResult, error) {
 	chain, ok := r.routes[roleHint]
 	if !ok {
-		chain = r.routes["coder"]
+		chain = r.routes["executor"]
 	}
 	if len(chain) == 0 {
 		return nil, fmt.Errorf("no provider available for role=%s", roleHint)

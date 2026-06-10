@@ -9,7 +9,7 @@
 //	Plugin ──→ MCP      (auto-starts MCP Servers)
 //	Plugin ──→ Hooks    (PreToolUse / PostToolUse lifecycle callbacks)
 //
-// Trust level: L4 (plugin) — can only inject Skills into Coder,
+// Trust level: L4 (plugin) — can only inject Skills into Executor,
 // and cannot register mutation MCP tools or run_shell recommendations.
 //
 // This is the Phase 3 skeleton. Full implementation follows the

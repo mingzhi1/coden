@@ -67,35 +67,35 @@ Clients: TUI / CLI / Web
   → Intent       意图解析 → IntentSpec + Kind                        [Light LLM]
   → ProjectProfile  载入缓存(语言/工具链/概览/风格);失效则重建        [缓存命中零成本 / 一次 Light LLM]
   → Dispatcher   设计本次 workflow → WorkflowPlan                     [Strong LLM]
-  │   { Mode, 参与角色集, 每角色 Objective, CoderMode }
+  │   { Mode, 参与角色集, 每角色 Objective, ExecutorMode }
   │   解析失败 → 回退静态策略表 (LocalDispatcher: Kind → 阶段集)
   │
   ├─ 按 Mode 路由（所有路径收口 Responder）:
   │   answer    → Responder                                          （直答 / 问答 / 闲聊）
   │   analyze   → Discovery → Analyzer(只读) → Responder              （读代码出分析,零修改）
-  │   execute   → 下方完整流水线;plan_only = execute 但不含 Coder/Accept
+  │   execute   → 下方完整流水线;plan_only = execute 但不含 Executor/Accept
   │
   → Discovery  WHERE：grep / LSP / RAG 捞片段                        [零 LLM 成本]
   → Plan       WHAT：任务 DAG + 依赖（注入 Dispatcher 下发的 Objective）[Strong LLM]
   → Critic     REVIEW：异构 Provider 审查,反自恋                      [Strong LLM, 不同厂商]
   → RePlan     HOW：细化到函数/行号                                  [Strong LLM]
   → Kernel 调度（按 DAG 并行）
-      ├─→ Coder × N   执行 patch（注入 Objective）                   [Light LLM]
+      ├─→ Executor × N   执行 patch（注入 Objective）                   [Light LLM]
       ├─→ Tool Runtime write / edit / shell
       └─→ Acceptor    pass/fail + FixGuidance                        [Strong LLM]
             ├─ pass → task.passed
-            └─ fail → inject FixGuidance → Coder retry
+            └─ fail → inject FixGuidance → Executor retry
   → Responder  收口：成功→简洁总结;失败/部分→进展 + 下一步建议        [Light LLM]
   → Checkpoint 存档 + Secretary AfterTurn → MEMORY.md（并判断 Profile 是否过期）
 ```
 
 > **设计要点（Dispatcher + WorkflowPlan）**：每轮由 **Dispatcher(LLM)** 设计 workflow,产出
-> `WorkflowPlan{ Mode, 参与角色, 每角色 Objective, CoderMode }` —— 运行时单一真相源;Dispatcher
+> `WorkflowPlan{ Mode, 参与角色, 每角色 Objective, ExecutorMode }` —— 运行时单一真相源;Dispatcher
 > 解析失败则**回退**到静态策略表 `policyForKind`(LocalDispatcher),保证永不卡死。角色不混用:
-> - **Dispatcher 给每个参与角色一个明确 Objective**(有边界的目的+完成判据),让 Analyzer/Planner/Coder
+> - **Dispatcher 给每个参与角色一个明确 Objective**(有边界的目的+完成判据),让 Analyzer/Planner/Executor
 >   收敛而非空转——弱目的曾让 Analyzer 无限读到超时;
-> - **Analyzer 只服务 `analyze`**(只读、零修改);**Coder 纯写**、**Responder 纯收口**、**Discovery 纯检索**;
-> - **`plan_only`** = execute 去掉 Coder/Accept(只出并审核计划,不执行);
+> - **Analyzer 只服务 `analyze`**(只读、零修改);**Executor 纯写**、**Responder 纯收口**、**Discovery 纯检索**;
+> - **`plan_only`** = execute 去掉 Executor/Accept(只出并审核计划,不执行);
 > - 简单意图(`hi`)→ `answer` 直达 Responder;
 > - **ProjectProfile 缓存**:语言/工具链/概览/风格按 manifest hash + Secretary 的结构性判断失效,
 >   跨轮复用,让各 agent 开局即懂项目,不必每轮重新发现基础事实。
@@ -106,7 +106,7 @@ Clients: TUI / CLI / Web
 
 | 类别 | 组件 | 说明 |
 |------|------|------|
-| **Dispatched Workers**（经 `executeWorker` 调度） | Intent / Plan / Coder / Acceptor | 标准 Worker 生命周期，产生事件与 tracing |
+| **Dispatched Workers**（经 `executeWorker` 调度） | Intent / Plan / Executor / Acceptor | 标准 Worker 生命周期，产生事件与 tracing |
 | **Inline Components**（Kernel 直接调用） | Dispatcher / Discovery / Analyzer / Critic / RePlan / Responder | Kernel 内部同步调用，不经过 Worker dispatch |
 | **Background Service** | Secretary（含 ProjectProfile 失效判断） / Profiler | 异步执行，策略引擎 + MEMORY.md 写入 + 一次性项目画像 |
 
@@ -115,7 +115,7 @@ Clients: TUI / CLI / Web
 | 组件 | 档次 | 原因 |
 |------|------|------|
 | Dispatcher / Planner / Critic / Replanner / Acceptor / Analyzer | **Strong** | 决策 / 流程设计 / 分析点，错误代价高 |
-| Intent / Coder / Responder / Profiler | **Light** | 执行 / 收口 / 摘要画像，速度优先 |
+| Intent / Executor / Responder / Profiler | **Light** | 执行 / 收口 / 摘要画像，速度优先 |
 | Critic | **异构 Provider** | 与 Planner 不同厂商，消除盲区 |
 | Discovery | **零 LLM** | 纯代码工具（grep / LSP / RAG），不调用 LLM |
 | Secretary | **条件性 Light** | AfterTurn 提取 insight + 判断 ProjectProfile 是否过期 |
@@ -139,7 +139,7 @@ Clients: TUI / CLI / Web
                         │  worker.execute · tool.exec · tool.cancel
     ┌───────────────────┼─────────────┐
     v                   v             v
-coden-agent-plan   coden-agent-code   coden-agent-accept
+coden-agent-plan   coden-agent-executor   coden-agent-accept
                         │
           ┌─────────────┼─────────────┐
           v             v             v
@@ -181,7 +181,7 @@ llm:
 |---|--------|------|---------|
 | **L1** Workflow | `runWorkflow()` | 线性流水线调度 | 1（线性） |
 | **L2** Task DAG | `runOneTask()` | 按依赖图并行调度，失败重试 | `maxTaskRetries=1`（共 2 次尝试） |
-| **L3** Agentic | `agenticBuild()` | LLM 多轮工具循环（Coder） | `maxCoderRounds=5` |
+| **L3** Agentic | `agenticBuild()` | LLM 多轮工具循环（Executor） | `maxExecutorRounds=5` |
 
 ---
 
@@ -295,7 +295,7 @@ llm:
 
   # routing 按角色覆盖 pool
   routing:
-    coder:     [claude-opus, mimo-pro]
+    executor:     [claude-opus, mimo-pro]
     secretary: [mimo-pro]              # 后台抽取,用快的 HTTP(别走 claude-cli 的 spawn)
     critic:    [mimo-pro]              # 异构 critic（与 planner 不同 provider，"反自恋"）
 
@@ -318,7 +318,7 @@ llm:
 |------|------|------|
 | Kernel & 状态核心 | `█████████░` 95% | Session/Turn/Task/Checkpoint/Event Bus 全部完成，Artifact 接入完成 |
 | RPC 协议层 | `█████████░` 95% | JSON-RPC 2.0，客户端面 29 个方法接入 handler（protocol 共定义 59 个方法常量，含 worker/tool 方向） |
-| Workflow Engine | `█████████░` 95% | Dispatcher(LLM)→WorkflowPlan 驱动路由（策略表回退）、每角色 Objective（Analyzer/Planner/Coder 已消费）、任务状态机完成，L2 Regression 尚未实现 |
+| Workflow Engine | `█████████░` 95% | Dispatcher(LLM)→WorkflowPlan 驱动路由（策略表回退）、每角色 Objective（Analyzer/Planner/Executor 已消费）、任务状态机完成，L2 Regression 尚未实现 |
 | Hook System | `█████████░` 90% | 9 阶段统一框架完成，Config/RPC/Event Bus 全部接入，Filter/Webhook 待实现 |
 | LLM Broker | `█████████░` 90% | per-role pool、provider fallback、usage stats 完成，Sidecar 模式接入完成 |
 | Tool Runtime | `█████████░` 90% | 14 工具完成，MCP 动态发现完成，tool_search 延迟注册完成 |

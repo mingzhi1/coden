@@ -26,7 +26,7 @@ type TaskOp struct {
 	Kind      OpKind    `json:"kind"`
 	TaskID    string    `json:"task_id"`
 	Timestamp time.Time `json:"timestamp"`
-	Source    string    `json:"source"` // "planner" | "coder" | "user" | "agent"
+	Source    string    `json:"source"` // "planner" | "executor" | "user" | "agent"
 	// prevIndex is used internally by undo to restore position.
 	prevIndex int
 	// prevTask stores the removed/skipped task for undo restoration.
@@ -68,7 +68,7 @@ func (q *Queue) Next() (model.Task, bool) {
 }
 
 // Append adds a new task to the end of the queue. Source identifies the
-// originator ("planner", "coder", "user", "agent"). A maximum of
+// originator ("planner", "executor", "user", "agent"). A maximum of
 // maxAppendPerSource tasks can be appended by a single source within one
 // workflow to prevent runaway LLM loops.
 func (q *Queue) Append(task model.Task, source string) {

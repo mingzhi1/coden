@@ -71,7 +71,7 @@ func TestLLMServerClient_Chat(t *testing.T) {
 	}
 
 	msgs := []Message{{Role: "user", Content: "test"}}
-	reply, err := client.Chat(ctx, "coder", msgs)
+	reply, err := client.Chat(ctx, "executor", msgs)
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestLLMServerClient_Truncated(t *testing.T) {
 	defer client.Close()
 
 	msgs := []Message{{Role: "user", Content: "test"}}
-	reply, err := client.Chat(ctx, "coder", msgs)
+	reply, err := client.Chat(ctx, "executor", msgs)
 	if err == nil {
 		t.Fatal("expected truncation error")
 	}

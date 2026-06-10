@@ -15,7 +15,7 @@ func TestPlanFromPolicy_PerKind(t *testing.T) {
 		kind     string
 		wantMode WorkflowMode
 		// roles expected true in execute mode (ignored for non-execute modes)
-		critic, replan, coder, acceptor bool
+		critic, replan, executor, acceptor bool
 	}{
 		{model.IntentKindQuestion, WorkflowModeAnswer, false, false, false, false},
 		{model.IntentKindChat, WorkflowModeAnswer, false, false, false, false},
@@ -41,8 +41,8 @@ func TestPlanFromPolicy_PerKind(t *testing.T) {
 		if got := p.Has(RoleReplanner); got != tc.replan {
 			t.Errorf("kind=%s Replanner=%v want %v", tc.kind, got, tc.replan)
 		}
-		if got := p.Has(RoleCoder); got != tc.coder {
-			t.Errorf("kind=%s Coder=%v want %v", tc.kind, got, tc.coder)
+		if got := p.Has(RoleExecutor); got != tc.executor {
+			t.Errorf("kind=%s Executor=%v want %v", tc.kind, got, tc.executor)
 		}
 		if got := p.Has(RoleAcceptor); got != tc.acceptor {
 			t.Errorf("kind=%s Acceptor=%v want %v", tc.kind, got, tc.acceptor)
@@ -65,7 +65,7 @@ func TestPlanFromPolicy_OptionalStagesHonored(t *testing.T) {
 			policy: pipelinePolicy{Plan: true, RePlan: true, Code: true, Accept: true},
 			want: map[Role]bool{
 				RolePlanner: true, RoleCritic: false,
-				RoleReplanner: true, RoleCoder: true, RoleAcceptor: true,
+				RoleReplanner: true, RoleExecutor: true, RoleAcceptor: true,
 			},
 		},
 		{
@@ -73,7 +73,7 @@ func TestPlanFromPolicy_OptionalStagesHonored(t *testing.T) {
 			policy: pipelinePolicy{Plan: true, Critic: true, RePlan: true, Code: true},
 			want: map[Role]bool{
 				RolePlanner: true, RoleCritic: true,
-				RoleReplanner: true, RoleCoder: true, RoleAcceptor: false,
+				RoleReplanner: true, RoleExecutor: true, RoleAcceptor: false,
 			},
 		},
 		{
@@ -81,7 +81,7 @@ func TestPlanFromPolicy_OptionalStagesHonored(t *testing.T) {
 			policy: pipelinePolicy{Plan: true, Critic: true},
 			want: map[Role]bool{
 				RolePlanner: true, RoleCritic: true,
-				RoleReplanner: false, RoleCoder: false, RoleAcceptor: false,
+				RoleReplanner: false, RoleExecutor: false, RoleAcceptor: false,
 			},
 		},
 	}
@@ -114,7 +114,7 @@ func TestLocalDispatcher_MatchesPolicy(t *testing.T) {
 		if got.Mode != want.Mode {
 			t.Errorf("kind=%s Mode=%q want %q", kind, got.Mode, want.Mode)
 		}
-		for _, r := range []Role{RoleCritic, RoleReplanner, RoleCoder, RoleAcceptor} {
+		for _, r := range []Role{RoleCritic, RoleReplanner, RoleExecutor, RoleAcceptor} {
 			if got.Has(r) != want.Has(r) {
 				t.Errorf("kind=%s role %q = %v want %v", kind, r, got.Has(r), want.Has(r))
 			}
@@ -130,8 +130,8 @@ func TestEngineDispatch_FallsBackOnError(t *testing.T) {
 	e.SetDispatcher(errDispatcher{})
 	got := e.Dispatch(context.Background(), model.IntentSpec{Kind: model.IntentKindCodeGen})
 	want := planFromPolicy(policyForKind(model.IntentKindCodeGen))
-	if got.Mode != want.Mode || got.Has(RoleCoder) != want.Has(RoleCoder) {
-		t.Errorf("fallback plan = %+v, want execute/coder like %+v", got, want)
+	if got.Mode != want.Mode || got.Has(RoleExecutor) != want.Has(RoleExecutor) {
+		t.Errorf("fallback plan = %+v, want execute/executor like %+v", got, want)
 	}
 }
 
@@ -139,4 +139,45 @@ type errDispatcher struct{}
 
 func (errDispatcher) Dispatch(context.Context, model.IntentSpec) (WorkflowPlan, error) {
 	return WorkflowPlan{}, context.DeadlineExceeded
+}
+
+// TestParticipates locks which roles each mode actually runs — the contract the
+// dispatcher relies on to prune objectives for skipped stages.
+func TestParticipates(t *testing.T) {
+	answer := WorkflowPlan{Mode: WorkflowModeAnswer}
+	for _, r := range []Role{RoleAnalyzer, RolePlanner, RoleExecutor, RoleCritic} {
+		if answer.Participates(r) {
+			t.Errorf("answer mode should run no agents, but %q participates", r)
+		}
+	}
+
+	analyze := WorkflowPlan{Mode: WorkflowModeAnalyze}
+	if !analyze.Participates(RoleAnalyzer) {
+		t.Errorf("analyze mode must run the Analyzer")
+	}
+	for _, r := range []Role{RolePlanner, RoleExecutor, RoleCritic, RoleAcceptor} {
+		if analyze.Participates(r) {
+			t.Errorf("analyze mode should run only the Analyzer, but %q participates", r)
+		}
+	}
+
+	// execute: Planner always; optional roles only when enabled.
+	exec := WorkflowPlan{Mode: WorkflowModeExecute, Roles: map[Role]bool{
+		RolePlanner: true, RoleCritic: true, RoleExecutor: true,
+	}}
+	for _, r := range []Role{RolePlanner, RoleCritic, RoleExecutor} {
+		if !exec.Participates(r) {
+			t.Errorf("execute role %q should participate", r)
+		}
+	}
+	for _, r := range []Role{RoleReplanner, RoleAcceptor, RoleAnalyzer} {
+		if exec.Participates(r) {
+			t.Errorf("disabled role %q should not participate", r)
+		}
+	}
+	// Planner participates in execute even if absent from the Roles map.
+	bare := WorkflowPlan{Mode: WorkflowModeExecute}
+	if !bare.Participates(RolePlanner) {
+		t.Errorf("Planner must always participate in execute mode")
+	}
 }

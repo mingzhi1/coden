@@ -9,21 +9,21 @@ import (
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
 )
 
-// Coder is the code-generation boundary used by the workflow engine.
+// Executor is the code-generation boundary used by the workflow engine.
 // It returns a tool request; the kernel still owns tool execution.
-type Coder interface {
+type Executor interface {
 	Build(ctx context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (CodePlan, error)
 }
 
-// CodePlan is the coder output consumed by the kernel.
+// CodePlan is the executor output consumed by the kernel.
 type CodePlan struct {
 	ToolCalls  []ToolCall
 	ToolCallID string
 	Request    toolruntime.Request
 
-	// M11-03: AppendTasks holds new tasks the Coder requests to be appended
+	// M11-03: AppendTasks holds new tasks the Executor requests to be appended
 	// to the TaskQueue after executing the current task. The kernel enforces
-	// a per-source cap (maxAppendPerCoder) to prevent runaway LLM loops.
+	// a per-source cap (maxAppendPerExecutor) to prevent runaway LLM loops.
 	AppendTasks []model.Task `json:"append_tasks,omitempty"`
 }
 
@@ -31,7 +31,7 @@ type ToolCall struct {
 	ToolCallID string
 	Request    toolruntime.Request
 
-	// Executed is true when the agentic coder already ran this mutation
+	// Executed is true when the agentic executor already ran this mutation
 	// in its loop and fed the result back to the LLM. The kernel should
 	// skip re-execution but still perform bookkeeping (events, auditing,
 	// workspace change recording).
@@ -52,14 +52,14 @@ func (p CodePlan) Calls() []ToolCall {
 	}}
 }
 
-// LocalCoder provides the built-in fallback code worker.
-type LocalCoder struct{}
+// LocalExecutor provides the built-in fallback code worker.
+type LocalExecutor struct{}
 
-func NewLocalCoder() *LocalCoder {
-	return &LocalCoder{}
+func NewLocalExecutor() *LocalExecutor {
+	return &LocalExecutor{}
 }
 
-func (c *LocalCoder) Build(_ context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (CodePlan, error) {
+func (c *LocalExecutor) Build(_ context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (CodePlan, error) {
 	var taskLines strings.Builder
 	if len(tasks) == 0 {
 		taskLines.WriteString("- no tasks proposed\n")
@@ -102,6 +102,6 @@ func (c *LocalCoder) Build(_ context.Context, workflowID string, intent model.In
 	}, nil
 }
 
-func (c *LocalCoder) Metadata() WorkerMetadata {
-	return WorkerMetadata{Worker: "local-coder", Role: RoleCoder}
+func (c *LocalExecutor) Metadata() WorkerMetadata {
+	return WorkerMetadata{Worker: "local-executor", Role: RoleExecutor}
 }

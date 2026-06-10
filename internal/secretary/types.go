@@ -17,20 +17,20 @@ import "context"
 type Target string
 
 const (
-	TargetCoder    Target = "coder"
+	TargetExecutor    Target = "executor"
 	TargetPlanner  Target = "planner"
 	TargetAcceptor Target = "acceptor"
 	TargetInputter Target = "inputter"
 )
 
 // AllTargets is the ordered list of all worker targets.
-var AllTargets = []Target{TargetCoder, TargetPlanner, TargetAcceptor, TargetInputter}
+var AllTargets = []Target{TargetExecutor, TargetPlanner, TargetAcceptor, TargetInputter}
 
 // MinTrustForTarget returns the minimum trust level required to inject
 // content into the given worker target.
 func MinTrustForTarget(t Target) int {
 	switch t {
-	case TargetCoder:
+	case TargetExecutor:
 		return 10 // all sources (L5 mcp = 10)
 	case TargetPlanner:
 		return 50 // L3 project and above

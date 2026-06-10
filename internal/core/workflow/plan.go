@@ -37,7 +37,7 @@ const (
 type WorkflowPlan struct {
 	Mode      WorkflowMode
 	Roles     map[Role]bool // optional stages enabled within Mode
-	CoderMode model.CoderMode
+	ExecutorMode model.ExecutorMode
 	// Objectives is the per-role purpose the workflow hands each participating
 	// agent: a concrete, bounded brief that sharpens the raw intent goal so the
 	// agent knows exactly what to produce and when it is done. Empty for a role
@@ -55,6 +55,23 @@ func (p WorkflowPlan) Has(r Role) bool {
 // was set (caller should fall back to the intent goal).
 func (p WorkflowPlan) Objective(r Role) string {
 	return p.Objectives[r]
+}
+
+// Participates reports whether role r will actually run under this plan. It is
+// the single source of truth for "which agents this run includes": answer mode
+// runs none, analyze mode runs only the Analyzer, and execute mode always runs
+// the Planner plus whatever optional roles are enabled. Callers use it to drop
+// objectives the dispatcher wrote for a role that won't run, so a stray brief
+// never leaks into an agent that isn't part of the flow.
+func (p WorkflowPlan) Participates(r Role) bool {
+	switch p.Mode {
+	case WorkflowModeAnalyze:
+		return r == RoleAnalyzer
+	case WorkflowModeExecute:
+		return r == RolePlanner || p.Roles[r]
+	default: // WorkflowModeAnswer and any unknown mode: a direct reply, no agents.
+		return false
+	}
 }
 
 // ── Dispatcher: chooses the WorkflowPlan for an intent ──────────────────────
@@ -89,8 +106,8 @@ type pipelinePolicy struct {
 	Plan      bool            // produce task DAG
 	Critic    bool            // review the plan
 	RePlan    bool            // refine the plan against critique + discovery
-	Code      bool            // run the (agentic) Coder
-	CoderMode model.CoderMode // ReadWrite (may modify) or ReadOnly (analyze)
+	Code      bool            // run the (agentic) Executor
+	ExecutorMode model.ExecutorMode // ReadWrite (may modify) or ReadOnly (analyze)
 	Accept    bool            // verify the produced artifact
 }
 
@@ -114,7 +131,7 @@ func policyForKind(kind string) pipelinePolicy {
 		// code_gen / debug / refactor / config: full modifying pipeline.
 		return pipelinePolicy{
 			Discovery: true, Plan: true, Critic: true, RePlan: true,
-			Code: true, CoderMode: model.CoderModeReadWrite, Accept: true,
+			Code: true, ExecutorMode: model.ExecutorModeReadWrite, Accept: true,
 		}
 	}
 }
@@ -126,9 +143,9 @@ func policyForKind(kind string) pipelinePolicy {
 func planFromPolicy(p pipelinePolicy) WorkflowPlan {
 	switch {
 	case p.Analyzer:
-		return WorkflowPlan{Mode: WorkflowModeAnalyze, CoderMode: p.CoderMode}
+		return WorkflowPlan{Mode: WorkflowModeAnalyze, ExecutorMode: p.ExecutorMode}
 	case !p.Plan:
-		return WorkflowPlan{Mode: WorkflowModeAnswer, CoderMode: p.CoderMode}
+		return WorkflowPlan{Mode: WorkflowModeAnswer, ExecutorMode: p.ExecutorMode}
 	default:
 		roles := map[Role]bool{RolePlanner: true}
 		if p.Critic {
@@ -138,11 +155,11 @@ func planFromPolicy(p pipelinePolicy) WorkflowPlan {
 			roles[RoleReplanner] = true
 		}
 		if p.Code {
-			roles[RoleCoder] = true
+			roles[RoleExecutor] = true
 		}
 		if p.Accept {
 			roles[RoleAcceptor] = true
 		}
-		return WorkflowPlan{Mode: WorkflowModeExecute, Roles: roles, CoderMode: p.CoderMode}
+		return WorkflowPlan{Mode: WorkflowModeExecute, Roles: roles, ExecutorMode: p.ExecutorMode}
 	}
 }

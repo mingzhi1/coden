@@ -1,4 +1,4 @@
-package code
+package executor
 
 import (
 	"context"
@@ -18,21 +18,21 @@ func TestRPCCodeWorkerDescribeAndBuild(t *testing.T) {
 	defer cancel()
 
 	serverRWC, clientRWC := transport.Pipe()
-	srv := NewServer(workflow.NewLocalCoder())
+	srv := NewServer(workflow.NewLocalExecutor())
 	go srv.ServeConn(ctx, serverRWC)
 
-	coder := NewRPCCoder(clientRWC)
-	defer coder.Close()
+	executor := NewRPCExecutor(clientRWC)
+	defer executor.Close()
 
-	describe, err := coder.Describe(ctx)
+	describe, err := executor.Describe(ctx)
 	if err != nil {
 		t.Fatalf("Describe failed: %v", err)
 	}
-	if describe.Role != "coder" {
-		t.Fatalf("expected coder role, got %q", describe.Role)
+	if describe.Role != "executor" {
+		t.Fatalf("expected executor role, got %q", describe.Role)
 	}
 
-	plan, err := coder.Build(ctx, "wf-1", model.IntentSpec{
+	plan, err := executor.Build(ctx, "wf-1", model.IntentSpec{
 		ID:        "intent-1",
 		SessionID: "session-1",
 		Goal:      "generate an artifact",
@@ -55,9 +55,9 @@ func TestRPCCodeWorkerDescribeAndBuild(t *testing.T) {
 	}
 }
 
-type multiCallCoder struct{}
+type multiCallExecutor struct{}
 
-func (multiCallCoder) Build(_ context.Context, workflowID string, _ model.IntentSpec, _ []model.Task) (workflow.CodePlan, error) {
+func (multiCallExecutor) Build(_ context.Context, workflowID string, _ model.IntentSpec, _ []model.Task) (workflow.CodePlan, error) {
 	return workflow.CodePlan{
 		ToolCalls: []workflow.ToolCall{
 			{
@@ -86,13 +86,13 @@ func TestRPCCodeWorkerPreservesMultipleToolCalls(t *testing.T) {
 	defer cancel()
 
 	serverRWC, clientRWC := transport.Pipe()
-	srv := NewServer(multiCallCoder{})
+	srv := NewServer(multiCallExecutor{})
 	go srv.ServeConn(ctx, serverRWC)
 
-	coder := NewRPCCoder(clientRWC)
-	defer coder.Close()
+	executor := NewRPCExecutor(clientRWC)
+	defer executor.Close()
 
-	plan, err := coder.Build(ctx, "wf-1", model.IntentSpec{
+	plan, err := executor.Build(ctx, "wf-1", model.IntentSpec{
 		ID:        "intent-1",
 		SessionID: "session-1",
 		Goal:      "generate multiple files",

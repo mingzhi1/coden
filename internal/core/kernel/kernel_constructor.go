@@ -48,17 +48,17 @@ func NewWithPlanner(workspaceRoot string, planner workflow.Planner) *Kernel {
 }
 
 // NewWithDependencies 创建带自定义依赖的新 Kernel。
-func NewWithDependencies(workspaceRoot string, planner workflow.Planner, coder workflow.Coder, executor toolruntime.Executor, acceptor ...workflow.Acceptor) *Kernel {
-	return NewWithWorkflowDependencies(workspaceRoot, nil, planner, coder, executor, acceptor...)
+func NewWithDependencies(workspaceRoot string, planner workflow.Planner, execWorker workflow.Executor, executor toolruntime.Executor, acceptor ...workflow.Acceptor) *Kernel {
+	return NewWithWorkflowDependencies(workspaceRoot, nil, planner, execWorker, executor, acceptor...)
 }
 
 // NewWithWorkflowDependencies 创建带完整工作流依赖的新 Kernel。
-func NewWithWorkflowDependencies(workspaceRoot string, inputter workflow.Inputter, planner workflow.Planner, coder workflow.Coder, executor toolruntime.Executor, acceptor ...workflow.Acceptor) *Kernel {
-	return NewWithStores(workspaceRoot, "", session.NewStore(), intent.NewStore(), message.NewStore(), checkpoint.NewStore(), turn.NewStore(), turnsummary.NewStore(), objectstore.NewStore(), insight.NewStore(), inputter, planner, coder, executor, acceptor...)
+func NewWithWorkflowDependencies(workspaceRoot string, inputter workflow.Inputter, planner workflow.Planner, execWorker workflow.Executor, executor toolruntime.Executor, acceptor ...workflow.Acceptor) *Kernel {
+	return NewWithStores(workspaceRoot, "", session.NewStore(), intent.NewStore(), message.NewStore(), checkpoint.NewStore(), turn.NewStore(), turnsummary.NewStore(), objectstore.NewStore(), insight.NewStore(), inputter, planner, execWorker, executor, acceptor...)
 }
 
 // NewPersistentWithWorkflowDependencies 创建带持久化存储的新 Kernel。
-func NewPersistentWithWorkflowDependencies(workspaceRoot, stateDBPath string, inputter workflow.Inputter, planner workflow.Planner, coder workflow.Coder, executor toolruntime.Executor, acceptor ...workflow.Acceptor) (*Kernel, error) {
+func NewPersistentWithWorkflowDependencies(workspaceRoot, stateDBPath string, inputter workflow.Inputter, planner workflow.Planner, execWorker workflow.Executor, executor toolruntime.Executor, acceptor ...workflow.Acceptor) (*Kernel, error) {
 	workspaceRegistry, err := workspacestore.NewSQLiteStore(stateDBPath)
 	if err != nil {
 		return nil, fmt.Errorf("create workspace registry: %w", err)
@@ -138,7 +138,7 @@ func NewPersistentWithWorkflowDependencies(workspaceRoot, stateDBPath string, in
 		return nil, fmt.Errorf("create workspace insight store: %w", err)
 	}
 
-	k := NewWithStores(workspaceRoot, stateDBPath, sessionStore, intentStore, messageStore, checkpointStore, turnStore, turnSummaryStore, objectStore, insightStore, inputter, planner, coder, executor, acceptor...)
+	k := NewWithStores(workspaceRoot, stateDBPath, sessionStore, intentStore, messageStore, checkpointStore, turnStore, turnSummaryStore, objectStore, insightStore, inputter, planner, execWorker, executor, acceptor...)
 
 	// M13-01d: wire artifact manager into tool runtime for automatic persistence.
 	artifactDataDir := storagepath.ArtifactDataDir(stateDBPath, workspaceRoot)
@@ -153,7 +153,7 @@ func NewPersistentWithWorkflowDependencies(workspaceRoot, stateDBPath string, in
 }
 
 // NewWithStores 使用指定存储创建新 Kernel。
-func NewWithStores(workspaceRoot, mainDBPath string, sessionStore session.Store, intentStore intent.Store, messageStore message.Store, checkpointStore checkpoint.Store, turnStore turn.Store, turnSummaryStore turnsummary.Store, objectStore objectstore.Store, insightStore insight.Store, inputter workflow.Inputter, planner workflow.Planner, coder workflow.Coder, executor toolruntime.Executor, acceptor ...workflow.Acceptor) *Kernel {
+func NewWithStores(workspaceRoot, mainDBPath string, sessionStore session.Store, intentStore intent.Store, messageStore message.Store, checkpointStore checkpoint.Store, turnStore turn.Store, turnSummaryStore turnsummary.Store, objectStore objectstore.Store, insightStore insight.Store, inputter workflow.Inputter, planner workflow.Planner, execWorker workflow.Executor, executor toolruntime.Executor, acceptor ...workflow.Acceptor) *Kernel {
 	ws := workspace.New(workspaceRoot)
 
 	// ★ Tool discovery: detect project languages and probe available tools.
@@ -212,7 +212,7 @@ func NewWithStores(workspaceRoot, mainDBPath string, sessionStore session.Store,
 	evBus := events.NewBus()
 	sec := secretary.New(skills, secretary.DefaultPolicy(), busEmitAdapter{bus: evBus})
 
-	// Generate inventory prompts so the Coder LLM knows which tools and
+	// Generate inventory prompts so the Executor LLM knows which tools and
 	// environment capabilities are actually available in this workspace.
 	toolsPrompt := inventory.FormatToolsPrompt(inv)
 	envPrompt := inventory.FormatEnvironmentPrompt(inv)
@@ -237,7 +237,7 @@ func NewWithStores(workspaceRoot, mainDBPath string, sessionStore session.Store,
 		workspace:              ws,
 		tools:                  tools,
 		git:                    gitstate.New(workspaceRoot), // M8-04
-		workflow:               workflow.NewWithInputter(inputter, planner, coder, a),
+		workflow:               workflow.NewWithInputter(inputter, planner, execWorker, a),
 		secretary:              sec,
 		inventoryToolsPrompt:   toolsPrompt,
 		inventoryEnvPrompt:     envPrompt,

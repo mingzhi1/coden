@@ -93,7 +93,7 @@ func (p ProviderEntry) EffectiveType() string {
 // Names reference keys in the Providers map.
 type PoolConfig struct {
 	Primary []string `yaml:"primary"` // Strong tier: Planner, Critic, Acceptor
-	Light   []string `yaml:"light"`   // Light tier: Intent, Coder, Secretary
+	Light   []string `yaml:"light"`   // Light tier: Intent, Executor, Secretary
 }
 
 // TokenBudgetConfig defines context window partitioning.

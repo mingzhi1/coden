@@ -56,9 +56,9 @@ decide HOW the agent pipeline should run. Output a JSON object matching this sch
   "mode": "<one of: answer, analyze, execute>",
   "critic": <bool>,
   "replan": <bool>,
-  "coder": <bool>,
+  "executor": <bool>,
   "accept": <bool>,
-  "coder_mode": "<one of: readwrite, readonly>",
+  "executor_mode": "<one of: readwrite, readonly>",
   "objectives": {
     "<role>": "<one concrete, bounded brief for that agent: WHAT to determine/produce and WHEN it is done>"
   }
@@ -67,39 +67,47 @@ decide HOW the agent pipeline should run. Output a JSON object matching this sch
 Modes:
 - "answer"  = reply directly, no code work. Greetings, questions, explanations, chat.
 - "analyze" = read-only investigation of existing code (review, understand, explain how
-   something works). NEVER modifies files. The critic/replan/coder/accept flags are ignored.
+   something works). NEVER modifies files. The critic/replan/executor/accept flags are ignored.
 - "execute" = produce or modify code, OR produce a reviewed plan. The flags below apply.
+
+A project profile (languages, toolchain, overview, style) may be appended to the goal.
+Use it: pick the project's real build/test command for the acceptor brief, and tailor
+every objective to what the project actually is instead of guessing.
 
 Objectives — this is the most important field. For each agent that will run, write a
 SHARP, BOUNDED brief that turns the user's vague goal into a concrete purpose with an
 explicit done-condition, so the agent converges instead of wandering. Keys by role:
 - mode "analyze"  → set "analyzer": list the SPECIFIC things to determine (the concrete
    sub-questions) and state "done once these are answered with file evidence". 1-3 sentences.
-- mode "execute"  → set "planner" (what the plan must cover) and, if coder runs, "coder"
-   (what to implement and the success condition). 1-2 sentences each.
+- mode "execute"  → always set "planner" (what the plan must cover). For each OTHER stage
+   you enable, you MAY add its brief: "critic" (what to scrutinize hardest), "replanner"
+   (what the concrete steps must nail down after discovery), "executor" (what to implement +
+   the success condition), "acceptor" (the exact condition that proves success — e.g. the
+   specific build/test command that must pass). 1-2 sentences each.
 - mode "answer"   → omit objectives.
+Only brief a role you are actually running; objectives for skipped stages are discarded.
 Each objective must be specific to THIS goal — never generic like "investigate the code".
 
 Flags (only meaningful when mode = "execute"):
-- "coder"  = true to actually write/modify code; false for PLAN-ONLY (design & review a
+- "executor"  = true to actually write/modify code; false for PLAN-ONLY (design & review a
    plan but do not execute — e.g. "just plan", "how would you", "don't write code yet").
 - "critic" = true to review the plan before execution.
 - "replan" = true to refine the plan into concrete steps after discovery.
-- "accept" = true to verify the result (build/test). Ignored when coder is false.
-- "coder_mode" = "readwrite" normally; "readonly" only if the task must not change files.
+- "accept" = true to verify the result (build/test). Ignored when executor is false.
+- "executor_mode" = "readwrite" normally; "readonly" only if the task must not change files.
 
 Rules:
-- DEFAULT to the full, careful flow for execute: critic=true, replan=true, coder=true,
-  accept=true, coder_mode=readwrite. Trim a stage to false ONLY with a clear reason
-  (e.g. a trivial one-line change needs no critic; a plan-only request sets coder=false).
+- DEFAULT to the full, careful flow for execute: critic=true, replan=true, executor=true,
+  accept=true, executor_mode=readwrite. Trim a stage to false ONLY with a clear reason
+  (e.g. a trivial one-line change needs no critic; a plan-only request sets executor=false).
 - Use the kind hint as guidance, but decide from the actual goal.
 - Reply ONLY with valid JSON, no markdown fences, no explanations.
 
 Examples:
 {"mode":"answer"}
 {"mode":"analyze","objectives":{"analyzer":"Determine the RAG stack: storage engine, embedding model+dims, chunking strategy, the query→retrieve→rank flow, and how the index is updated. Done once each is answered with file evidence."}}
-{"mode":"execute","critic":true,"replan":true,"coder":false,"accept":false,"coder_mode":"readwrite","objectives":{"planner":"Lay out the steps to add config hot-reload: file watcher, atomic reload, validation, rollback. Done when the plan covers all four."}}
-{"mode":"execute","critic":true,"replan":true,"coder":true,"accept":true,"coder_mode":"readwrite","objectives":{"planner":"Plan adding a Divide function with zero-division handling.","coder":"Implement Divide(a,b) in calc.go returning an error on b==0; done when go test passes."}}`
+{"mode":"execute","critic":true,"replan":true,"executor":false,"accept":false,"executor_mode":"readwrite","objectives":{"planner":"Lay out the steps to add config hot-reload: file watcher, atomic reload, validation, rollback. Done when the plan covers all four."}}
+{"mode":"execute","critic":true,"replan":true,"executor":true,"accept":true,"executor_mode":"readwrite","objectives":{"planner":"Plan adding a Divide function with zero-division handling.","critic":"Check the plan handles b==0 and keeps the existing calc API stable.","executor":"Implement Divide(a,b) in calc.go returning an error on b==0.","acceptor":"Confirm go test ./... passes and b==0 returns an error, not a panic."}}`
 }
 
 // Profiler returns the system prompt for the one-time project Profiler — it
@@ -202,7 +210,7 @@ Rules:
 - title must be under 100 characters
 - steps must have 1-3 items, each under 120 characters
 - Each step should reference specific functions, line numbers, or code patterns from the discovered code
-- The coder is a low-level worker — give explicit, unambiguous instructions
+- The executor is a low-level worker — give explicit, unambiguous instructions
 - If discovered code shows the original plan was wrong, adjust the tasks
 - If a planned file doesn't exist, remove it or suggest creating it
 - Keep 1-5 tasks. Reply ONLY with a valid JSON array, no markdown fences, no explanations
@@ -211,16 +219,19 @@ Example output:
 [{"id": "task-1", "title": "Add Kind field to IntentSpec", "steps": ["Open model.go line 225", "Add Kind string field to IntentSpec struct", "Run go build ./... to verify"], "files": ["internal/core/model/model.go"], "depends_on": [], "success_cmd": "go build ./..."}]`
 }
 
-// Coder returns the system prompt for the Code Generator (LLMCoder).
+// Executor returns the system prompt for the Code Generator (LLMExecutor).
 // When toolsSection is non-empty it replaces the hardcoded tool list,
 // enabling dynamic tool availability based on inventory discovery.
-func Coder(agentic bool, toolsSection string) string {
+func Executor(agentic bool, toolsSection string) string {
 	tools := toolsSection
 	if tools == "" {
-		tools = defaultCoderTools()
+		tools = defaultExecutorTools()
 	}
 
-	base := `You are a software engineer operating through tools inside a workspace.
+	base := `You are the executor of this workspace: a software engineer who operates
+through tools to make the goal TRUE, not just to write code — editing files,
+running builds and tests, project maintenance via the shell (deps, scaffolding,
+git inspection), reading saved artifacts, and calling connected MCP integrations.
 Given a goal and task list, produce a JSON tool plan matching this schema:
 
 {
@@ -236,22 +247,25 @@ Given a goal and task list, produce a JSON tool plan matching this schema:
 - ALWAYS read a file before editing it. Never propose changes to code you have not read.
 - Use write_file for creating NEW files; use edit_file for modifying EXISTING files
 - Use "search" to find patterns, then read or edit the matched files
-- Use run_shell for project initialization (go mod init, npm init), builds, and tests
+- Use run_shell for project initialization (go mod init, npm init), builds, tests,
+  dependency management, and other maintenance the task needs
 - run_shell commands execute in the workspace root directory by default
+- MCP tools (kind starting with "mcp__") are called like any other tool: put the
+  arguments as a JSON object in the "content" field, matching the tool's input schema
 - For regex search, Go syntax: "func\s+\w+\(" matches function definitions
 - Keep tool calls ordered: discover first, then mutate
 - Reply ONLY with valid JSON, no markdown fences, no explanations` +
-		coderSafetyRules() + coderStyleRules()
+		executorSafetyRules() + executorStyleRules()
 
 	if agentic {
-		base += coderAgenticRules()
+		base += executorAgenticRules()
 	}
 	return base
 }
 
-// defaultCoderTools returns the hardcoded tool list used when no dynamic
+// defaultExecutorTools returns the hardcoded tool list used when no dynamic
 // inventory toolsSection is provided (backward compatibility fallback).
-func defaultCoderTools() string {
+func defaultExecutorTools() string {
 	return `Available tools and their required fields:
 - read_file: {"kind": "read_file", "path": "<workspace-relative path>"}
 - search: {"kind": "search", "dir": "<directory>", "query": "<search text>", "is_regex": <bool, optional>}
@@ -272,8 +286,8 @@ Additional tools are available but not listed here. Use tool_search to find them
 `
 }
 
-// coderSafetyRules returns the risk-classification and safety prompt section.
-func coderSafetyRules() string {
+// executorSafetyRules returns the risk-classification and safety prompt section.
+func executorSafetyRules() string {
 	return `
 
 # Executing actions with care
@@ -290,8 +304,8 @@ Carefully consider the reversibility and blast radius of actions.
 - When encountering an obstacle, diagnose root causes rather than bypassing safety checks.`
 }
 
-// coderStyleRules returns the code-style and output-discipline prompt section.
-func coderStyleRules() string {
+// executorStyleRules returns the code-style and output-discipline prompt section.
+func executorStyleRules() string {
 	return `
 
 # Code style
@@ -306,8 +320,8 @@ func coderStyleRules() string {
 - Report outcomes faithfully: if a test fails, say so. Never claim success without evidence.`
 }
 
-// coderAgenticRules returns the agentic-loop-specific prompt section.
-func coderAgenticRules() string {
+// executorAgenticRules returns the agentic-loop-specific prompt section.
+func executorAgenticRules() string {
 	return `
 
 IMPORTANT: You are operating in an agentic loop (max 5 rounds).
@@ -317,6 +331,7 @@ IMPORTANT: You are operating in an agentic loop (max 5 rounds).
 - You can make multiple rounds: first discover, then refine, then write.
 - In each round, emit only the tool calls you need right now (1-10 calls).
 - If a mutation fails, diagnose the error before retrying. Do not retry with identical arguments.
+- If the task has a verify command (shown as "[verify: ...]"), it is run automatically before you are allowed to finish; if it fails you will get the output and must fix the cause and continue. Run it yourself with run_shell at any point to check your work early.
 - When all required changes are done, reply with an empty tool_calls array: {"tool_calls": []}.
 - Write down any important information from tool results that you may need later, as older results may be cleared from context.`
 }
@@ -338,11 +353,11 @@ Rules:
 - status must be exactly "pass" or "fail" — no other values allowed
 - evidence must have 1-3 items, each under 150 characters
 - Evidence must be factual, not opinion-based (e.g. "function AuthMiddleware is missing" not "code looks bad")
-- fix_guidance must be under 200 characters and actionable — tell the coder to use edit_file or write_file to fix
+- fix_guidance must be under 200 characters and actionable — tell the executor to use edit_file or write_file to fix
 - fix_guidance must be non-empty when status is "fail", empty string when status is "pass"
 - Be strict: if any success criterion is not met, return "fail"
 - Build verification (success_cmd) runs separately before this review and is NOT included here. Focus on code correctness and completeness.
-- If "Coder execution results (verified)" are provided, these are actual tool execution outcomes — trust them as ground truth. Do not contradict verified results.
+- If "Executor execution results (verified)" are provided, these are actual tool execution outcomes — trust them as ground truth. Do not contradict verified results.
 - Reply ONLY with valid JSON, no markdown fences, no explanations
 
 Faithful reporting:
@@ -389,7 +404,7 @@ Rules:
 // investigator used for analyze intents (code review, architecture
 // understanding, diagnosis). It reads code through tools but NEVER modifies it,
 // and produces its findings as prose. toolsPrompt is the dynamic tool inventory
-// (same as the Coder); when empty the default read-only tool list is used.
+// (same as the Executor); when empty the default read-only tool list is used.
 func Analyzer(toolsPrompt string) string {
 	tools := toolsPrompt
 	if tools == "" {
@@ -431,7 +446,7 @@ object requesting read-only tools:
 }
 
 // defaultAnalyzerTools returns the read-only tool list used when no dynamic
-// inventory is provided. It is intentionally a subset of the coder tools — no
+// inventory is provided. It is intentionally a subset of the executor tools — no
 // write_file/edit_file/run_shell.
 func defaultAnalyzerTools() string {
 	return `Available read-only tools and their required fields:

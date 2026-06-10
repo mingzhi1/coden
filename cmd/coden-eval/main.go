@@ -40,7 +40,7 @@ type expect struct {
 	InsightsMin     int    `yaml:"insights_min"`
 	RecallMin       int    `yaml:"recall_min"`        // >= N insights recalled from a PRIOR turn (cross-turn memory)
 	TasksMin        int    `yaml:"tasks_min"`         // planner produced >= N tasks
-	FilesWrittenMin int    `yaml:"files_written_min"` // coder wrote >= N files
+	FilesWrittenMin int    `yaml:"files_written_min"` // executor wrote >= N files
 	Build           string `yaml:"build"`             // shell cmd run in workspace post-run; must exit 0
 }
 
@@ -90,8 +90,8 @@ type Metrics struct {
 	Tasks        int     `json:"tasks"`         // planner: tasks in the DAG
 	CriticScore  float64 `json:"critic_score"`  // critic: plan score
 	CriticIssues int     `json:"critic_issues"` // critic: issues raised
-	CoderRounds  int     `json:"coder_rounds"`  // coder: agentic read/build rounds
-	FilesWritten int     `json:"files_written"` // coder: write_file/edit_file calls
+	CoderRounds  int     `json:"executor_rounds"`  // executor: agentic read/build rounds
+	FilesWritten int     `json:"files_written"` // executor: write_file/edit_file calls
 }
 
 var (
@@ -104,7 +104,7 @@ var (
 	reSnippets    = regexp.MustCompile(`(?:prefetch completed|discovery).*?snippets=(\d+)`)
 	reTasks       = regexp.MustCompile(`tasks=(\d+)`)
 	reCritic      = regexp.MustCompile(`critique complete.*?score=([\d.]+).*?issues=(\d+)`)
-	reCoderRounds = regexp.MustCompile(`\[llm:coder\] executing reads in parallel round=(\d+)`)
+	reCoderRounds = regexp.MustCompile(`\[llm:executor\] executing reads in parallel round=(\d+)`)
 	reFileWrite   = regexp.MustCompile(`executing kind=(?:write_file|edit_file)`)
 )
 
@@ -362,7 +362,7 @@ func runTurn(bin, ws string, c evalCase, prompt, session string, timeout time.Du
 }
 
 // resolveWorkspace returns the workspace to run in. For a fixture case it copies
-// the fixture to a fresh temp dir (so the coder's writes don't mutate the repo
+// the fixture to a fresh temp dir (so the executor's writes don't mutate the repo
 // and each run starts clean); caller removes it when done.
 func resolveWorkspace(c evalCase, defaultWS string) (ws string, isTemp bool, err error) {
 	if c.Fixture != "" {
@@ -471,7 +471,7 @@ func rolesDetail(m Metrics) string {
 		parts = append(parts, fmt.Sprintf("critic(score=%.2f,issues=%d)", m.CriticScore, m.CriticIssues))
 	}
 	if m.CoderRounds > 0 || m.FilesWritten > 0 {
-		parts = append(parts, fmt.Sprintf("coder(rounds=%d,files=%d)", m.CoderRounds, m.FilesWritten))
+		parts = append(parts, fmt.Sprintf("executor(rounds=%d,files=%d)", m.CoderRounds, m.FilesWritten))
 	}
 	if m.Chars > 0 {
 		parts = append(parts, fmt.Sprintf("analyzer(chars=%d)", m.Chars))

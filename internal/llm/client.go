@@ -100,7 +100,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 //	pool.Chat(ctx, msgs)       — tries primary clients in order
 //	pool.ChatLight(ctx, msgs)  — tries light clients, falls back to primary
 type Pool struct {
-	primary []*Client // heavy-duty models (coder, acceptor)
+	primary []*Client // heavy-duty models (executor, acceptor)
 	light   []*Client // cheap/fast models (inputter, planner)
 	// Simple circuit breaker: consecutive failures per provider key.
 	breakerMu      sync.Mutex

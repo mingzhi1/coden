@@ -15,7 +15,7 @@ const (
 	RoleCritic    Role = "critic"       // Reviews plan quality (anti-narcissism)
 	RoleSearcher  Role = "searcher"     // SA-10: Search phase as a first-class worker role
 	RoleReplanner Role = "replanner"    // Refines tasks with concrete steps after discovery
-	RoleCoder     Role = "coder"
+	RoleExecutor     Role = "executor"
 	RoleAcceptor  Role = "acceptor"
 	RoleAnalyzer  Role = "analyzer" // Read-only investigator for analyze intents
 )
@@ -69,8 +69,8 @@ type plannerWorker struct {
 	planner Planner
 }
 
-type coderWorker struct {
-	coder Coder
+type executorWorker struct {
+	executor Executor
 }
 
 type acceptorWorker struct {
@@ -93,8 +93,8 @@ func NewPlannerWorker(planner Planner) Worker {
 	return plannerWorker{planner: planner}
 }
 
-func NewCoderWorker(coder Coder) Worker {
-	return coderWorker{coder: coder}
+func NewExecutorWorker(executor Executor) Worker {
+	return executorWorker{executor: executor}
 }
 
 func NewAcceptorWorker(acceptor Acceptor) Worker {
@@ -133,15 +133,15 @@ func (w plannerWorker) Execute(ctx context.Context, input WorkerInput) (WorkerOu
 	}, nil
 }
 
-func (w coderWorker) Execute(ctx context.Context, input WorkerInput) (WorkerOutput, error) {
-	plan, err := w.coder.Build(ctx, input.WorkflowID, input.Intent, input.Tasks)
+func (w executorWorker) Execute(ctx context.Context, input WorkerInput) (WorkerOutput, error) {
+	plan, err := w.executor.Build(ctx, input.WorkflowID, input.Intent, input.Tasks)
 	if err != nil {
 		return WorkerOutput{}, err
 	}
 	return WorkerOutput{
 		CodePlan: &plan,
-		Messages: takeMessages(w.coder),
-		Metadata: metadataFor(RoleCoder, w.coder),
+		Messages: takeMessages(w.executor),
+		Metadata: metadataFor(RoleExecutor, w.executor),
 	}, nil
 }
 

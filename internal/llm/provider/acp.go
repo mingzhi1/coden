@@ -27,7 +27,7 @@ const maxAcpReasoningToolCalls = 4
 // and returns the assembled text.
 //
 // The ACP server's built-in tools are disabled — it acts as a pure LLM
-// reasoning engine. CodeN's Coder Worker parses tool_calls from the text
+// reasoning engine. CodeN's Executor Worker parses tool_calls from the text
 // response and executes them through the Kernel's Tool Runtime.
 type Acp struct {
 	providerName string

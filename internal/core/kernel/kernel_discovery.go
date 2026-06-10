@@ -12,7 +12,7 @@ import (
 // runDiscovery executes a lightweight exploration step after planning.
 // For each task, it searches the workspace for relevant files based on
 // the task title/goal, reads key file snippets, and populates
-// DiscoveryContext so the Coder starts with real code understanding.
+// DiscoveryContext so the Executor starts with real code understanding.
 //
 // This bridges the gap between Plan (high-level direction) and Code
 // (concrete implementation): Plan says WHAT, Discovery finds WHERE.

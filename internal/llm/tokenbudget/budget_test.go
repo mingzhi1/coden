@@ -44,7 +44,7 @@ func TestBudgetForModel(t *testing.T) {
 		{"gpt-4-turbo", 128000},
 		{"gpt-4", 8192},
 		{"gpt-3.5-turbo", 16384},
-		{"deepseek-coder", 64000},
+		{"deepseek-executor", 64000},
 		{"unknown-model", 128000}, // default
 	}
 	for _, tt := range tests {

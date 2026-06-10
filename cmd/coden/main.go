@@ -74,9 +74,9 @@ func run(args []string) error {
 	checkpointLimit := fs.Int("checkpoint-limit", 20, "maximum checkpoints to list")
 	inputMode := fs.String("input", "", "input launcher: process, loopback, or llm (default: auto-detect)")
 	plannerMode := fs.String("planner", "", "planner launcher: process, loopback, or llm (default: auto-detect)")
-	coderMode := fs.String("coder", "", "coder launcher: process, loopback, or llm (default: auto-detect)")
+	executorMode := fs.String("executor", "", "executor launcher: process, loopback, or llm (default: auto-detect)")
 	acceptorMode := fs.String("acceptor", "", "acceptor launcher: process, loopback, or llm (default: auto-detect)")
-	executorMode := fs.String("executor", "", "executor launcher: process or loopback (default: process)")
+	toolExecMode := fs.String("tool-executor", "", "tool executor launcher: process or loopback (default: process)")
 	allowShell := fs.Bool("allow-shell", false, "allow run_shell tool execution for this kernel process")
 	serve := fs.String("serve", "", "start kernel as RPC server on this TCP address (e.g. 127.0.0.1:7100)")
 	connect := fs.String("connect", "", "attach to a running kernel server at this TCP address")
@@ -192,7 +192,7 @@ func run(args []string) error {
 		_ = os.Setenv("CODEN_HOME", filepath.Dir(resolvedStateDBPath))
 	}
 
-	opts := dependencyOptions(*workspaceRoot, *inputMode, *plannerMode, *coderMode, *acceptorMode, *executorMode)
+	opts := dependencyOptions(*workspaceRoot, *inputMode, *plannerMode, *executorMode, *acceptorMode, *toolExecMode)
 	opts.AllowShell = *allowShell
 
 	var registry launcher.Registry
@@ -224,7 +224,7 @@ func run(args []string) error {
 				// Server handles provider detection — force LLM workers on.
 				opts.Input = "llm"
 				opts.Planner = "llm"
-				opts.Coder = "llm"
+				opts.Executor = "llm"
 				opts.Acceptor = "llm"
 				opts.Agentic = true
 			}
@@ -235,7 +235,7 @@ func run(args []string) error {
 			registry = launcher.DefaultFromConfig(llmCfg, *workspaceRoot)
 			opts.Input = "llm"
 			opts.Planner = "llm"
-			opts.Coder = "llm"
+			opts.Executor = "llm"
 			opts.Acceptor = "llm"
 			opts.Agentic = true
 		} else {
@@ -530,7 +530,7 @@ func newKernel(ctx context.Context, workspaceRoot, stateDBPath string, opts laun
 	if err != nil {
 		return nil, nil, err
 	}
-	k, err := kernel.NewPersistentWithWorkflowDependencies(workspaceRoot, stateDBPath, deps.Inputter, deps.Planner, deps.Coder, deps.Executor, deps.Acceptor)
+	k, err := kernel.NewPersistentWithWorkflowDependencies(workspaceRoot, stateDBPath, deps.Inputter, deps.Planner, deps.Executor, deps.ToolExecutor, deps.Acceptor)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
@@ -544,7 +544,7 @@ func newKernel(ctx context.Context, workspaceRoot, stateDBPath string, opts laun
 		k.SetResponder(llm.NewLLMResponder(chatter))
 		// Analyzer performs read-only code investigation for analyze intents
 		// (Strong tier); shares the kernel's tool executor for its read loop.
-		k.SetAnalyzer(llm.NewLLMAnalyzer(chatter, deps.Executor))
+		k.SetAnalyzer(llm.NewLLMAnalyzer(chatter, deps.ToolExecutor))
 		// Dispatcher designs each run's workflow (mode + participating roles) via
 		// a lightweight SideQuery; falls back to the static policy table on error.
 		k.SetDispatcher(llm.NewLLMDispatcher(chatter))
@@ -655,7 +655,7 @@ func moduleRoot() string {
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
-func dependencyOptions(workspaceRoot, inputMode, plannerMode, coderMode, acceptorMode, executorMode string) launcher.Options {
+func dependencyOptions(workspaceRoot, inputMode, plannerMode, executorMode, acceptorMode, toolExecMode string) launcher.Options {
 	opts := launcher.DefaultOptions(moduleRoot(), workspaceRoot)
 	// Only override auto-detected modes when the user explicitly provides
 	// a value via CLI flags.  Empty string means "use auto-detected default".
@@ -665,14 +665,14 @@ func dependencyOptions(workspaceRoot, inputMode, plannerMode, coderMode, accepto
 	if plannerMode != "" {
 		opts.Planner = plannerMode
 	}
-	if coderMode != "" {
-		opts.Coder = coderMode
+	if executorMode != "" {
+		opts.Executor = executorMode
 	}
 	if acceptorMode != "" {
 		opts.Acceptor = acceptorMode
 	}
-	if executorMode != "" {
-		opts.Executor = executorMode
+	if toolExecMode != "" {
+		opts.ToolExecutor = toolExecMode
 	}
 	return opts
 }
@@ -727,7 +727,7 @@ func needsLLM(opts launcher.Options) bool {
 	}
 	return llmModes[opts.Input] ||
 		llmModes[opts.Planner] ||
-		llmModes[opts.Coder] ||
+		llmModes[opts.Executor] ||
 		llmModes[opts.Acceptor]
 }
 

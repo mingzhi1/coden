@@ -93,7 +93,7 @@ func validateTaskDAG(tasks []model.Task) error {
 }
 
 // validateToolScope enforces task-level file scope guards.
-// When the Coder writes to a path not in the task's declared Files list,
+// When the Executor writes to a path not in the task's declared Files list,
 // log a warning and auto-expand the list (soft enforcement) rather than
 // aborting the workflow. This handles the common case where
 // Planner/Replanner underspecify the files list.

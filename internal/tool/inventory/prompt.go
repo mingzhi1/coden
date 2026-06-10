@@ -8,7 +8,7 @@ import (
 // FormatToolsPrompt generates the "Available tools" system prompt section
 // based on what tools are actually available in the Inventory.
 //
-// This replaces the hardcoded tool list in prompts.Coder().
+// This replaces the hardcoded tool list in prompts.Executor().
 // Tools that depend on external services (LSP, RAG) are only included
 // if the corresponding category has available entries.
 //

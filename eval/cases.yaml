@@ -28,7 +28,7 @@
 #   insights_min      minimum insights extracted (memory persisted)
 #   recall_min        minimum insights recalled from a PRIOR turn (cross-turn memory)
 #   tasks_min         minimum planner tasks in the DAG
-#   files_written_min minimum write_file/edit_file calls (coder wrote)
+#   files_written_min minimum write_file/edit_file calls (executor wrote)
 #   build             shell cmd run in the workspace post-run; must exit 0
 
 - name: analyze-uses-rag-and-memory
@@ -59,9 +59,9 @@
     checkpoint: pass      # guards: greeting hanging/crashing (the ACP loop bug)
 
 # The ONLY case that exercises the full multi-agent pipeline end-to-end:
-# inputter → searcher → planner → critic → replanner → coder → acceptor →
-# secretary. Runs against a throwaway copy of eval/fixtures/calc (the coder's
-# writes never touch the repo), then a real `go build` gates the coder's output.
+# inputter → searcher → planner → critic → replanner → executor → acceptor →
+# secretary. Runs against a throwaway copy of eval/fixtures/calc (the executor's
+# writes never touch the repo), then a real `go build` gates the executor's output.
 - name: code-gen-implements-and-builds
   prompt: "在 calc.go 里实现 Multiply(a, b int) int 函数,返回 a*b,确保 go build 通过"
   fixture: eval/fixtures/calc
@@ -69,7 +69,7 @@
   expect:
     checkpoint: pass
     tasks_min: 1          # planner produced a DAG
-    files_written_min: 1  # coder actually wrote a file
+    files_written_min: 1  # executor actually wrote a file
     build: "go build ./..."   # the produced code must compile
 
 # ── Multi-turn cases ─────────────────────────────────────────────────────────

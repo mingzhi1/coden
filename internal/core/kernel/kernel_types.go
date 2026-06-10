@@ -56,7 +56,7 @@ type Kernel struct {
 	workflow               *workflow.Engine
 	allowShell             bool
 	secretary              *secretary.Secretary // Secretary Agent for context/permission/state management
-	mcpToolPrompt          string               // pre-formatted MCP tool descriptions for Coder prompt
+	mcpToolPrompt          string               // pre-formatted MCP tool descriptions for Executor prompt
 	inventoryToolsPrompt   string               // dynamic "Available tools" section from inventory discovery
 	inventoryEnvPrompt     string               // environment info (interpreters, formatters etc.) from inventory
 	rollbackPolicy         string               // "auto" | "manual" | "off"; default "auto"
@@ -100,7 +100,7 @@ func (k *Kernel) SetSecretary(s *secretary.Secretary) {
 }
 
 // SetMCPToolPrompt sets the pre-formatted MCP tool descriptions that will be
-// injected into the Coder's context. Must be called before workflow execution.
+// injected into the Executor's context. Must be called before workflow execution.
 func (k *Kernel) SetMCPToolPrompt(s string) {
 	k.mcpToolPrompt = s
 }

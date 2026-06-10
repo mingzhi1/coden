@@ -18,21 +18,62 @@ func TestParseDispatcherPlan_Objectives(t *testing.T) {
 	}
 
 	// unknown role and empty brief are dropped; known roles kept.
-	plan, ok = parseDispatcherPlan(`{"mode":"execute","objectives":{"planner":"Plan X.","coder":"","wizard":"ignore me"}}`)
+	plan, ok = parseDispatcherPlan(`{"mode":"execute","objectives":{"planner":"Plan X.","executor":"","wizard":"ignore me"}}`)
 	if !ok {
 		t.Fatalf("execute parse failed")
 	}
 	if plan.Objective(workflow.RolePlanner) != "Plan X." {
 		t.Errorf("planner objective = %q want %q", plan.Objective(workflow.RolePlanner), "Plan X.")
 	}
-	if plan.Objective(workflow.RoleCoder) != "" {
-		t.Errorf("empty coder objective should be dropped, got %q", plan.Objective(workflow.RoleCoder))
+	if plan.Objective(workflow.RoleExecutor) != "" {
+		t.Errorf("empty executor objective should be dropped, got %q", plan.Objective(workflow.RoleExecutor))
 	}
 
 	// no objectives → nil map, Objective returns "".
 	plan, _ = parseDispatcherPlan(`{"mode":"answer"}`)
 	if plan.Objective(workflow.RoleAnalyzer) != "" {
 		t.Errorf("answer mode should have no objectives")
+	}
+
+	// critic/replanner/acceptor briefs survive when their stages run.
+	plan, ok = parseDispatcherPlan(`{"mode":"execute","critic":true,"replan":true,"executor":true,"accept":true,"objectives":{"critic":"Scrutinize b==0.","replanner":"Pin the file paths.","acceptor":"go test passes."}}`)
+	if !ok {
+		t.Fatalf("execute parse failed")
+	}
+	for _, r := range []workflow.Role{workflow.RoleCritic, workflow.RoleReplanner, workflow.RoleAcceptor} {
+		if plan.Objective(r) == "" {
+			t.Errorf("objective for running role %q was dropped", r)
+		}
+	}
+}
+
+// TestParseDispatcherPlan_PrunesObjectivesForSkippedRoles verifies that a brief
+// the model wrote for a role that will NOT run is discarded, so it can never
+// leak into an agent outside the flow.
+func TestParseDispatcherPlan_PrunesObjectivesForSkippedRoles(t *testing.T) {
+	// execute with executor=false (plan-only): executor/acceptor briefs must be dropped,
+	// planner/critic kept.
+	plan, ok := parseDispatcherPlan(`{"mode":"execute","executor":false,"objectives":{"planner":"Lay out the plan.","critic":"Check it.","executor":"do not run","acceptor":"never verifies"}}`)
+	if !ok {
+		t.Fatalf("execute parse failed")
+	}
+	if plan.Objective(workflow.RolePlanner) == "" || plan.Objective(workflow.RoleCritic) == "" {
+		t.Errorf("running roles lost their objectives: %+v", plan.Objectives)
+	}
+	if plan.Objective(workflow.RoleExecutor) != "" {
+		t.Errorf("executor objective should be pruned when executor=false, got %q", plan.Objective(workflow.RoleExecutor))
+	}
+	if plan.Objective(workflow.RoleAcceptor) != "" {
+		t.Errorf("acceptor objective should be pruned when executor=false, got %q", plan.Objective(workflow.RoleAcceptor))
+	}
+
+	// analyze mode: only the analyzer participates — a planner brief is dropped.
+	plan, _ = parseDispatcherPlan(`{"mode":"analyze","objectives":{"analyzer":"Map the RAG flow.","planner":"irrelevant here"}}`)
+	if plan.Objective(workflow.RoleAnalyzer) == "" {
+		t.Errorf("analyzer objective lost in analyze mode")
+	}
+	if plan.Objective(workflow.RolePlanner) != "" {
+		t.Errorf("planner objective should be pruned in analyze mode, got %q", plan.Objective(workflow.RolePlanner))
 	}
 }
 
@@ -43,8 +84,8 @@ func TestParseDispatcherPlan(t *testing.T) {
 		wantOK   bool
 		wantMode workflow.WorkflowMode
 		// for execute: expected role presence
-		critic, replan, coder, acceptor bool
-		coderMode                       model.CoderMode
+		critic, replan, executor, acceptor bool
+		executorMode                       model.ExecutorMode
 	}{
 		{
 			name:     "answer",
@@ -63,32 +104,32 @@ func TestParseDispatcherPlan(t *testing.T) {
 			reply:    `{"mode":"execute"}`,
 			wantOK:   true,
 			wantMode: workflow.WorkflowModeExecute,
-			critic:   true, replan: true, coder: true, acceptor: true,
-			coderMode: model.CoderModeReadWrite,
+			critic:   true, replan: true, executor: true, acceptor: true,
+			executorMode: model.ExecutorModeReadWrite,
 		},
 		{
 			name:     "execute plan-only drops acceptor",
-			reply:    `{"mode":"execute","coder":false,"accept":true}`,
+			reply:    `{"mode":"execute","executor":false,"accept":true}`,
 			wantOK:   true,
 			wantMode: workflow.WorkflowModeExecute,
-			critic:   true, replan: true, coder: false, acceptor: false, // accept ignored without coder
-			coderMode: model.CoderModeReadWrite,
+			critic:   true, replan: true, executor: false, acceptor: false, // accept ignored without executor
+			executorMode: model.ExecutorModeReadWrite,
 		},
 		{
 			name:     "execute trims critic",
-			reply:    `{"mode":"execute","critic":false,"replan":false,"coder":true,"accept":true}`,
+			reply:    `{"mode":"execute","critic":false,"replan":false,"executor":true,"accept":true}`,
 			wantOK:   true,
 			wantMode: workflow.WorkflowModeExecute,
-			critic:   false, replan: false, coder: true, acceptor: true,
-			coderMode: model.CoderModeReadWrite,
+			critic:   false, replan: false, executor: true, acceptor: true,
+			executorMode: model.ExecutorModeReadWrite,
 		},
 		{
 			name:     "execute readonly",
-			reply:    `{"mode":"execute","coder_mode":"readonly"}`,
+			reply:    `{"mode":"execute","executor_mode":"readonly"}`,
 			wantOK:   true,
 			wantMode: workflow.WorkflowModeExecute,
-			critic:   true, replan: true, coder: true, acceptor: true,
-			coderMode: model.CoderModeReadOnly,
+			critic:   true, replan: true, executor: true, acceptor: true,
+			executorMode: model.ExecutorModeReadOnly,
 		},
 		{
 			name:     "json with markdown fences",
@@ -129,8 +170,8 @@ func TestParseDispatcherPlan(t *testing.T) {
 			if got := plan.Has(workflow.RoleReplanner); got != tc.replan {
 				t.Errorf("Replanner=%v want %v", got, tc.replan)
 			}
-			if got := plan.Has(workflow.RoleCoder); got != tc.coder {
-				t.Errorf("Coder=%v want %v", got, tc.coder)
+			if got := plan.Has(workflow.RoleExecutor); got != tc.executor {
+				t.Errorf("Executor=%v want %v", got, tc.executor)
 			}
 			if got := plan.Has(workflow.RoleAcceptor); got != tc.acceptor {
 				t.Errorf("Acceptor=%v want %v", got, tc.acceptor)
@@ -139,8 +180,8 @@ func TestParseDispatcherPlan(t *testing.T) {
 			if !plan.Has(workflow.RolePlanner) {
 				t.Errorf("Planner must always be present in execute mode")
 			}
-			if plan.CoderMode != tc.coderMode {
-				t.Errorf("CoderMode=%v want %v", plan.CoderMode, tc.coderMode)
+			if plan.ExecutorMode != tc.executorMode {
+				t.Errorf("ExecutorMode=%v want %v", plan.ExecutorMode, tc.executorMode)
 			}
 		})
 	}

@@ -234,7 +234,7 @@ func FormatToolParams(t ToolInfo) string {
 }
 
 // FormatToolsForPrompt builds a pre-formatted markdown section describing all
-// registered MCP tools so the Coder LLM knows how to invoke them.
+// registered MCP tools so the Executor LLM knows how to invoke them.
 // Returns "" when no tools are registered.
 func FormatToolsForPrompt(tools []ToolInfo) string {
 	if len(tools) == 0 {

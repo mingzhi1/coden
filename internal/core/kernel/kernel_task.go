@@ -36,7 +36,7 @@ type taskExecResult struct {
 	artifact       model.Artifact
 	llmOutput      string       // accumulated assistant messages for insight extraction
 	err            error        // non-nil → abort the whole workflow
-	appendedTasks  []model.Task // M11-03: tasks the coder requested to append
+	appendedTasks  []model.Task // M11-03: tasks the executor requested to append
 	replanEvidence []string     // non-nil → replan remaining tasks with this failure evidence
 }
 
@@ -141,9 +141,9 @@ func computeTaskLevels(tasks []model.Task) [][]int {
 	return levels
 }
 
-// M11-03: maxAppendPerCoder caps how many tasks a single coder execution can
+// M11-03: maxAppendPerExecutor caps how many tasks a single executor execution can
 // append to prevent runaway LLM loops.
-const maxAppendPerCoder = 3
+const maxAppendPerExecutor = 3
 
 // runOneTask executes the Code→Accept retry loop for a single task.
 // It is self-contained and safe to run concurrently for different tasks.
@@ -190,7 +190,7 @@ func (k *Kernel) runOneTask(
 			Status:     "running",
 		})
 
-		// CTX-02: Refresh FileTree on retry so the Coder sees files created
+		// CTX-02: Refresh FileTree on retry so the Executor sees files created
 		// by previous attempts (e.g. new calc.go from attempt 1).
 		if attempt > 0 {
 			if freshFiles, listErr := k.workspace.ListFiles("", 200); listErr == nil {
@@ -200,7 +200,7 @@ func (k *Kernel) runOneTask(
 		wfCtx.RetryFeedback = taskRetryFeedback
 		taskCtx := model.WithWorkflowContext(ctx, wfCtx)
 
-		coderInput := workflow.WorkerInput{
+		executorInput := workflow.WorkerInput{
 			SessionID:     sessionID,
 			WorkflowID:    workflowID,
 			TaskID:        task.ID,
@@ -209,7 +209,7 @@ func (k *Kernel) runOneTask(
 			RetryFeedback: taskRetryFeedback,
 		}
 
-		codeResult, err := k.executeWorker(taskCtx, sessionID, workflowID, "code", workflow.RoleCoder, k.workflow.CoderWorker(), coderInput)
+		codeResult, err := k.executeWorker(taskCtx, sessionID, workflowID, "code", workflow.RoleExecutor, k.workflow.ExecutorWorker(), executorInput)
 		if err != nil {
 			return taskExecResult{taskIdx: taskIdx, task: shared.get(taskIdx), err: err}
 		}
@@ -220,12 +220,12 @@ func (k *Kernel) runOneTask(
 			}
 		}
 
-		// KA-06: Guard against nil CodePlan — coder may return messages without
+		// KA-06: Guard against nil CodePlan — executor may return messages without
 		// a structured tool call plan (e.g. when the LLM responds conversationally).
 		if codeResult.CodePlan == nil {
 			return taskExecResult{
 				taskIdx: taskIdx, task: shared.get(taskIdx),
-				err: fmt.Errorf("coder returned nil code plan for task %q", task.Title),
+				err: fmt.Errorf("executor returned nil code plan for task %q", task.Title),
 			}
 		}
 		codePlan := *codeResult.CodePlan
@@ -233,11 +233,11 @@ func (k *Kernel) runOneTask(
 		if len(toolCalls) == 0 {
 			return taskExecResult{
 				taskIdx: taskIdx, task: shared.get(taskIdx),
-				err: fmt.Errorf("coder returned empty tool plan for task %q", task.Title),
+				err: fmt.Errorf("executor returned empty tool plan for task %q", task.Title),
 			}
 		}
 
-		codeWorkerID := workerIDFor(roleOrDefault(codeResult.Metadata, workflow.RoleCoder))
+		codeWorkerID := workerIDFor(roleOrDefault(codeResult.Metadata, workflow.RoleExecutor))
 		attemptBeforeState, execErr := func() (map[string][]byte, error) {
 			a, bs, e := k.executeToolPlan(taskCtx, sessionID, workflowID, codeWorkerID, task.Files, toolCalls)
 			finalArtifact = a
@@ -377,29 +377,29 @@ func (k *Kernel) runOneTask(
 				"task", task.Title,
 				"attempts", task.Attempts)
 
-			// M11-03: Handle Coder-requested task appends.
+			// M11-03: Handle Executor-requested task appends.
 			var appended []model.Task
 			if len(codePlan.AppendTasks) > 0 {
 				appendCount := len(codePlan.AppendTasks)
-				if appendCount > maxAppendPerCoder {
-					appendCount = maxAppendPerCoder
-					clog.Session(sessionID).Warn("coder requested too many appends, capping",
-						"requested", len(codePlan.AppendTasks), "cap", maxAppendPerCoder)
+				if appendCount > maxAppendPerExecutor {
+					appendCount = maxAppendPerExecutor
+					clog.Session(sessionID).Warn("executor requested too many appends, capping",
+						"requested", len(codePlan.AppendTasks), "cap", maxAppendPerExecutor)
 				}
 				for i := 0; i < appendCount; i++ {
 					at := codePlan.AppendTasks[i]
 					if at.ID == "" {
 						at.ID = nextKernelID("task-appended")
 					}
-					queue.Append(at, "coder")
+					queue.Append(at, "executor")
 					appended = append(appended, at)
 					k.events.Emit(sessionID, model.EventWorkflowTaskAppended, model.TaskAppendedPayload{
 						WorkflowID: workflowID,
 						TaskID:     at.ID,
 						TaskTitle:  at.Title,
-						Source:     "coder",
+						Source:     "executor",
 					})
-					clog.Session(sessionID).Info("coder appended task",
+					clog.Session(sessionID).Info("executor appended task",
 						"workflow_id", workflowID,
 						"appended_task_id", at.ID,
 						"appended_task_title", at.Title)
@@ -634,7 +634,7 @@ func (k *Kernel) runTasksConcurrent(
 		}
 	}
 
-	// M11-03: Execute any tasks dynamically appended by coders during execution.
+	// M11-03: Execute any tasks dynamically appended by executors during execution.
 	// These run sequentially after all planned DAG levels complete.
 	// Safety cap: at most maxAppendRounds to prevent infinite append chains.
 	const maxAppendRounds = 3

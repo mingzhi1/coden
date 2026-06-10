@@ -18,7 +18,7 @@ func toolCtx(ctx context.Context, workflowID, sessionID string) context.Context 
 	return toolruntime.ContextWithIDs(ctx, workflowID, sessionID)
 }
 
-// executeToolPlan 执行 Coder 的工具计划并收集结果 artifact。
+// executeToolPlan 执行 Executor 的工具计划并收集结果 artifact。
 // allowedPaths 限制 mutation 调用（write_file/edit_file）可针对的工作区路径。
 // 空切片表示无限制。返回 artifact 和 beforeState 快照（路径→原始字节），
 // 用于失败时回滚。

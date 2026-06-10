@@ -69,7 +69,7 @@ func TestBuildAccumChangesEmpty(t *testing.T) {
 func TestBuildWorkflowContextInjectsPreviousTurns(t *testing.T) {
 	t.Parallel()
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	defer k.Close()
 
 	// Save 3 turn summaries (newest id = ts-3).
@@ -104,7 +104,7 @@ func TestBuildWorkflowContextInjectsPreviousTurns(t *testing.T) {
 func TestCommitWorkflowSagaSuccess(t *testing.T) {
 	t.Parallel()
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	defer k.Close()
 
 	sessionID := "saga-sess"
@@ -186,7 +186,7 @@ func (f failingMessageStore) Save(_ model.Message) error {
 func TestCommitWorkflowSagaRollbackOnFailure(t *testing.T) {
 	t.Parallel()
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	defer k.Close()
 
 	// Inject failing message store to make step 3 fail.
@@ -244,7 +244,7 @@ func TestCommitWorkflowSagaRollbackOnFailure(t *testing.T) {
 func TestOrphanTurnRecovery(t *testing.T) {
 	t.Parallel()
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	defer k.Close()
 
 	// Simulate an orphan turn left from a previous process crash.

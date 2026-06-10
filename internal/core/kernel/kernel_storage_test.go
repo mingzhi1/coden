@@ -20,10 +20,10 @@ import (
 	"github.com/mingzhi1/coden/internal/core/workspacestore"
 )
 
-// shellToolCoder returns a run_shell call.
-type shellToolCoder struct{}
+// shellToolExecutor returns a run_shell call.
+type shellToolExecutor struct{}
 
-func (c shellToolCoder) Build(_ context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
+func (c shellToolExecutor) Build(_ context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
 	return workflow.CodePlan{
 		ToolCalls: []workflow.ToolCall{{
 			ToolCallID: "shell-call-" + workflowID,
@@ -35,9 +35,9 @@ func (c shellToolCoder) Build(_ context.Context, workflowID string, intent model
 	}, nil
 }
 
-func (c shellToolCoder) TakeMessages() []model.WorkerMessage {
+func (c shellToolExecutor) TakeMessages() []model.WorkerMessage {
 	return []model.WorkerMessage{
-		{Kind: "info", Role: "coder", Content: "coder produced shell call"},
+		{Kind: "info", Role: "executor", Content: "executor produced shell call"},
 	}
 }
 
@@ -99,8 +99,8 @@ func TestDeniedRunShellPersistsAuditObject(t *testing.T) {
 		mainDBPath,
 		testInputter{},
 		testPlanner{},
-		shellToolCoder{},
-		testExecutor{},
+		shellToolExecutor{},
+		testToolExecutor{},
 		testAcceptor{},
 	)
 	if err != nil {
@@ -190,8 +190,8 @@ func TestPersistentKernelSplitsMainAndWorkspaceSQLite(t *testing.T) {
 		mainDBPath,
 		testInputter{},
 		testPlanner{},
-		testCoder{},
 		testExecutor{},
+		testToolExecutor{},
 		testAcceptor{},
 	)
 	if err != nil {

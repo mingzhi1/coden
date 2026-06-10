@@ -22,9 +22,9 @@ func (fakePlanner) Plan(context.Context, string, model.IntentSpec) ([]model.Task
 	return nil, nil
 }
 
-type fakeCoder struct{}
+type fakeExecutor struct{}
 
-func (fakeCoder) Build(context.Context, string, model.IntentSpec, []model.Task) (workflow.CodePlan, error) {
+func (fakeExecutor) Build(context.Context, string, model.IntentSpec, []model.Task) (workflow.CodePlan, error) {
 	return workflow.CodePlan{}, nil
 }
 
@@ -34,9 +34,9 @@ func (fakeAcceptor) Accept(context.Context, string, model.IntentSpec, model.Arti
 	return model.CheckpointResult{}, nil
 }
 
-type fakeExecutor struct{}
+type fakeToolExecutor struct{}
 
-func (fakeExecutor) Execute(context.Context, toolruntime.Request) (toolruntime.Result, error) {
+func (fakeToolExecutor) Execute(context.Context, toolruntime.Request) (toolruntime.Result, error) {
 	return toolruntime.Result{}, nil
 }
 
@@ -54,9 +54,9 @@ func TestRegistryStartReturnsDependencies(t *testing.T) {
 				return fakePlanner{}, func() {}, nil
 			},
 		},
-		Coders: map[string]CoderFactory{
-			"test": func(context.Context, string) (workflow.Coder, func(), error) {
-				return fakeCoder{}, func() {}, nil
+		Executors: map[string]ExecutorFactory{
+			"test": func(context.Context, string) (workflow.Executor, func(), error) {
+				return fakeExecutor{}, func() {}, nil
 			},
 		},
 		Acceptors: map[string]AcceptorFactory{
@@ -64,9 +64,9 @@ func TestRegistryStartReturnsDependencies(t *testing.T) {
 				return fakeAcceptor{}, func() {}, nil
 			},
 		},
-		Executors: map[string]ExecutorFactory{
+		ToolExecutors: map[string]ToolExecutorFactory{
 			"test": func(context.Context, string, string) (toolruntime.Executor, func(), error) {
-				return fakeExecutor{}, func() {}, nil
+				return fakeToolExecutor{}, func() {}, nil
 			},
 		},
 	}
@@ -76,16 +76,16 @@ func TestRegistryStartReturnsDependencies(t *testing.T) {
 		WorkspaceRoot: ".",
 		Input:         "test",
 		Planner:       "test",
-		Coder:         "test",
-		Acceptor:      "test",
-		Executor:      "test",
+		Executor:     "test",
+		Acceptor:     "test",
+		ToolExecutor: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer cleanup()
 
-	if deps.Inputter == nil || deps.Planner == nil || deps.Coder == nil || deps.Acceptor == nil || deps.Executor == nil {
+	if deps.Inputter == nil || deps.Planner == nil || deps.Executor == nil || deps.Acceptor == nil || deps.ToolExecutor == nil {
 		t.Fatal("expected all dependencies")
 	}
 }
@@ -105,20 +105,20 @@ func TestRegistryStartCleansUpOnFailure(t *testing.T) {
 				return fakePlanner{}, func() { cleaned += 10 }, nil
 			},
 		},
-		Coders: map[string]CoderFactory{
-			"test": func(context.Context, string) (workflow.Coder, func(), error) {
+		Executors: map[string]ExecutorFactory{
+			"test": func(context.Context, string) (workflow.Executor, func(), error) {
 				return nil, nil, errors.New("boom")
 			},
 		},
-		Acceptors: map[string]AcceptorFactory{},
-		Executors: map[string]ExecutorFactory{},
+		Acceptors:     map[string]AcceptorFactory{},
+		ToolExecutors: map[string]ToolExecutorFactory{},
 	}
 
 	_, cleanup, err := r.Start(context.Background(), Options{
 		ModuleRoot: ".",
 		Input:      "test",
 		Planner:    "test",
-		Coder:      "test",
+		Executor:      "test",
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -134,9 +134,9 @@ func TestDefaultOptionsTreatsACPCommandAsLLM(t *testing.T) {
 	t.Setenv("CODEN_ACP_COMMAND", "npx @agentclientprotocol/claude-agent-acp")
 
 	opts := DefaultOptions(".", ".")
-	if opts.Input != "llm" || opts.Planner != "llm" || opts.Coder != "llm" || opts.Acceptor != "llm" {
-		t.Fatalf("expected llm workers from ACP env, got input=%s planner=%s coder=%s acceptor=%s",
-			opts.Input, opts.Planner, opts.Coder, opts.Acceptor)
+	if opts.Input != "llm" || opts.Planner != "llm" || opts.Executor != "llm" || opts.Acceptor != "llm" {
+		t.Fatalf("expected llm workers from ACP env, got input=%s planner=%s executor=%s acceptor=%s",
+			opts.Input, opts.Planner, opts.Executor, opts.Acceptor)
 	}
 	if !opts.Agentic {
 		t.Fatal("expected agentic mode when ACP env is configured")
@@ -147,9 +147,9 @@ func TestDefaultOptionsTreatsCodexAppServerAsLLM(t *testing.T) {
 	t.Setenv("CODEN_CODEX_APP_SERVER_COMMAND", "codex app-server")
 
 	opts := DefaultOptions(".", ".")
-	if opts.Input != "llm" || opts.Planner != "llm" || opts.Coder != "llm" || opts.Acceptor != "llm" {
-		t.Fatalf("expected llm workers from Codex app-server env, got input=%s planner=%s coder=%s acceptor=%s",
-			opts.Input, opts.Planner, opts.Coder, opts.Acceptor)
+	if opts.Input != "llm" || opts.Planner != "llm" || opts.Executor != "llm" || opts.Acceptor != "llm" {
+		t.Fatalf("expected llm workers from Codex app-server env, got input=%s planner=%s executor=%s acceptor=%s",
+			opts.Input, opts.Planner, opts.Executor, opts.Acceptor)
 	}
 	if !opts.Agentic {
 		t.Fatal("expected agentic mode when Codex app-server env is configured")
@@ -174,11 +174,11 @@ func TestDefaultRegistrySupportsLoopback(t *testing.T) {
 	}
 }
 
-func TestDefaultOptionsUseProcessExecutor(t *testing.T) {
+func TestDefaultOptionsUseProcessToolExecutor(t *testing.T) {
 	t.Parallel()
 
 	opts := DefaultOptions(".", "workspace")
-	if opts.Executor != "process" {
-		t.Fatalf("expected process executor, got %q", opts.Executor)
+	if opts.ToolExecutor != "process" {
+		t.Fatalf("expected process tool executor, got %q", opts.ToolExecutor)
 	}
 }

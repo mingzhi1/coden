@@ -484,7 +484,7 @@ func TestRegistryActiveSkillsFiltering(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			active := r.GetSkillsForWorker(TargetCoder, tc.touchedPaths)
+			active := r.GetSkillsForWorker(TargetExecutor, tc.touchedPaths)
 			activeNames := make(map[string]bool)
 			for _, s := range active {
 				activeNames[s.Frontmatter.Name] = true

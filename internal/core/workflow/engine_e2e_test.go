@@ -80,12 +80,12 @@ func (r *e2eReplanner) Metadata() WorkerMetadata {
 	return WorkerMetadata{Worker: "e2e-replanner", Role: RoleReplanner}
 }
 
-// e2eCoder checks that it receives the refined tasks.
-type e2eCoder struct {
+// e2eExecutor checks that it receives the refined tasks.
+type e2eExecutor struct {
 	receivedTasks []model.Task
 }
 
-func (c *e2eCoder) Build(_ context.Context, wfID string, intent model.IntentSpec, tasks []model.Task) (CodePlan, error) {
+func (c *e2eExecutor) Build(_ context.Context, wfID string, intent model.IntentSpec, tasks []model.Task) (CodePlan, error) {
 	c.receivedTasks = tasks
 	return CodePlan{
 		ToolCallID: "tool-" + wfID,
@@ -105,12 +105,12 @@ func (c *e2eCoder) Build(_ context.Context, wfID string, intent model.IntentSpec
 	}, nil
 }
 
-func (c *e2eCoder) TakeMessages() []model.WorkerMessage {
-	return []model.WorkerMessage{{Kind: "code", Role: "coder", Content: "code produced"}}
+func (c *e2eExecutor) TakeMessages() []model.WorkerMessage {
+	return []model.WorkerMessage{{Kind: "code", Role: "executor", Content: "code produced"}}
 }
 
-func (c *e2eCoder) Metadata() WorkerMetadata {
-	return WorkerMetadata{Worker: "e2e-coder", Role: RoleCoder}
+func (c *e2eExecutor) Metadata() WorkerMetadata {
+	return WorkerMetadata{Worker: "e2e-executor", Role: RoleExecutor}
 }
 
 // e2eAcceptor always passes.
@@ -134,16 +134,16 @@ func (e2eAcceptor) Metadata() WorkerMetadata {
 }
 
 // TestFullPipelineE2E exercises the complete workflow:
-// Inputter → Planner → Critic(reject) → Replanner → Critic(approve) → Coder → Acceptor
+// Inputter → Planner → Critic(reject) → Replanner → Critic(approve) → Executor → Acceptor
 func TestFullPipelineE2E(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	critic := &e2eCritic{}
 	replanner := &e2eReplanner{}
-	coder := &e2eCoder{}
+	executor := &e2eExecutor{}
 
-	engine := NewWithInputter(testInputter{}, e2ePlanner{}, coder, e2eAcceptor{})
+	engine := NewWithInputter(testInputter{}, e2ePlanner{}, executor, e2eAcceptor{})
 	engine.SetCritic(critic)
 	engine.SetReplanner(replanner)
 
@@ -207,9 +207,9 @@ func TestFullPipelineE2E(t *testing.T) {
 	if plan.ToolCallID != "tool-wf-e2e" {
 		t.Fatalf("unexpected tool call id: %q", plan.ToolCallID)
 	}
-	// Verify coder received the refined tasks
-	if len(coder.receivedTasks) != 1 || coder.receivedTasks[0].Status != "refined" {
-		t.Fatalf("coder did not receive refined tasks: %+v", coder.receivedTasks)
+	// Verify executor received the refined tasks
+	if len(executor.receivedTasks) != 1 || executor.receivedTasks[0].Status != "refined" {
+		t.Fatalf("executor did not receive refined tasks: %+v", executor.receivedTasks)
 	}
 
 	// Step 7: Accept
@@ -278,7 +278,7 @@ func TestNilCriticAndReplanner(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	engine := New(e2ePlanner{}, &e2eCoder{})
+	engine := New(e2ePlanner{}, &e2eExecutor{})
 	// No critic or replanner set
 
 	intent := model.IntentSpec{ID: "i1", SessionID: "s1", Goal: "test", CreatedAt: time.Now()}

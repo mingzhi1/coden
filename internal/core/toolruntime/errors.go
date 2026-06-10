@@ -7,7 +7,7 @@ import (
 
 // ErrorClass categorises a tool execution failure so that the LLM can
 // distinguish environment-level problems (not worth retrying by changing code)
-// from code-level problems (actionable by the coder).
+// from code-level problems (actionable by the executor).
 type ErrorClass string
 
 const (

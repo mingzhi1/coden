@@ -387,8 +387,8 @@ func TestModelTracksTodoAndChangedCodePanels(t *testing.T) {
 
 	next, _ = m.Update(EventMsg{
 		Event: testEvent(4, model.EventWorkerStarted, model.WorkerStartedPayload{
-			WorkerID:   "worker-coder-1",
-			WorkerRole: "coder",
+			WorkerID:   "worker-executor-1",
+			WorkerRole: "executor",
 			Step:       "code",
 		}),
 	})
@@ -396,8 +396,8 @@ func TestModelTracksTodoAndChangedCodePanels(t *testing.T) {
 
 	next, _ = m.Update(EventMsg{
 		Event: testEvent(5, model.EventWorkerFinished, model.WorkerFinishedPayload{
-			WorkerID:   "worker-coder-1",
-			WorkerRole: "coder",
+			WorkerID:   "worker-executor-1",
+			WorkerRole: "executor",
 			Step:       "code",
 			ToolCallID: "tool-wf-1-write-file",
 			DurationMS: 9,
@@ -429,7 +429,7 @@ func TestModelTracksTodoAndChangedCodePanels(t *testing.T) {
 
 	for _, want := range []string{
 		"✓ planner / plan  7ms",
-		"✓ coder / code  tool 9ms",
+		"✓ executor / code  tool 9ms",
 		"✓ capture the user goal as an artifact",
 		"› validate that an artifact exists",
 		"written x1",
@@ -449,7 +449,7 @@ func TestCheckpointMarksRunningWorkersDone(t *testing.T) {
 	m := NewModel("demo-session", "")
 	m.workers = []workerItem{
 		{ID: "worker-1", Role: "planner", Step: "plan", Status: "running"},
-		{ID: "worker-2", Role: "coder", Step: "code", Status: "done"},
+		{ID: "worker-2", Role: "executor", Step: "code", Status: "done"},
 	}
 	m.spinnerActive = true
 

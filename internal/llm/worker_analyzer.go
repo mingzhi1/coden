@@ -20,7 +20,7 @@ import (
 // findings as prose. It NEVER mutates the repository: any mutation tool call the
 // model emits is refused and reported back as "not executed".
 //
-// It is deliberately separate from LLMCoder: the Coder is pure-write, the
+// It is deliberately separate from LLMExecutor: the Executor is pure-write, the
 // Analyzer is pure-read. They share the low-level helpers (tool-call parsing,
 // parallel reads, output compression) but not the prompt, role, or tier.
 type LLMAnalyzer struct {
@@ -36,7 +36,7 @@ func NewLLMAnalyzer(chatter Chatter, executor toolruntime.Executor) *LLMAnalyzer
 
 // Analyze is read-only and low-risk, so it gets a deliberately generous loop:
 // whole-project questions ("analyze this project") need many reads to build a
-// real picture. These are intentionally larger than the Coder's budgets.
+// real picture. These are intentionally larger than the Executor's budgets.
 const maxAnalyzerRounds = 20
 
 // Analyze investigates the code read-only and returns the analysis prose.
@@ -90,7 +90,9 @@ func (a *LLMAnalyzer) investigate(ctx context.Context, messages []Message) (stri
 		availableTokens   = 120000
 		toolHistoryBudget = availableTokens * 40 / 100
 	)
-	readBudgetChars := 12000
+	// Whole files per read — same liberation as the executor loop; see
+	// maxReadResultChars in worker_executor.go for the rationale and guard.
+	readBudgetChars := maxReadResultChars
 
 	var lastProse string
 	degenerateCount := 0

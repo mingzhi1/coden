@@ -10,7 +10,7 @@ import (
 // Analyzer performs read-only code investigation for analyze intents (code
 // review, architecture understanding, diagnosis). It reads code but NEVER
 // modifies it, and returns its findings as user-facing prose. It is the
-// analyze-path counterpart of the Coder: where the Coder writes, the Analyzer
+// analyze-path counterpart of the Executor: where the Executor writes, the Analyzer
 // only reads and reasons.
 type Analyzer interface {
 	Analyze(ctx context.Context, intent model.IntentSpec) (string, error)

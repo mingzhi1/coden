@@ -26,7 +26,7 @@ func TestE2E_LLMServerClientRoundTrip(t *testing.T) {
 	}
 
 	// Send a Chat through the full RPC pipeline
-	reply, err := client.Chat(ctx, "coder", []llm.Message{
+	reply, err := client.Chat(ctx, "executor", []llm.Message{
 		{Role: "system", Content: "You are helpful."},
 		{Role: "user", Content: "Say hello"},
 	})
@@ -55,7 +55,7 @@ func TestE2E_LLMServerClientContextCancel(t *testing.T) {
 	cancelCtx, cancelFn := context.WithCancel(ctx)
 	cancelFn() // cancel right away
 
-	_, err := client.Chat(cancelCtx, "coder", []llm.Message{
+	_, err := client.Chat(cancelCtx, "executor", []llm.Message{
 		{Role: "user", Content: "test"},
 	})
 	if err == nil {
@@ -76,7 +76,7 @@ func TestE2E_LLMServerClientMultipleCalls(t *testing.T) {
 	defer client.Close()
 
 	for i := 0; i < 5; i++ {
-		reply, err := client.Chat(ctx, "coder", []llm.Message{
+		reply, err := client.Chat(ctx, "executor", []llm.Message{
 			{Role: "user", Content: "test"},
 		})
 		if err != nil {

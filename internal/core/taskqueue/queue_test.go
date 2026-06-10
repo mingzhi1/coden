@@ -59,7 +59,7 @@ func TestNext_SkipsRemovedAndSkipped(t *testing.T) {
 
 func TestAppend(t *testing.T) {
 	q := New(makeTasks(2))
-	q.Append(model.Task{ID: "task-3", Title: "Appended"}, "coder")
+	q.Append(model.Task{ID: "task-3", Title: "Appended"}, "executor")
 
 	if q.Len() != 3 {
 		t.Fatalf("Len() = %d, want 3", q.Len())
@@ -80,8 +80,8 @@ func TestAppend(t *testing.T) {
 
 	// Verify history
 	h := q.History()
-	if len(h) != 1 || h[0].Kind != OpAppend || h[0].Source != "coder" {
-		t.Errorf("history = %v, want append by coder", h)
+	if len(h) != 1 || h[0].Kind != OpAppend || h[0].Source != "executor" {
+		t.Errorf("history = %v, want append by executor", h)
 	}
 }
 

@@ -115,8 +115,8 @@ func (k *Kernel) injectSecretaryContext(ctx context.Context, sessionID string, t
 	wfCtx := model.WorkflowContextFrom(ctx)
 	blocks := k.secretary.AssembleContext(sessionID, target, wfCtx.DirtyPaths)
 	wfCtx.SecretaryContext = secretary.FormatContextBlocks(target, blocks)
-	// Inject MCP tool descriptions and inventory prompts for Coder only.
-	if target == secretary.TargetCoder {
+	// Inject MCP tool descriptions and inventory prompts for Executor only.
+	if target == secretary.TargetExecutor {
 		if k.mcpToolPrompt != "" {
 			wfCtx.MCPToolDescriptions = k.mcpToolPrompt
 		}
@@ -235,7 +235,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		"mode", plan.Mode,
 		"critic", plan.Has(workflow.RoleCritic),
 		"replan", plan.Has(workflow.RoleReplanner),
-		"coder", plan.Has(workflow.RoleCoder),
+		"executor", plan.Has(workflow.RoleExecutor),
 		"acceptor", plan.Has(workflow.RoleAcceptor),
 		"objectives", len(plan.Objectives))
 	// Hand each agent the workflow-assigned purpose (sharpened, bounded brief).
@@ -261,7 +261,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		return
 	case workflow.WorkflowModeAnswer:
 		// Direct answer (greeting / question / chat): Intent → Responder.
-		wfCtx.CoderMode = plan.CoderMode
+		wfCtx.ExecutorMode = plan.ExecutorMode
 		ctx = model.WithWorkflowContext(ctx, wfCtx)
 		k.emitTasksUpdated(sessionID, workflowID, []model.Task{{
 			ID:     "answer",
@@ -313,7 +313,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	}
 
 	// T3-03: Start full 3-layer Discovery prefetch — runs in parallel with Plan.
-	// The Planner already has macro grep context; this enriches RePlan/Coder.
+	// The Planner already has macro grep context; this enriches RePlan/Executor.
 	type discoveryPrefetch struct {
 		discovery model.DiscoveryContext
 		err       error
@@ -492,7 +492,7 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	ctx = model.WithWorkflowContext(ctx, wfCtx)
 
 	// M10-04: RePlan step — refine high-level tasks into concrete steps.
-	// Discovery = WHERE, RePlan = HOW, then Coder = DO (low-level worker).
+	// Discovery = WHERE, RePlan = HOW, then Executor = DO (low-level worker).
 	// Gated on policy.RePlan (single source of truth) AND Replanner availability.
 	// RP-01: when enabled, RePlan runs even with empty snippets — greenfield
 	// projects have no existing code but still benefit from step refinement
@@ -531,9 +531,9 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		}
 	}
 
-	// plan_only (no Coder role): stop after Plan + Critic + RePlan. Present the
+	// plan_only (no Executor role): stop after Plan + Critic + RePlan. Present the
 	// reviewed plan via the Responder and commit — do NOT execute any code.
-	if !plan.Has(workflow.RoleCoder) {
+	if !plan.Has(workflow.RoleExecutor) {
 		k.finishPlanOnly(ctx, sessionID, workflowID, intentSpec, tasks)
 		return
 	}

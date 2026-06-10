@@ -1,4 +1,4 @@
-package code
+package executor
 
 import (
 	"context"
@@ -17,16 +17,16 @@ type buildInput struct {
 	Tasks  []model.Task     `json:"tasks"`
 }
 
-// Server exposes the coder role over JSON-RPC.
+// Server exposes the executor role over JSON-RPC.
 type Server struct {
-	coder workflow.Coder
+	executor workflow.Executor
 }
 
-func NewServer(coder workflow.Coder) *Server {
-	if coder == nil {
-		coder = workflow.NewLocalCoder()
+func NewServer(executor workflow.Executor) *Server {
+	if executor == nil {
+		executor = workflow.NewLocalExecutor()
 	}
-	return &Server{coder: coder}
+	return &Server{executor: executor}
 }
 
 func (s *Server) ServeConn(ctx context.Context, rwc io.ReadWriteCloser) {
@@ -75,8 +75,8 @@ func (s *Server) dispatch(ctx context.Context, req protocol.Request) protocol.Re
 		return protocol.NewResult(req.ID, protocol.PingResult{Status: "pong"})
 	case protocol.MethodWorkerDescribe:
 		return protocol.NewResult(req.ID, protocol.WorkerDescribeResult{
-			Name:           "coden-agent-code",
-			Role:           string(workflow.RoleCoder),
+			Name:           "coden-agent-executor",
+			Role:           string(workflow.RoleExecutor),
 			Version:        "mvp",
 			SupportsCancel: false,
 			MaxConcurrency: 1,
@@ -99,7 +99,7 @@ func (s *Server) handleExecute(ctx context.Context, raw json.RawMessage) (protoc
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return protocol.WorkerExecuteResult{}, protocol.InvalidParamsError(fmt.Sprintf("invalid params: %v", err))
 	}
-	if params.Role != "" && params.Role != string(workflow.RoleCoder) {
+	if params.Role != "" && params.Role != string(workflow.RoleExecutor) {
 		return protocol.WorkerExecuteResult{}, protocol.InvalidParamsError(fmt.Sprintf("unsupported role: %s", params.Role))
 	}
 
@@ -111,7 +111,7 @@ func (s *Server) handleExecute(ctx context.Context, raw json.RawMessage) (protoc
 		return protocol.WorkerExecuteResult{}, protocol.InvalidParamsError(fmt.Sprintf("invalid build input: %v", err))
 	}
 
-	plan, err := s.coder.Build(ctx, params.WorkflowID, input.Intent, input.Tasks)
+	plan, err := s.executor.Build(ctx, params.WorkflowID, input.Intent, input.Tasks)
 	if err != nil {
 		return protocol.WorkerExecuteResult{}, err
 	}
@@ -135,12 +135,12 @@ func (s *Server) handleExecute(ctx context.Context, raw json.RawMessage) (protoc
 	return protocol.WorkerExecuteResult{
 		Status: "ok",
 		Messages: []protocol.WorkerMessage{
-			{Kind: "info", Role: string(workflow.RoleCoder), Content: "coder produced tool call"},
+			{Kind: "info", Role: string(workflow.RoleExecutor), Content: "executor produced tool call"},
 		},
 		ToolCalls: toolCalls,
 		Metadata: &protocol.WorkerExecutionMeta{
-			Worker: "coden-agent-code",
-			Role:   string(workflow.RoleCoder),
+			Worker: "coden-agent-executor",
+			Role:   string(workflow.RoleExecutor),
 		},
 	}, nil
 }

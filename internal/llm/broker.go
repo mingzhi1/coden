@@ -16,7 +16,7 @@ const (
 	RoleInputter  = "inputter"
 	RolePlanner   = "planner"
 	RoleCritic    = "critic"
-	RoleCoder     = "coder"
+	RoleExecutor     = "executor"
 	RoleAcceptor  = "acceptor"
 	RoleReplanner = "replanner"
 	RoleResponder  = "responder"  // final user-facing response; Light tier (not in strongRoles)
@@ -57,7 +57,7 @@ type UsageStats struct {
 //  1. Role-specific pool configured via SetRolePool (highest priority, multi-provider)
 //  2. Role-specific client configured via SetRole (single-provider override)
 //  3. pool.Chat()      for strong roles (Planner, Critic, Acceptor, Replanner)
-//  4. pool.ChatLight() for light  roles (Inputter, Coder)
+//  4. pool.ChatLight() for light  roles (Inputter, Executor)
 type Broker struct {
 	pool          *Pool
 	mu            sync.Mutex

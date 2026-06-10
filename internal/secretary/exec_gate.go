@@ -35,8 +35,8 @@ func (s *Secretary) AuthorizeToolCall(sessionID, toolKind string) error {
 // MVP: returns nil (no MCP tools registered yet).
 // Phase 2: will return filtered MCP tool definitions.
 func (s *Secretary) VisibleTools(target Target) []any {
-	// Only Coder should see MCP tools.
-	if target != TargetCoder {
+	// Only Executor should see MCP tools.
+	if target != TargetExecutor {
 		return nil
 	}
 	// Phase 2: return s.mcp.Tools() filtered by policy

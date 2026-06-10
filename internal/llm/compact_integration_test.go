@@ -45,7 +45,7 @@ func TestCompressionChain_10Rounds_TokensBounded(t *testing.T) {
 		{Role: "user", Content: "Refactor the calculator module to use interfaces instead of concrete types."},
 	}
 
-	// Simulate the 4-layer compression chain as wired in ProductionCoderDeps.
+	// Simulate the 4-layer compression chain as wired in ProductionExecutorDeps.
 	compress := func(messages []Message, round int) []Message {
 		messages = SnipHistory(messages, snipMaxMessages)
 		messages = MicroCompact(messages, round)

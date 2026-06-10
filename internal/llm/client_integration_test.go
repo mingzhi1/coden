@@ -166,7 +166,7 @@ func TestBrokerWithNewProviders(t *testing.T) {
 
 	broker := llm.NewBroker(pool)
 
-	broker.SetRole(llm.RoleCoder, llm.Config{
+	broker.SetRole(llm.RoleExecutor, llm.Config{
 		Provider: "minimax",
 		APIKey:   miniMaxKey,
 		BaseURL:  miniMaxBaseURL,
@@ -182,13 +182,13 @@ func TestBrokerWithNewProviders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	reply, err := broker.Chat(ctx, llm.RoleCoder, []llm.Message{
+	reply, err := broker.Chat(ctx, llm.RoleExecutor, []llm.Message{
 		{Role: "user", Content: "Write a single line of Go that prints hello world."},
 	})
 	if err != nil {
-		t.Fatalf("coder chat failed: %v", err)
+		t.Fatalf("executor chat failed: %v", err)
 	}
-	t.Logf("coder reply: %s", reply)
+	t.Logf("executor reply: %s", reply)
 
 	reply, err = broker.Chat(ctx, llm.RolePlanner, []llm.Message{
 		{Role: "user", Content: "Plan a simple todo app in 3 steps."},

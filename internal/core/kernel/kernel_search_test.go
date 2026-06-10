@@ -43,7 +43,7 @@ func (p *searchCapturingPlanner) captured() []model.WorkflowContext {
 
 // searchExecutor responds to search requests with canned grep output.
 type searchExecutor struct {
-	testExecutor // embeds the pass-through executor
+	testToolExecutor // embeds the pass-through executor
 	mu           sync.Mutex
 	kindsSeen    []string
 }
@@ -64,7 +64,7 @@ func (e *searchExecutor) Execute(ctx context.Context, req toolruntime.Request) (
 			Summary: "read ok",
 		}, nil
 	}
-	return e.testExecutor.Execute(ctx, req)
+	return e.testToolExecutor.Execute(ctx, req)
 }
 
 func (e *searchExecutor) seenKinds() []string {
@@ -130,7 +130,7 @@ func TestSA08_PlannerReceivesMacroDiscoveryContext(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		planner,
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -168,7 +168,7 @@ func TestSA08_MacroContextContainsGrepHits(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		planner,
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -223,7 +223,7 @@ func TestSA08_MacroContextInjectedBeforePlanStarts(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		planner,
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -269,7 +269,7 @@ func TestSA09_SearchStartedEventEmitted(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -297,7 +297,7 @@ func TestSA09_SearchFinishedEventEmitted(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -325,7 +325,7 @@ func TestSA09_SearchStartedPayloadHasWorkflowID(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -370,7 +370,7 @@ func TestSA09_SearchFinishedPayloadHasSnippetCount(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -420,7 +420,7 @@ func TestSA09_SearchEventsBeforePlanEvent(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -474,7 +474,7 @@ func TestLocalSearcher_SearchReturnsDiscoveryContext(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -519,7 +519,7 @@ func TestLocalSearcher_SearchUsesIntentGoalAsQuery(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -553,7 +553,7 @@ func TestLocalSearcher_SearchFallsBackToTaskTitleWhenGoalEmpty(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -584,7 +584,7 @@ func TestLocalSearcher_RefineExpandsEvidence(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -642,7 +642,7 @@ func TestLocalSearcher_ConfidenceScalesWithSnippetCount(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -685,7 +685,7 @@ func TestSA07_StaleEvidenceMarkedForDirtyPaths(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)
@@ -849,7 +849,7 @@ func TestFullWorkflow_SearchEventsBookendWorkflow(t *testing.T) {
 		t.TempDir(),
 		testInputter{},
 		testPlanner{},
-		testCoder{},
+		testExecutor{},
 		exec,
 		testAcceptor{},
 	)

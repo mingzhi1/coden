@@ -38,10 +38,10 @@ func (i testInputter) TakeMessages() []model.WorkerMessage {
 	}
 }
 
-// testCoder returns a simple write_file tool call.
-type testCoder struct{}
+// testExecutor returns a simple write_file tool call.
+type testExecutor struct{}
 
-func (c testCoder) Build(_ context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
+func (c testExecutor) Build(_ context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
 	return workflow.CodePlan{
 		ToolCalls: []workflow.ToolCall{{
 			ToolCallID: "tool-call-" + workflowID,
@@ -60,16 +60,16 @@ func (c testCoder) Build(_ context.Context, workflowID string, intent model.Inte
 	}, nil
 }
 
-func (c testCoder) TakeMessages() []model.WorkerMessage {
+func (c testExecutor) TakeMessages() []model.WorkerMessage {
 	return []model.WorkerMessage{
-		{Kind: "info", Role: "coder", Content: "coder produced tool call"},
+		{Kind: "info", Role: "executor", Content: "executor produced tool call"},
 	}
 }
 
-// testExecutor simulates successful tool execution.
-type testExecutor struct{}
+// testToolExecutor simulates successful tool execution.
+type testToolExecutor struct{}
 
-func (e testExecutor) Execute(_ context.Context, req toolruntime.Request) (toolruntime.Result, error) {
+func (e testToolExecutor) Execute(_ context.Context, req toolruntime.Request) (toolruntime.Result, error) {
 	return toolruntime.Result{
 		ArtifactPath: req.Path,
 		Summary:      "executed " + req.Kind,

@@ -186,7 +186,7 @@ func contextSummary(ctx context.Context) string {
 		sb.WriteString("\n")
 		sb.WriteString(wc.SecretaryContext)
 	}
-	// MCP tool descriptions: inject pre-formatted MCP tool definitions for Coder.
+	// MCP tool descriptions: inject pre-formatted MCP tool definitions for Executor.
 	if wc.MCPToolDescriptions != "" {
 		sb.WriteString("\n")
 		sb.WriteString(wc.MCPToolDescriptions)
@@ -458,14 +458,14 @@ func normalizePlanToolCalls(workflowID string, calls []codePlanToolCall) []workf
 	out := make([]workflow.ToolCall, 0, len(calls))
 	for i, call := range calls {
 		kind := strings.TrimSpace(call.Kind)
-		switch kind {
-		case "write_file", "read_file", "search", "list_dir", "edit_file", "run_shell":
-		case "grep_context": // R-02
-		case "lsp_symbols", "lsp_definition", "lsp_references": // R-06
-		case "rag_search":    // R-10
-		case "tool_search":   // M12-02: meta-tool for discovering deferred tools
-		case "web_fetch":     // web content fetcher
-		default:
+		// Catalog-driven validation: every built-in kind plus mcp__* passes;
+		// hallucinated kinds are dropped. The catalog (toolruntime/catalog.go)
+		// is the single source of truth — a kind listed there is callable here
+		// with no parallel whitelist to keep in sync. This previously was a
+		// hand-maintained switch that silently ate read_artifact/list_artifacts
+		// (advertised in the prompt), lsp_didopen and every MCP tool (both
+		// discoverable via tool_search).
+		if !toolruntime.KnownKind(kind) {
 			continue
 		}
 
@@ -501,7 +501,11 @@ func normalizePlanToolCalls(workflowID string, calls []codePlanToolCall) []workf
 			continue
 		}
 		// R-06: LSP tools require path; definition/references also need line.
-		if (kind == "lsp_symbols" || kind == "lsp_definition" || kind == "lsp_references") && req.Path == "" {
+		if (kind == "lsp_symbols" || kind == "lsp_definition" || kind == "lsp_references" || kind == "lsp_didopen") && req.Path == "" {
+			continue
+		}
+		// read_artifact addresses a saved result by artifact ID (in path).
+		if kind == "read_artifact" && req.Path == "" {
 			continue
 		}
 		if (kind == "lsp_definition" || kind == "lsp_references") && req.Line == 0 {

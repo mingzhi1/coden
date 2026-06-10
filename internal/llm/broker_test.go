@@ -59,7 +59,7 @@ func TestBroker_StrongRoles(t *testing.T) {
 }
 
 func TestBroker_LightRoles(t *testing.T) {
-	light := []string{RoleInputter, RoleCoder}
+	light := []string{RoleInputter, RoleExecutor}
 	for _, role := range light {
 		if strongRoles[role] {
 			t.Errorf("expected %q to be a light role, got strong", role)
@@ -120,12 +120,12 @@ func TestBroker_UsageCumulative(t *testing.T) {
 	broker := NewBroker(pool)
 	msgs := []Message{{Role: "user", Content: "hello"}}
 
-	broker.recordUsage(RoleCoder, msgs, "r1")
-	broker.recordUsage(RoleCoder, msgs, "r2")
+	broker.recordUsage(RoleExecutor, msgs, "r1")
+	broker.recordUsage(RoleExecutor, msgs, "r2")
 
 	usage := broker.Usage()
-	if usage[RoleCoder].Calls != 2 {
-		t.Errorf("expected 2 calls, got %d", usage[RoleCoder].Calls)
+	if usage[RoleExecutor].Calls != 2 {
+		t.Errorf("expected 2 calls, got %d", usage[RoleExecutor].Calls)
 	}
 }
 

@@ -11,11 +11,11 @@ import (
 	"github.com/mingzhi1/coden/internal/core/workflow"
 )
 
-// preExecutedCoder returns a write_file call that is already marked Executed,
-// simulating the agentic coder having already run it in its loop.
-type preExecutedCoder struct{}
+// preExecutedExecutor returns a write_file call that is already marked Executed,
+// simulating the agentic executor having already run it in its loop.
+type preExecutedExecutor struct{}
 
-func (c preExecutedCoder) Build(_ context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
+func (c preExecutedExecutor) Build(_ context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
 	return workflow.CodePlan{
 		ToolCalls: []workflow.ToolCall{{
 			ToolCallID: "tool-call-" + workflowID,
@@ -33,9 +33,9 @@ func (c preExecutedCoder) Build(_ context.Context, workflowID string, intent mod
 	}, nil
 }
 
-func (c preExecutedCoder) TakeMessages() []model.WorkerMessage {
+func (c preExecutedExecutor) TakeMessages() []model.WorkerMessage {
 	return []model.WorkerMessage{
-		{Kind: "info", Role: "coder", Content: "coder produced pre-executed call"},
+		{Kind: "info", Role: "executor", Content: "executor produced pre-executed call"},
 	}
 }
 
@@ -64,7 +64,7 @@ func TestPreExecutedMutationsNotReExecuted(t *testing.T) {
 	t.Parallel()
 
 	executor := &countingExecutor{}
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, preExecutedCoder{}, executor, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, preExecutedExecutor{}, executor, testAcceptor{})
 	defer k.Close()
 	events, cancel := k.Subscribe("session-1")
 	defer cancel()
@@ -103,7 +103,7 @@ done:
 func TestTurnSummaryGeneratedAfterWorkflow(t *testing.T) {
 	t.Parallel()
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	defer k.Close()
 	events, cancel := k.Subscribe("session-1")
 	defer cancel()

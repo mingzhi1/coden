@@ -24,9 +24,9 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 	// Collect LLM output for insight extraction below.
 	var llmOut strings.Builder
 
-	// Use the Coder worker in "answer mode" — it will detect the question
+	// Use the Executor worker in "answer mode" — it will detect the question
 	// intent and produce a text answer instead of tool calls.
-	coderInput := workflow.WorkerInput{
+	executorInput := workflow.WorkerInput{
 		SessionID:  sessionID,
 		WorkflowID: workflowID,
 		TaskID:     "answer",
@@ -38,7 +38,7 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 		}},
 	}
 
-	codeResult, err := k.executeWorker(ctx, sessionID, workflowID, "code", workflow.RoleCoder, k.workflow.CoderWorker(), coderInput)
+	codeResult, err := k.executeWorker(ctx, sessionID, workflowID, "code", workflow.RoleExecutor, k.workflow.ExecutorWorker(), executorInput)
 	if err != nil {
 		k.handleWorkflowError(sessionID, workflowID, err)
 		return
@@ -56,12 +56,12 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 		Status:     "done",
 	})
 
-	// For questions, the coder output may contain tool calls that write an
+	// For questions, the executor output may contain tool calls that write an
 	// answer artifact, or it may be empty. Either way we auto-pass.
 	var artifact model.Artifact
 	if codeResult.CodePlan != nil {
 		// A question/chat answer must never modify the repo. Drop mutation tool
-		// calls (write_file/edit_file/run_shell); the answer is the coder's text
+		// calls (write_file/edit_file/run_shell); the answer is the executor's text
 		// reply. This guards against the model trying to write its answer to a file.
 		var safe []workflow.ToolCall
 		for _, call := range codeResult.CodePlan.Calls() {
@@ -74,7 +74,7 @@ func (k *Kernel) runQuestionWorkflow(ctx context.Context, sessionID, workflowID 
 			}
 		}
 		if len(safe) > 0 {
-			workerID := workerIDFor(roleOrDefault(codeResult.Metadata, workflow.RoleCoder))
+			workerID := workerIDFor(roleOrDefault(codeResult.Metadata, workflow.RoleExecutor))
 			artifact, _, err = k.executeToolPlan(ctx, sessionID, workflowID, workerID, nil, safe)
 			if err != nil {
 				k.handleWorkflowError(sessionID, workflowID, err)

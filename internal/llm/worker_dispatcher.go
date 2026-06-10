@@ -34,7 +34,17 @@ func (d *LLMDispatcher) Dispatch(ctx context.Context, intent model.IntentSpec) (
 		return workflow.WorkflowPlan{}, fmt.Errorf("dispatcher: no chatter configured")
 	}
 
-	user := fmt.Sprintf("Goal: %s\nKind hint: %s", strings.TrimSpace(intent.Goal), intent.Kind)
+	// Give the dispatcher the cached project profile (languages, toolchain,
+	// overview) so its routing and objectives are project-aware: it can pick the
+	// real build/test command for an acceptor brief, and tailor each objective to
+	// what the project actually is instead of guessing from the bare goal.
+	var ub strings.Builder
+	fmt.Fprintf(&ub, "Goal: %s\nKind hint: %s", strings.TrimSpace(intent.Goal), intent.Kind)
+	if pp := strings.TrimSpace(model.WorkflowContextFrom(ctx).ProjectProfile); pp != "" {
+		ub.WriteString("\n\n")
+		ub.WriteString(pp)
+	}
+	user := ub.String()
 	slog.Info("[dispatcher] start", "kind_hint", intent.Kind, "goal", truncForLog(intent.Goal, 80))
 	t0 := time.Now()
 	// Strong tier: the dispatcher designs the flow AND writes each agent's
@@ -63,7 +73,7 @@ func (d *LLMDispatcher) Dispatch(ctx context.Context, intent model.IntentSpec) (
 		"mode", plan.Mode,
 		"critic", plan.Has(workflow.RoleCritic),
 		"replan", plan.Has(workflow.RoleReplanner),
-		"coder", plan.Has(workflow.RoleCoder),
+		"executor", plan.Has(workflow.RoleExecutor),
 		"acceptor", plan.Has(workflow.RoleAcceptor),
 		"dur_ms", dur.Milliseconds())
 	return plan, nil
@@ -81,9 +91,9 @@ func parseDispatcherPlan(reply string) (workflow.WorkflowPlan, bool) {
 		Mode       string            `json:"mode"`
 		Critic     *bool             `json:"critic"`
 		Replan     *bool             `json:"replan"`
-		Coder      *bool             `json:"coder"`
+		Executor      *bool             `json:"executor"`
 		Accept     *bool             `json:"accept"`
-		CoderMode  string            `json:"coder_mode"`
+		ExecutorMode  string            `json:"executor_mode"`
 		Objectives map[string]string `json:"objectives"`
 	}
 	if err := json.Unmarshal([]byte(extractJSON(reply)), &raw); err != nil {
@@ -96,9 +106,10 @@ func parseDispatcherPlan(reply string) (workflow.WorkflowPlan, bool) {
 	case string(workflow.WorkflowModeAnswer):
 		return workflow.WorkflowPlan{Mode: workflow.WorkflowModeAnswer}, true
 	case string(workflow.WorkflowModeAnalyze):
-		return workflow.WorkflowPlan{Mode: workflow.WorkflowModeAnalyze, Objectives: objectives}, true
+		plan := workflow.WorkflowPlan{Mode: workflow.WorkflowModeAnalyze, Objectives: objectives}
+		return pruneObjectives(plan), true
 	case string(workflow.WorkflowModeExecute):
-		coder := boolOr(raw.Coder, true)
+		executor := boolOr(raw.Executor, true)
 		roles := map[workflow.Role]bool{workflow.RolePlanner: true}
 		if boolOr(raw.Critic, true) {
 			roles[workflow.RoleCritic] = true
@@ -106,21 +117,39 @@ func parseDispatcherPlan(reply string) (workflow.WorkflowPlan, bool) {
 		if boolOr(raw.Replan, true) {
 			roles[workflow.RoleReplanner] = true
 		}
-		if coder {
-			roles[workflow.RoleCoder] = true
+		if executor {
+			roles[workflow.RoleExecutor] = true
 			// Accept only makes sense when there is produced code to verify.
 			if boolOr(raw.Accept, true) {
 				roles[workflow.RoleAcceptor] = true
 			}
 		}
-		coderMode := model.CoderModeReadWrite
-		if strings.EqualFold(strings.TrimSpace(raw.CoderMode), "readonly") {
-			coderMode = model.CoderModeReadOnly
+		executorMode := model.ExecutorModeReadWrite
+		if strings.EqualFold(strings.TrimSpace(raw.ExecutorMode), "readonly") {
+			executorMode = model.ExecutorModeReadOnly
 		}
-		return workflow.WorkflowPlan{Mode: workflow.WorkflowModeExecute, Roles: roles, CoderMode: coderMode, Objectives: objectives}, true
+		plan := workflow.WorkflowPlan{Mode: workflow.WorkflowModeExecute, Roles: roles, ExecutorMode: executorMode, Objectives: objectives}
+		return pruneObjectives(plan), true
 	default:
 		return workflow.WorkflowPlan{}, false
 	}
+}
+
+// pruneObjectives drops any objective the dispatcher wrote for a role that won't
+// run under this plan — e.g. a "executor" brief when executor=false, or an "analyzer"
+// brief in execute mode. The model occasionally over-specifies; without this a
+// stray brief would sit in the plan and (if a future code path read it) leak
+// into an agent outside the flow. Mutates and returns the same plan for chaining.
+func pruneObjectives(plan workflow.WorkflowPlan) workflow.WorkflowPlan {
+	for role := range plan.Objectives {
+		if !plan.Participates(role) {
+			delete(plan.Objectives, role)
+		}
+	}
+	if len(plan.Objectives) == 0 {
+		plan.Objectives = nil
+	}
+	return plan
 }
 
 // sanitizeObjectives keeps only known roles with non-empty briefs and caps each
@@ -133,7 +162,7 @@ func sanitizeObjectives(raw map[string]string) map[workflow.Role]string {
 	known := map[string]workflow.Role{
 		string(workflow.RoleAnalyzer):  workflow.RoleAnalyzer,
 		string(workflow.RolePlanner):   workflow.RolePlanner,
-		string(workflow.RoleCoder):     workflow.RoleCoder,
+		string(workflow.RoleExecutor):     workflow.RoleExecutor,
 		string(workflow.RoleCritic):    workflow.RoleCritic,
 		string(workflow.RoleReplanner): workflow.RoleReplanner,
 		string(workflow.RoleAcceptor):  workflow.RoleAcceptor,

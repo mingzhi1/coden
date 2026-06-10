@@ -13,7 +13,7 @@ type Engine struct {
 	critic     Critic
 	searcher   Searcher
 	replanner  Replanner
-	coder      Coder
+	executor      Executor
 	acceptor   Acceptor
 	responder  Responder
 	analyzer   Analyzer
@@ -21,19 +21,19 @@ type Engine struct {
 	profiler   Profiler
 }
 
-func New(planner Planner, coder Coder, acceptor ...Acceptor) *Engine {
-	return NewWithInputter(nil, planner, coder, acceptor...)
+func New(planner Planner, executor Executor, acceptor ...Acceptor) *Engine {
+	return NewWithInputter(nil, planner, executor, acceptor...)
 }
 
-func NewWithInputter(inputter Inputter, planner Planner, coder Coder, acceptor ...Acceptor) *Engine {
+func NewWithInputter(inputter Inputter, planner Planner, executor Executor, acceptor ...Acceptor) *Engine {
 	if inputter == nil {
 		inputter = NewLocalInputter()
 	}
 	if planner == nil {
 		planner = NewLocalPlanner()
 	}
-	if coder == nil {
-		coder = NewLocalCoder()
+	if executor == nil {
+		executor = NewLocalExecutor()
 	}
 	var a Acceptor
 	if len(acceptor) > 0 {
@@ -42,7 +42,7 @@ func NewWithInputter(inputter Inputter, planner Planner, coder Coder, acceptor .
 	if a == nil {
 		a = NewLocalAcceptor()
 	}
-	return &Engine{inputter: inputter, planner: planner, coder: coder, acceptor: a}
+	return &Engine{inputter: inputter, planner: planner, executor: executor, acceptor: a}
 }
 
 func (e *Engine) SetSearcher(s Searcher) { e.searcher = s }
@@ -129,7 +129,7 @@ func (e *Engine) RePlan(ctx context.Context, intent model.IntentSpec, tasks []mo
 }
 
 func (e *Engine) Code(ctx context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (CodePlan, error) {
-	return e.coder.Build(ctx, workflowID, intent, tasks)
+	return e.executor.Build(ctx, workflowID, intent, tasks)
 }
 
 func (e *Engine) Accept(ctx context.Context, workflowID string, intent model.IntentSpec, artifact model.Artifact, tasks []model.Task) (model.CheckpointResult, error) {
@@ -175,12 +175,12 @@ func (e *Engine) ReplannerWorker() Worker {
 	return NewReplannerWorker(e.replanner)
 }
 
-func (e *Engine) Coder() Coder {
-	return e.coder
+func (e *Engine) Executor() Executor {
+	return e.executor
 }
 
-func (e *Engine) CoderWorker() Worker {
-	return NewCoderWorker(e.coder)
+func (e *Engine) ExecutorWorker() Worker {
+	return NewExecutorWorker(e.executor)
 }
 
 func (e *Engine) Acceptor() Acceptor {

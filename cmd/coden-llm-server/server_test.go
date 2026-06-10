@@ -90,7 +90,7 @@ func TestServerLLMChatNoProvider(t *testing.T) {
 	_, codec := testServerConn(t)
 
 	params := ChatParams{
-		RoleHint: "coder",
+		RoleHint: "executor",
 		Messages: []providerMsg{{Role: "user", Content: "hello"}},
 	}
 	req, _ := protocol.NewRequest(3, protocol.MethodLLMChat, params)

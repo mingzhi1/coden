@@ -19,46 +19,54 @@ import (
 	"github.com/mingzhi1/coden/internal/outputcompressor"
 )
 
-// LLMCoder uses an LLM to generate a structured tool plan.
+// LLMExecutor uses an LLM to generate a structured tool plan.
 // When an Executor is provided, it runs an agentic loop: read-only tool
 // calls (read_file, search, list_dir) are executed locally and their
 // results fed back into the LLM conversation for up to maxRounds.
 // Mutation calls (write_file, edit_file, run_shell) are collected and
 // returned in the final CodePlan for the kernel to execute.
-type LLMCoder struct {
+type LLMExecutor struct {
 	chatter          Chatter
 	executor         toolruntime.Executor // optional; enables agentic read loop
-	deps             *CoderDeps           // optional; nil = use production defaults
+	deps             *ExecutorDeps           // optional; nil = use production defaults
 	outputCompressor *outputcompressor.Compressor
 	msgBuffer
 }
 
-const maxCoderRounds = 5
+const maxExecutorRounds = 5
+
+// maxReadResultChars caps a single read-class tool result fed back into the
+// agentic history: ~16K tokens ≈ a 2000-line source file, i.e. whole files in
+// practice. The cap exists only so one pathological file cannot evict the
+// entire round history; everything under it passes through verbatim — the
+// output compressor's strategies match run_shell output only, so read_file
+// content is never rewritten, at most truncated at this bound.
+const maxReadResultChars = 64000
 
 const (
 	maxTruncationRetries  = 3
 	truncationRecoveryMsg = "Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces."
 )
 
-func NewLLMCoder(chatter Chatter) *LLMCoder {
-	return &LLMCoder{chatter: chatter, outputCompressor: outputcompressor.New()}
+func NewLLMExecutor(chatter Chatter) *LLMExecutor {
+	return &LLMExecutor{chatter: chatter, outputCompressor: outputcompressor.New()}
 }
 
-// NewAgenticCoder creates a coder with tool-use loop capability.
-func NewAgenticCoder(chatter Chatter, executor toolruntime.Executor) *LLMCoder {
-	return &LLMCoder{chatter: chatter, executor: executor, outputCompressor: outputcompressor.New()}
+// NewAgenticExecutor creates an agentic executor with tool-use loop capability.
+func NewAgenticExecutor(chatter Chatter, executor toolruntime.Executor) *LLMExecutor {
+	return &LLMExecutor{chatter: chatter, executor: executor, outputCompressor: outputcompressor.New()}
 }
 
 // SetDeps overrides the I/O dependencies used by the agentic loop.
 // This is intended for testing; production code leaves deps nil so that
-// ProductionCoderDeps is used automatically.
-func (c *LLMCoder) SetDeps(deps CoderDeps) {
+// ProductionExecutorDeps is used automatically.
+func (c *LLMExecutor) SetDeps(deps ExecutorDeps) {
 	c.deps = &deps
 }
 
 // pass — skeleton filled by replace below
 
-func (c *LLMCoder) Build(ctx context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
+func (c *LLMExecutor) Build(ctx context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
 	taskList := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		entry := fmt.Sprintf("- %s", t.Title)
@@ -74,16 +82,16 @@ func (c *LLMCoder) Build(ctx context.Context, workflowID string, intent model.In
 	}
 
 	wc := model.WorkflowContextFrom(ctx)
-	systemPrompt := prompts.Coder(c.executor != nil, wc.ToolsPrompt)
+	systemPrompt := prompts.Executor(c.executor != nil, wc.ToolsPrompt)
 	ctxInfo := contextSummary(ctx)
 	userMsg := fmt.Sprintf("Goal: %s\n\nTasks:\n%s\n\nGenerate the implementation artifact plan.",
 		intent.Goal, strings.Join(taskList, "\n"))
 	// Workflow-assigned objective: what to implement and the success condition.
-	if obj := strings.TrimSpace(wc.RoleObjectives[string(workflow.RoleCoder)]); obj != "" {
+	if obj := strings.TrimSpace(wc.RoleObjectives[string(workflow.RoleExecutor)]); obj != "" {
 		userMsg += "\n\nObjective — what to implement and when it's done:\n" + obj
 	}
 
-	// Inject critic feedback so the coder addresses flagged issues.
+	// Inject critic feedback so the executor addresses flagged issues.
 	if len(wc.CritiqueIssues) > 0 {
 		var issues strings.Builder
 		issues.WriteString("\n\n## Critic Feedback (address in implementation)\n")
@@ -114,48 +122,61 @@ func (c *LLMCoder) Build(ctx context.Context, workflowID string, intent model.In
 	if c.executor == nil {
 		return c.singleShotBuild(ctx, workflowID, intent, messages)
 	}
-	return c.agenticBuild(ctx, workflowID, intent, messages)
+	return c.agenticBuild(ctx, workflowID, intent, messages, collectVerifyCmds(tasks))
 }
 
-func (c *LLMCoder) singleShotBuild(ctx context.Context, workflowID string, intent model.IntentSpec, messages []Message) (workflow.CodePlan, error) {
-	reply, err := RecoverableChat(ctx, c.chatter, RoleCoder, messages, defaultRecoveryConfig())
+func (c *LLMExecutor) singleShotBuild(ctx context.Context, workflowID string, intent model.IntentSpec, messages []Message) (workflow.CodePlan, error) {
+	reply, err := RecoverableChat(ctx, c.chatter, RoleExecutor, messages, defaultRecoveryConfig())
 	if err != nil {
 		if recovered, ok := c.recoverTruncation(ctx, messages, err); ok {
 			reply = recovered
 		} else {
-			return workflow.CodePlan{}, fmt.Errorf("coder llm: %w", err)
+			return workflow.CodePlan{}, fmt.Errorf("executor llm: %w", err)
 		}
 	}
 
 	plan := parseCodePlanReply(workflowID, intent.ID, intent.Goal, reply)
-	slog.Info("[llm:coder] parsed code plan", "workflow_id", workflowID, "tool_calls", len(plan.Calls()))
+	slog.Info("[llm:executor] parsed code plan", "workflow_id", workflowID, "tool_calls", len(plan.Calls()))
 	plan = refineCodePlanWithContext(ctx, workflowID, plan)
-	c.push("info", "coder", fmt.Sprintf("generated %d tool call(s)", len(plan.Calls())))
+	c.push("info", "executor", fmt.Sprintf("generated %d tool call(s)", len(plan.Calls())))
 	return plan, nil
 }
 
-func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent model.IntentSpec, messages []Message) (workflow.CodePlan, error) {
+func (c *LLMExecutor) agenticBuild(ctx context.Context, workflowID string, intent model.IntentSpec, messages []Message, verifyCmds []string) (workflow.CodePlan, error) {
 	var allMutations []workflow.ToolCall
 
-	// Read-only mode (e.g. analyze): the Coder may execute read tools to gather
+	// Verify-in-loop state. Before honoring the executor's "done" signal, the
+	// task's verify command(s) are run inside the loop so the model fixes a
+	// failure here — with the real output in hand — instead of finishing, being
+	// rejected by the kernel's out-of-loop success_cmd, and having the whole
+	// task re-run from scratch. verified latches once the commands pass (or
+	// can't be run); the attempt cap bounds in-loop fix cycles before falling
+	// back to the kernel's authoritative gate.
+	verified := false
+	verifyAttempts := 0
+	const maxVerifyAttempts = 2
+
+	// Read-only mode (e.g. analyze): the Executor may execute read tools to gather
 	// context but must NEVER modify the repo. Mutation tool calls are reported
 	// back to the model as "not executed" and dropped — see the loop below.
-	readOnly := model.WorkflowContextFrom(ctx).CoderMode == model.CoderModeReadOnly
+	readOnly := model.WorkflowContextFrom(ctx).ExecutorMode == model.ExecutorModeReadOnly
 
 	// M8-07: Token budget for the agentic message history.
 	// Allocation: tool-history 40% of available tokens (after system+context).
-	// Available ≈ 30 000 tokens is a conservative cap independent of concrete model.
+	// 120K matches the analyzer loop and assumes a big-context primary provider
+	// (claude / gpt-4o class). Smaller-context providers overflow into the
+	// recovery layer (emergencyCompress) — the same trade the analyzer makes.
 	const (
-		availableTokens  = 30000 // conservative prompt budget available to the coder
-		toolHistoryRatio = 40    // % of availableTokens reserved for round history
+		availableTokens  = 120000 // prompt budget available to the executor
+		toolHistoryRatio = 40     // % of availableTokens reserved for round history
 	)
-	toolHistoryBudget := availableTokens * toolHistoryRatio / 100 // 12 000 tokens
+	toolHistoryBudget := availableTokens * toolHistoryRatio / 100 // 48 000 tokens
 
 	// Resolve dependency injection: use explicit deps if set, otherwise
 	// lazily wire up production implementations.
 	deps := c.deps
 	if deps == nil {
-		d := ProductionCoderDeps(c.chatter, c.executor, toolHistoryBudget)
+		d := ProductionExecutorDeps(c.chatter, c.executor, toolHistoryBudget)
 		deps = &d
 	}
 
@@ -169,21 +190,24 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 		}
 	}()
 
-		// T1-02: Output-side continuation tracker — nudges the model to keep
+	// T1-02: Output-side continuation tracker — nudges the model to keep
 	// working when it stops before exhausting the output token budget.
-	// Budget set to availableTokens (conservative prompt budget).
+	// 30K output tokens — deliberately independent of the prompt-side
+	// availableTokens above; raising it would make the continue-nudge fire
+	// on nearly every reply.
 	contTracker := tokenbudget.NewContinuationTracker(30000)
 	cumulativeOutputTokens := 0 // cumulative output tokens across all rounds
-	// read_file results: cap each call at 25% of tool-history budget (in chars, 4 chars/token).
-	readBudgetChars := (toolHistoryBudget * 25 / 100) * 4 // = 12000 * 0.25 * 4 = 12000 chars, but cap at 3000
-	if readBudgetChars > 3000 {
-		readBudgetChars = 3000
-	}
+	// read_file results: whole files. The executor edits code it must first see —
+	// truncated reads produce blind patches. maxReadResultChars only guards
+	// against a single pathological file evicting the whole round history;
+	// older rounds degrade through compressAgenticHistory, which keeps the
+	// last two rounds verbatim.
+	readBudgetChars := maxReadResultChars
 
 	degenerateCount := 0           // consecutive degenerate replies
 	const maxDegenerateRetries = 2 // max degenerate retries before giving up on round
 
-	for round := 0; round < maxCoderRounds; round++ {
+	for round := 0; round < maxExecutorRounds; round++ {
 		prof.Checkpoint(fmt.Sprintf("round_%d_compress_start", round+1))
 		// M12-03: 4-layer compression chain (delegated to deps.Compress).
 		messages = deps.Compress(messages, round, toolHistoryBudget)
@@ -196,12 +220,12 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 			if recovered, ok := c.recoverTruncation(ctx, messages, err); ok {
 				reply = recovered
 			} else {
-				return workflow.CodePlan{}, fmt.Errorf("coder llm round %d: %w", round+1, err)
+				return workflow.CodePlan{}, fmt.Errorf("executor llm round %d: %w", round+1, err)
 			}
 		}
 
 		calls := parsePlanToolCalls(workflowID, reply)
-		slog.Info("[llm:coder] parsed tool calls from reply", "round", round+1, "total", len(calls), "reads", len(func() []workflow.ToolCall { r, _ := splitToolCalls(calls); return r }()), "mutations", len(func() []workflow.ToolCall { _, m := splitToolCalls(calls); return m }()))
+		slog.Info("[llm:executor] parsed tool calls from reply", "round", round+1, "total", len(calls), "reads", len(func() []workflow.ToolCall { r, _ := splitToolCalls(calls); return r }()), "mutations", len(func() []workflow.ToolCall { _, m := splitToolCalls(calls); return m }()))
 		if len(calls) == 0 {
 			// Check for degenerate response (rate-limit degradation).
 			// Degenerate replies are very short and contain no tool calls — they
@@ -209,16 +233,16 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 			// Back off instead of nudging, to avoid wasting API quota.
 			if IsDegenerateReply(reply) {
 				degenerateCount++
-				slog.Warn("[llm:coder] degenerate response detected",
+				slog.Warn("[llm:executor] degenerate response detected",
 					"round", round+1, "reply_len", len(reply),
 					"degenerate_count", degenerateCount)
-				c.push("warn", "coder", fmt.Sprintf("round %d: degenerate response (%d chars), backing off (%d/%d)",
+				c.push("warn", "executor", fmt.Sprintf("round %d: degenerate response (%d chars), backing off (%d/%d)",
 					round+1, len(reply), degenerateCount, maxDegenerateRetries))
 				if degenerateCount > maxDegenerateRetries {
-					slog.Warn("[llm:coder] too many degenerate responses, aborting",
+					slog.Warn("[llm:executor] too many degenerate responses, aborting",
 						"round", round+1, "degenerate_count", degenerateCount)
 					return workflow.CodePlan{}, fmt.Errorf(
-						"coder: %d consecutive degenerate responses (<%d chars) — API may be rate-limited or degraded",
+						"executor: %d consecutive degenerate responses (<%d chars) — API may be rate-limited or degraded",
 						degenerateCount, DegenerateReplyThreshold)
 				}
 				// Exponential backoff: 2s, 4s before retry
@@ -246,15 +270,42 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 			cumulativeOutputTokens += tokenbudget.EstimateTokens(reply)
 			decision := contTracker.Check(cumulativeOutputTokens)
 			if decision.ShouldContinue && !replyDeclaresDone(reply) {
-				slog.Info("[llm:coder] token budget continuation",
+				slog.Info("[llm:executor] token budget continuation",
 					"round", round+1, "pct", decision.Pct, "tokens", decision.TurnTokens)
-				c.push("info", "coder", fmt.Sprintf("round %d: budget %d%% used, nudging to continue", round+1, decision.Pct))
+				c.push("info", "executor", fmt.Sprintf("round %d: budget %d%% used, nudging to continue", round+1, decision.Pct))
 				messages = append(messages,
 					Message{Role: "assistant", Content: reply},
 					Message{Role: "user", Content: decision.NudgeMessage},
 				)
 				round-- // continuation does not consume a round
 				continue
+			}
+
+			// ── Verify-in-loop gate ──────────────────────────────────────────
+			// Run the task's verify command(s) before honoring "done". On failure
+			// the model gets the real output and fixes it in-loop instead of
+			// finishing and being bounced by the kernel's out-of-loop gate. The
+			// kernel still re-runs the command afterward as the authoritative
+			// decision (LLM proposes, code decides); this front-loads the
+			// red/green cycle into the executor's hands.
+			if !readOnly && len(verifyCmds) > 0 && !verified && verifyAttempts < maxVerifyAttempts {
+				verifyAttempts++
+				passed, runnable, report := runVerifyCmds(ctx, deps, verifyCmds)
+				switch {
+				case !runnable:
+					verified = true // can't self-verify (e.g. shell disabled) — kernel gate covers it
+				case passed:
+					verified = true
+					c.push("info", "executor", "verify passed in-loop: "+strings.Join(verifyCmds, "; "))
+				default:
+					c.push("warn", "executor", fmt.Sprintf("verify failed, fixing in-loop (%d/%d)", verifyAttempts, maxVerifyAttempts))
+					messages = append(messages,
+						Message{Role: "assistant", Content: reply},
+						Message{Role: "user", Content: "Before finishing, the task's verify command ran and FAILED:\n\n" + report + "\n\nDiagnose and fix the cause, then reply with tool_calls. You will be re-verified."},
+					)
+					round-- // the verify run itself is not a model round
+					continue
+				}
 			}
 
 			// LLM produced no more tool calls — finalize with accumulated mutations.
@@ -270,13 +321,13 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 					Request:    first.Request,
 				}
 				plan = refineCodePlanWithContext(ctx, workflowID, plan)
-				c.push("info", "coder", fmt.Sprintf("round %d: final plan with %d mutation(s)", round+1, len(plan.Calls())))
+				c.push("info", "executor", fmt.Sprintf("round %d: final plan with %d mutation(s)", round+1, len(plan.Calls())))
 				return plan, nil
 			}
 			// No mutations accumulated — fall back to parsing reply for inline code.
 			plan := parseCodePlanReply(workflowID, intent.ID, intent.Goal, reply)
 			plan = refineCodePlanWithContext(ctx, workflowID, plan)
-			c.push("info", "coder", fmt.Sprintf("round %d: final plan with %d call(s)", round+1, len(plan.Calls())))
+			c.push("info", "executor", fmt.Sprintf("round %d: final plan with %d call(s)", round+1, len(plan.Calls())))
 			return plan, nil
 		}
 
@@ -288,28 +339,28 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 		// Execute reads and mutations immediately; feed all results back to LLM.
 		var resultSummary strings.Builder
 
-		resultSummary.WriteString(executeReadsParallel(ctx, "coder", c.executor, reads, readBudgetChars, round+1, c.push, c.outputCompressor))
+		resultSummary.WriteString(executeReadsParallel(ctx, "executor", c.executor, reads, readBudgetChars, round+1, c.push, c.outputCompressor))
 
 		// Read-only mode: drop mutations without executing them, and tell the
 		// model they were not run so it stops re-issuing writes and concludes.
 		if readOnly && len(mutations) > 0 {
 			for _, call := range mutations {
-				slog.Info("[llm:coder] read-only mode: skipping mutation", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call))
-				c.push("info", "coder", fmt.Sprintf("round %d: read-only — skipped %s %s", round+1, call.Request.Kind, toolCallTarget(call)))
+				slog.Info("[llm:executor] read-only mode: skipping mutation", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call))
+				c.push("info", "executor", fmt.Sprintf("round %d: read-only — skipped %s %s", round+1, call.Request.Kind, toolCallTarget(call)))
 				fmt.Fprintf(&resultSummary, "\n### %s %s\n(read-only analysis mode: NOT executed — do not modify files; provide your analysis as text)\n", call.Request.Kind, toolCallTarget(call))
 			}
 			mutations = nil
 		}
 
 		for _, call := range mutations {
-			slog.Info("[llm:coder] executing mutation tool call", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call))
+			slog.Info("[llm:executor] executing mutation tool call", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call))
 			result, execErr := deps.Execute(ctx, call.Request)
 			if execErr != nil {
-				slog.Warn("[llm:coder] mutation tool call failed", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call), "error", execErr)
+				slog.Warn("[llm:executor] mutation tool call failed", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call), "error", execErr)
 				// Record failed mutation — LLM may retry with corrected args.
 				resultSummary.WriteString(fmt.Sprintf("\n### %s %s\nerror: %s\n",
 					call.Request.Kind, toolCallTarget(call), execErr.Error()))
-				c.push("warn", "coder", fmt.Sprintf("round %d: %s %s → error: %s",
+				c.push("warn", "executor", fmt.Sprintf("round %d: %s %s → error: %s",
 					round+1, call.Request.Kind, toolCallTarget(call), execErr.Error()))
 				continue
 			}
@@ -319,8 +370,8 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 			call.ExecResult = result
 			allMutations = append(allMutations, call)
 			resultSummary.WriteString(mutationResultLine(call, result, c.outputCompressor))
-			slog.Info("[llm:coder] mutation tool call completed", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call), "summary", result.Summary)
-			c.push("info", "coder", fmt.Sprintf("round %d: %s %s → %s",
+			slog.Info("[llm:executor] mutation tool call completed", "round", round+1, "kind", call.Request.Kind, "target", toolCallTarget(call), "summary", result.Summary)
+			c.push("info", "executor", fmt.Sprintf("round %d: %s %s → %s",
 				round+1, call.Request.Kind, toolCallTarget(call), result.Summary))
 		}
 
@@ -344,11 +395,11 @@ func (c *LLMCoder) agenticBuild(ctx context.Context, workflowID string, intent m
 			// workflow completes and the Responder delivers the analysis.
 			return workflow.CodePlan{}, nil
 		}
-		return workflow.CodePlan{}, fmt.Errorf("coder agentic loop produced no mutations after %d rounds", maxCoderRounds)
+		return workflow.CodePlan{}, fmt.Errorf("executor agentic loop produced no mutations after %d rounds", maxExecutorRounds)
 	}
 
 	first := allMutations[0]
-	c.push("info", "coder", fmt.Sprintf("agentic loop: %d mutation(s) total", len(allMutations)))
+	c.push("info", "executor", fmt.Sprintf("agentic loop: %d mutation(s) total", len(allMutations)))
 	plan := workflow.CodePlan{
 		ToolCalls:  allMutations,
 		ToolCallID: first.ToolCallID,
@@ -389,14 +440,18 @@ func executeReadsParallel(ctx context.Context, role string, executor toolruntime
 					call.Request.Kind, toolCallTarget(call), execErr.Error())
 				return
 			}
-			// M12-01: If the result was spilled to disk, show a preview + hint
-			// so the LLM knows the full content is recoverable via read_file.
-			if result.SpilledPath != "" {
+			// M12-01: Spill is archival bookkeeping, not a visibility limit — the
+			// model gets full content whenever it fits the per-read budget. Only
+			// genuinely over-budget results degrade to a preview + hint. (The old
+			// behavior keyed on SpilledPath alone, so any file over the 8K spill
+			// threshold reached the model as a 20-line preview telling it to
+			// read_file again — which would just spill again.)
+			if result.SpilledPath != "" && len(result.Output) > readBudgetChars {
 				results[i] = fmt.Sprintf(
-					"\n### %s %s\nResult spilled to disk (%d bytes). Preview (first lines):\n%s\nUse read_file to access specific sections if needed.\n",
+					"\n### %s %s\nResult too large to inline (%d bytes). Preview (first lines):\n%s\nNarrow it down: use grep_context/search for the specific symbols or sections you need.\n",
 					call.Request.Kind, toolCallTarget(call), len(result.Output), result.Preview)
 			} else {
-				// M8-07: Compress read output to fit within per-call budget.
+				// M8-07: Pass-through under budget; truncate at the bound.
 				results[i] = fmt.Sprintf("\n### %s %s\n%s\n",
 					call.Request.Kind, toolCallTarget(call), oc.Compress(call.Request.Kind, "", result.Output, readBudgetChars, ""))
 			}
@@ -417,9 +472,9 @@ func executeReadsParallel(ctx context.Context, role string, executor toolruntime
 
 // recoverTruncation detects an output-truncated LLM response and retries up to
 // maxTruncationRetries times, concatenating all partial outputs into a single
-// combined reply.  Recovery retries do NOT consume rounds from maxCoderRounds.
+// combined reply.  Recovery retries do NOT consume rounds from maxExecutorRounds.
 // It operates on a copy of messages so the caller's conversation state is unchanged.
-func (c *LLMCoder) recoverTruncation(ctx context.Context, messages []Message, firstErr error) (string, bool) {
+func (c *LLMExecutor) recoverTruncation(ctx context.Context, messages []Message, firstErr error) (string, bool) {
 	var te *provider.TruncatedError
 	if !errors.As(firstErr, &te) {
 		return "", false
@@ -431,27 +486,27 @@ func (c *LLMCoder) recoverTruncation(ctx context.Context, messages []Message, fi
 	copy(recoveryMsgs, messages)
 
 	for attempt := 0; attempt < maxTruncationRetries; attempt++ {
-		slog.Warn("[llm:coder] output truncated, recovery attempt",
+		slog.Warn("[llm:executor] output truncated, recovery attempt",
 			"attempt", attempt+1, "max", maxTruncationRetries,
 			"partial_len", len(te.Content), "combined_len", len(combined))
-		c.push("warn", "coder", fmt.Sprintf("output truncated, recovery attempt %d/%d", attempt+1, maxTruncationRetries))
+		c.push("warn", "executor", fmt.Sprintf("output truncated, recovery attempt %d/%d", attempt+1, maxTruncationRetries))
 
 		recoveryMsgs = append(recoveryMsgs,
 			Message{Role: "assistant", Content: te.Content},
 			Message{Role: "user", Content: truncationRecoveryMsg},
 		)
 
-		reply, err := RecoverableChat(ctx, c.chatter, RoleCoder, recoveryMsgs, defaultRecoveryConfig())
+		reply, err := RecoverableChat(ctx, c.chatter, RoleExecutor, recoveryMsgs, defaultRecoveryConfig())
 		if err == nil {
 			combined += reply
-			slog.Info("[llm:coder] truncation recovery succeeded",
+			slog.Info("[llm:executor] truncation recovery succeeded",
 				"attempt", attempt+1, "combined_len", len(combined))
 			return combined, true
 		}
 
 		if !errors.As(err, &te) {
 			// Non-truncation error — return what we accumulated so far, if any.
-			slog.Warn("[llm:coder] truncation recovery hit non-truncation error", "error", err)
+			slog.Warn("[llm:executor] truncation recovery hit non-truncation error", "error", err)
 			if combined != "" {
 				return combined, true
 			}
@@ -462,7 +517,7 @@ func (c *LLMCoder) recoverTruncation(ctx context.Context, messages []Message, fi
 
 	// All retries exhausted — return accumulated content if we have any.
 	if combined != "" {
-		slog.Warn("[llm:coder] truncation recovery exhausted retries, using accumulated content",
+		slog.Warn("[llm:executor] truncation recovery exhausted retries, using accumulated content",
 			"combined_len", len(combined))
 		return combined, true
 	}
@@ -522,14 +577,54 @@ func msgTokens(messages []Message) int {
 	return total
 }
 
+// collectVerifyCmds returns the de-duplicated, non-empty success commands of the
+// given tasks — the deterministic checks the executor must pass before finishing.
+func collectVerifyCmds(tasks []model.Task) []string {
+	seen := make(map[string]bool)
+	var cmds []string
+	for _, t := range tasks {
+		cmd := strings.TrimSpace(t.SuccessCmd)
+		if cmd != "" && !seen[cmd] {
+			seen[cmd] = true
+			cmds = append(cmds, cmd)
+		}
+	}
+	return cmds
+}
+
+// runVerifyCmds runs each verify command through the tool executor in order.
+// passed is true only when every command exits 0. runnable is false when the
+// tool layer refuses the command (e.g. shell disabled), signaling that in-loop
+// verification isn't possible and the kernel's gate should be relied on instead.
+func runVerifyCmds(ctx context.Context, deps *ExecutorDeps, cmds []string) (passed, runnable bool, report string) {
+	for _, cmd := range cmds {
+		res, err := deps.Execute(ctx, toolruntime.Request{Kind: "run_shell", Command: cmd})
+		if err != nil {
+			return false, false, ""
+		}
+		if res.ExitCode != 0 {
+			out := strings.TrimSpace(res.Output)
+			if s := strings.TrimSpace(res.Stderr); s != "" {
+				out += "\n" + s
+			}
+			return false, true, fmt.Sprintf("$ %s\n(exit %d)\n%s", cmd, res.ExitCode, truncateToLines(out, 60))
+		}
+	}
+	return true, true, ""
+}
+
+// splitToolCalls partitions calls by the catalog's ReadOnly flag. Reads run
+// in parallel with the full read budget and stay available in read-only modes
+// (analyzer, plan_only executor); everything else — true mutations, MCP tools
+// (side effects unknown), unrecognized kinds — takes the serial mutation path.
+// The previous hardcoded list misclassified tool_search/web_fetch/artifact
+// reads as mutations, which both serialized them and made read-only mode
+// refuse them outright.
 func splitToolCalls(calls []workflow.ToolCall) (reads, mutations []workflow.ToolCall) {
 	for _, call := range calls {
-		switch call.Request.Kind {
-		case "read_file", "search", "list_dir", "grep_context",
-			"lsp_symbols", "lsp_definition", "lsp_references",
-			"rag_search":
+		if toolruntime.ReadOnlyKind(call.Request.Kind) {
 			reads = append(reads, call)
-		default:
+		} else {
 			mutations = append(mutations, call)
 		}
 	}
@@ -577,10 +672,10 @@ func truncateOutput(s string, max int) string {
 	return s[:max] + "\n... (truncated)"
 }
 
-var _ workflow.Coder = (*LLMCoder)(nil)
+var _ workflow.Executor = (*LLMExecutor)(nil)
 
-func (c *LLMCoder) Metadata() workflow.WorkerMetadata {
-	return workflow.WorkerMetadata{Worker: "llm-coder", Role: workflow.RoleCoder}
+func (c *LLMExecutor) Metadata() workflow.WorkerMetadata {
+	return workflow.WorkerMetadata{Worker: "llm-executor", Role: workflow.RoleExecutor}
 }
 
 // replyDeclaresDone reports whether the reply carries an explicit (present but

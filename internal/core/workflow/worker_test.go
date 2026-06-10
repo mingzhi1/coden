@@ -41,21 +41,21 @@ func (stubPlanner) Metadata() WorkerMetadata {
 	return WorkerMetadata{Worker: "stub-planner", Role: RolePlanner}
 }
 
-type stubCoder struct{}
+type stubExecutor struct{}
 
-func (stubCoder) Build(_ context.Context, workflowID string, _ model.IntentSpec, _ []model.Task) (CodePlan, error) {
+func (stubExecutor) Build(_ context.Context, workflowID string, _ model.IntentSpec, _ []model.Task) (CodePlan, error) {
 	return CodePlan{
 		ToolCalls:  []ToolCall{{ToolCallID: "tool-" + workflowID}},
 		ToolCallID: "tool-" + workflowID,
 	}, nil
 }
 
-func (stubCoder) TakeMessages() []model.WorkerMessage {
-	return []model.WorkerMessage{{Kind: "info", Role: "coder", Content: "coded"}}
+func (stubExecutor) TakeMessages() []model.WorkerMessage {
+	return []model.WorkerMessage{{Kind: "info", Role: "executor", Content: "coded"}}
 }
 
-func (stubCoder) Metadata() WorkerMetadata {
-	return WorkerMetadata{Worker: "stub-coder", Role: RoleCoder}
+func (stubExecutor) Metadata() WorkerMetadata {
+	return WorkerMetadata{Worker: "stub-executor", Role: RoleExecutor}
 }
 
 type stubAcceptor struct{}
@@ -110,23 +110,23 @@ func TestWorkersAdaptLegacyInterfacesToUnifiedContract(t *testing.T) {
 		t.Fatalf("unexpected planner metadata: %+v", planResult.Metadata)
 	}
 
-	codeResult, err := NewCoderWorker(stubCoder{}).Execute(ctx, WorkerInput{
+	codeResult, err := NewExecutorWorker(stubExecutor{}).Execute(ctx, WorkerInput{
 		SessionID:  intent.SessionID,
 		WorkflowID: "wf-1",
 		Intent:     intent,
 		Tasks:      planResult.Tasks,
 	})
 	if err != nil {
-		t.Fatalf("coder worker failed: %v", err)
+		t.Fatalf("executor worker failed: %v", err)
 	}
 	if codeResult.CodePlan == nil || codeResult.CodePlan.ToolCallID != "tool-wf-1" {
-		t.Fatalf("unexpected coder result: %+v", codeResult)
+		t.Fatalf("unexpected executor result: %+v", codeResult)
 	}
 	if calls := codeResult.CodePlan.Calls(); len(calls) != 1 || calls[0].ToolCallID != "tool-wf-1" {
-		t.Fatalf("unexpected coder calls: %+v", calls)
+		t.Fatalf("unexpected executor calls: %+v", calls)
 	}
-	if codeResult.Metadata.Role != RoleCoder || codeResult.Metadata.Worker != "stub-coder" {
-		t.Fatalf("unexpected coder metadata: %+v", codeResult.Metadata)
+	if codeResult.Metadata.Role != RoleExecutor || codeResult.Metadata.Worker != "stub-executor" {
+		t.Fatalf("unexpected executor metadata: %+v", codeResult.Metadata)
 	}
 
 	acceptResult, err := NewAcceptorWorker(stubAcceptor{}).Execute(ctx, WorkerInput{

@@ -40,7 +40,7 @@ func TestModelEventHandling(t *testing.T) {
 				Payload: model.EncodePayload(model.WorkerStartedPayload{
 					WorkflowID: "wf-1",
 					WorkerID:   "worker-1",
-					WorkerRole: "coder",
+					WorkerRole: "executor",
 					Step:       "code",
 				}),
 			},
@@ -55,7 +55,7 @@ func TestModelEventHandling(t *testing.T) {
 				Payload: model.EncodePayload(model.WorkerFinishedPayload{
 					WorkflowID: "wf-1",
 					WorkerID:   "worker-1",
-					WorkerRole: "coder",
+					WorkerRole: "executor",
 					Step:       "code",
 					DurationMS: 1234,
 				}),

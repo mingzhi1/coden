@@ -6,9 +6,9 @@
 // enforces hard restrictions based on the Skill's trust Source.
 //
 //	Builtin/User  → may target any worker
-//	Project       → may target Coder + Planner (not Acceptor/Inputter)
-//	Plugin        → may target Coder only (unless explicitly promoted)
-//	MCP           → may target Coder only, and cannot list run_shell
+//	Project       → may target Executor + Planner (not Acceptor/Inputter)
+//	Plugin        → may target Executor only (unless explicitly promoted)
+//	MCP           → may target Executor only, and cannot list run_shell
 package skill
 
 import (
@@ -57,14 +57,14 @@ func (s Source) TrustLevel() int {
 type Target string
 
 const (
-	TargetCoder    Target = "coder"    // code generation (most common)
+	TargetExecutor    Target = "executor"    // code generation (most common)
 	TargetPlanner  Target = "planner"  // task planning
 	TargetAcceptor Target = "acceptor" // quality review (restricted)
 	TargetInputter Target = "inputter" // intent parsing (restricted)
 )
 
 // AllTargets is the full set of injectable workers.
-var AllTargets = []Target{TargetCoder, TargetPlanner, TargetAcceptor, TargetInputter}
+var AllTargets = []Target{TargetExecutor, TargetPlanner, TargetAcceptor, TargetInputter}
 
 // ---------------------------------------------------------------------------
 // Trust ceiling — hard limits on what each Source may target
@@ -79,15 +79,15 @@ var AllTargets = []Target{TargetCoder, TargetPlanner, TargetAcceptor, TargetInpu
 //     would allow bypassing code review ("always approve").
 //   - Inputter rewrites user intent. Manipulation here is invisible to
 //     the user and undermines the entire pipeline.
-//   - Coder is the natural home for coding standards, style guides, etc.
+//   - Executor is the natural home for coding standards, style guides, etc.
 //   - Planner benefits from architecture/convention guidance, but only
 //     from sources the user explicitly trusts.
 var maxTargets = map[Source]map[Target]bool{
-	SourceBuiltin: {TargetCoder: true, TargetPlanner: true, TargetAcceptor: true, TargetInputter: true},
-	SourceUser:    {TargetCoder: true, TargetPlanner: true, TargetAcceptor: true, TargetInputter: true},
-	SourceProject: {TargetCoder: true, TargetPlanner: true},
-	SourcePlugin:  {TargetCoder: true},
-	SourceMCP:     {TargetCoder: true},
+	SourceBuiltin: {TargetExecutor: true, TargetPlanner: true, TargetAcceptor: true, TargetInputter: true},
+	SourceUser:    {TargetExecutor: true, TargetPlanner: true, TargetAcceptor: true, TargetInputter: true},
+	SourceProject: {TargetExecutor: true, TargetPlanner: true},
+	SourcePlugin:  {TargetExecutor: true},
+	SourceMCP:     {TargetExecutor: true},
 }
 
 // SourceAllowsTarget returns true if the given Source trust level permits
@@ -135,7 +135,7 @@ type Frontmatter struct {
 	WhenToUse string `yaml:"when_to_use,omitempty"`
 
 	// Targets declares which workers this skill injects into.
-	// Defaults: ["coder"] if omitted.
+	// Defaults: ["executor"] if omitted.
 	// Subject to clamping by Source trust ceiling (see maxTargets).
 	Targets []Target `yaml:"targets,omitempty"`
 
@@ -202,8 +202,8 @@ func (s *Skill) Validate() {
 	// --- Resolve effective targets ---
 	declared := s.Frontmatter.Targets
 	if len(declared) == 0 {
-		// Default: coder only (principle of least privilege).
-		declared = []Target{TargetCoder}
+		// Default: executor only (principle of least privilege).
+		declared = []Target{TargetExecutor}
 	}
 
 	s.effectiveTargets = make(map[Target]bool, len(declared))

@@ -28,7 +28,7 @@ type Executor interface {
 	Execute(ctx context.Context, req Request) (Result, error)
 }
 
-// Request is a tool invocation submitted by a Coder worker.
+// Request is a tool invocation submitted by a Executor worker.
 // Kind selects the operation; Path and Content carry the operands.
 type Request struct {
 	Kind    string `json:"kind"`
@@ -216,7 +216,7 @@ func (r *LocalExecutor) SetArtifactManager(mgr artifact.Manager) {
 	r.artifactMgr = mgr
 }
 
-// RegisterTool registers a tool in the tool_search registry so the Coder
+// RegisterTool registers a tool in the tool_search registry so the Executor
 // can discover it at runtime. Used to register MCP and plugin tools.
 func (r *LocalExecutor) RegisterTool(meta ToolMeta) {
 	if r.registry == nil {

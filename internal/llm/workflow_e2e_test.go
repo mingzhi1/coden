@@ -10,7 +10,7 @@ import (
 	"github.com/mingzhi1/coden/internal/llm"
 )
 
-// TestFullWorkflowE2E runs the complete Inputter → Planner → Coder → Acceptor
+// TestFullWorkflowE2E runs the complete Inputter → Planner → Executor → Acceptor
 // pipeline through the broker with the MiniMax provider.
 func TestFullWorkflowE2E(t *testing.T) {
 	miniMaxKey := os.Getenv("TEST_MINIMAX_API_KEY")
@@ -67,12 +67,12 @@ func TestFullWorkflowE2E(t *testing.T) {
 		t.Logf("  task[%d]: %s — %s", i, task.ID, task.Title)
 	}
 
-	// Step 3: Coder — generate tool calls for implementation
-	t.Log("=== Step 3: Coder ===")
-	coder := llm.NewLLMCoder(broker)
-	codePlan, err := coder.Build(ctx, workflowID, intent, tasks)
+	// Step 3: Executor — generate tool calls for implementation
+	t.Log("=== Step 3: Executor ===")
+	executor := llm.NewLLMExecutor(broker)
+	codePlan, err := executor.Build(ctx, workflowID, intent, tasks)
 	if err != nil {
-		t.Fatalf("coder failed: %v", err)
+		t.Fatalf("executor failed: %v", err)
 	}
 	t.Logf("code plan: %d tool calls", len(codePlan.Calls()))
 	for i, call := range codePlan.Calls() {

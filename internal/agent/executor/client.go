@@ -1,4 +1,4 @@
-package code
+package executor
 
 import (
 	"context"
@@ -13,26 +13,26 @@ import (
 	"github.com/mingzhi1/coden/internal/rpc/protocol"
 )
 
-// RPCCoder is a workflow coder backed by a JSON-RPC worker.
-type RPCCoder struct {
+// RPCExecutor is a workflow executor backed by a JSON-RPC worker.
+type RPCExecutor struct {
 	client   *rpcclient.Client
 	msgMu    sync.Mutex
 	messages []model.WorkerMessage
 }
 
-func NewRPCCoder(rwc io.ReadWriteCloser) *RPCCoder {
-	return &RPCCoder{client: rpcclient.New(rwc)}
+func NewRPCExecutor(rwc io.ReadWriteCloser) *RPCExecutor {
+	return &RPCExecutor{client: rpcclient.New(rwc)}
 }
 
-func (c *RPCCoder) Close() error {
+func (c *RPCExecutor) Close() error {
 	return c.client.Close()
 }
 
-func (c *RPCCoder) Describe(ctx context.Context) (protocol.WorkerDescribeResult, error) {
+func (c *RPCExecutor) Describe(ctx context.Context) (protocol.WorkerDescribeResult, error) {
 	return c.client.DescribeWorker(ctx)
 }
 
-func (c *RPCCoder) Build(ctx context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
+func (c *RPCExecutor) Build(ctx context.Context, workflowID string, intent model.IntentSpec, tasks []model.Task) (workflow.CodePlan, error) {
 	input, err := protocol.MarshalRaw(buildInput{Intent: intent, Tasks: tasks})
 	if err != nil {
 		return workflow.CodePlan{}, err
@@ -42,7 +42,7 @@ func (c *RPCCoder) Build(ctx context.Context, workflowID string, intent model.In
 		SessionID:  intent.SessionID,
 		WorkflowID: workflowID,
 		TaskID:     "task-code",
-		Role:       string(workflow.RoleCoder),
+		Role:       string(workflow.RoleExecutor),
 		Input:      input,
 	})
 	if err != nil {
@@ -72,7 +72,7 @@ func (c *RPCCoder) Build(ctx context.Context, workflowID string, intent model.In
 	}, nil
 }
 
-func (c *RPCCoder) TakeMessages() []model.WorkerMessage {
+func (c *RPCExecutor) TakeMessages() []model.WorkerMessage {
 	c.msgMu.Lock()
 	defer c.msgMu.Unlock()
 	out := append([]model.WorkerMessage(nil), c.messages...)
@@ -80,7 +80,7 @@ func (c *RPCCoder) TakeMessages() []model.WorkerMessage {
 	return out
 }
 
-func (c *RPCCoder) storeMessages(messages []protocol.WorkerMessage) {
+func (c *RPCExecutor) storeMessages(messages []protocol.WorkerMessage) {
 	if len(messages) == 0 {
 		return
 	}
@@ -96,6 +96,6 @@ func (c *RPCCoder) storeMessages(messages []protocol.WorkerMessage) {
 	}
 }
 
-func (c *RPCCoder) Metadata() workflow.WorkerMetadata {
-	return workflow.WorkerMetadata{Worker: "rpc-coder", Role: workflow.RoleCoder}
+func (c *RPCExecutor) Metadata() workflow.WorkerMetadata {
+	return workflow.WorkerMetadata{Worker: "rpc-executor", Role: workflow.RoleExecutor}
 }

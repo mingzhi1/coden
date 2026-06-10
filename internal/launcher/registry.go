@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/mingzhi1/coden/internal/agent/accept"
-	"github.com/mingzhi1/coden/internal/agent/code"
+	agentexec "github.com/mingzhi1/coden/internal/agent/executor"
 	"github.com/mingzhi1/coden/internal/agent/input"
 	"github.com/mingzhi1/coden/internal/agent/plan"
 	"github.com/mingzhi1/coden/internal/agent/search"
@@ -28,9 +28,9 @@ import (
 
 type InputterFactory func(ctx context.Context, moduleRoot string) (workflow.Inputter, func(), error)
 type PlannerFactory func(ctx context.Context, moduleRoot string) (workflow.Planner, func(), error)
-type CoderFactory func(ctx context.Context, moduleRoot string) (workflow.Coder, func(), error)
+type ExecutorFactory func(ctx context.Context, moduleRoot string) (workflow.Executor, func(), error)
 type AcceptorFactory func(ctx context.Context, moduleRoot string) (workflow.Acceptor, func(), error)
-type ExecutorFactory func(ctx context.Context, moduleRoot, workspaceRoot string) (toolruntime.Executor, func(), error)
+type ToolExecutorFactory func(ctx context.Context, moduleRoot, workspaceRoot string) (toolruntime.Executor, func(), error)
 
 // SearcherFactory builds a workflow.Searcher (SA-10).  Returning a nil
 // searcher is valid and indicates that the kernel should fall back to its
@@ -38,12 +38,12 @@ type ExecutorFactory func(ctx context.Context, moduleRoot, workspaceRoot string)
 type SearcherFactory func(ctx context.Context, moduleRoot, workspaceRoot string) (workflow.Searcher, func(), error)
 
 type Registry struct {
-	Inputs    map[string]InputterFactory
-	Planners  map[string]PlannerFactory
-	Coders    map[string]CoderFactory
-	Acceptors map[string]AcceptorFactory
-	Executors map[string]ExecutorFactory
-	Searchers map[string]SearcherFactory // SA-10: optional Search worker factories
+	Inputs        map[string]InputterFactory
+	Planners      map[string]PlannerFactory
+	Executors     map[string]ExecutorFactory
+	Acceptors     map[string]AcceptorFactory
+	ToolExecutors map[string]ToolExecutorFactory
+	Searchers     map[string]SearcherFactory // SA-10: optional Search worker factories
 	broker    *llm.Broker                // shared across all LLM workers (may be nil in server mode)
 	chatter   llm.Chatter                // LLM backend: *Broker or *LLMServerClient
 }
@@ -71,21 +71,21 @@ type Options struct {
 	AllowShell    bool
 	Input         string
 	Planner       string
-	Coder         string
-	Acceptor      string
 	Executor      string
+	Acceptor      string
+	ToolExecutor  string
 	Searcher      string // SA-10: "" (skip), "loopback", or "process"
-	Agentic       bool   // enable multi-turn agentic loop for coder
+	Agentic       bool   // enable multi-turn agentic loop for executor
 }
 
 type Dependencies struct {
 	Inputter      workflow.Inputter
 	Planner       workflow.Planner
-	Coder         workflow.Coder
+	Executor      workflow.Executor
 	Acceptor      workflow.Acceptor
-	Executor      toolruntime.Executor
+	ToolExecutor  toolruntime.Executor
 	Searcher      workflow.Searcher // SA-10: optional; nil means kernel falls back to LocalSearcher
-	MCPToolPrompt string            // formatted MCP tool descriptions for Coder prompt
+	MCPToolPrompt string            // formatted MCP tool descriptions for Executor prompt
 }
 
 func Default() Registry {
@@ -118,9 +118,9 @@ func registryWithBroker(broker *llm.Broker) Registry {
 			"loopback": plan.NewLoopbackRPCPlannerAdapter,
 			"llm":      llmPlan,
 		},
-		Coders: map[string]CoderFactory{
-			"process":  code.NewProcessRPCCoder,
-			"loopback": code.NewLoopbackRPCCoderAdapter,
+		Executors: map[string]ExecutorFactory{
+			"process":  agentexec.NewProcessRPCExecutor,
+			"loopback": agentexec.NewLoopbackRPCExecutorAdapter,
 			"llm":      llmCode,
 		},
 		Acceptors: map[string]AcceptorFactory{
@@ -128,7 +128,7 @@ func registryWithBroker(broker *llm.Broker) Registry {
 			"loopback": accept.NewLoopbackRPCAcceptorAdapter,
 			"llm":      llmAccept,
 		},
-		Executors: map[string]ExecutorFactory{
+		ToolExecutors: map[string]ToolExecutorFactory{
 			"process":  newProcessToolExecutorFactory,
 			"loopback": writefile.NewLoopbackRPCExecutorAdapter,
 		},
@@ -156,9 +156,9 @@ func DefaultWithServer(addr string) Registry {
 			"loopback": plan.NewLoopbackRPCPlannerAdapter,
 			"llm":      llmPlan,
 		},
-		Coders: map[string]CoderFactory{
-			"process":  code.NewProcessRPCCoder,
-			"loopback": code.NewLoopbackRPCCoderAdapter,
+		Executors: map[string]ExecutorFactory{
+			"process":  agentexec.NewProcessRPCExecutor,
+			"loopback": agentexec.NewLoopbackRPCExecutorAdapter,
 			"llm":      llmCode,
 		},
 		Acceptors: map[string]AcceptorFactory{
@@ -166,7 +166,7 @@ func DefaultWithServer(addr string) Registry {
 			"loopback": accept.NewLoopbackRPCAcceptorAdapter,
 			"llm":      llmAccept,
 		},
-		Executors: map[string]ExecutorFactory{
+		ToolExecutors: map[string]ToolExecutorFactory{
 			"process":  newProcessToolExecutorFactory,
 			"loopback": writefile.NewLoopbackRPCExecutorAdapter,
 		},
@@ -178,7 +178,7 @@ func DefaultWithServer(addr string) Registry {
 // DefaultWithOverride creates a registry where the specified provider/model is
 // preferred across ALL tiers (primary + light), overriding auto-detection
 // priority. The override is placed first in both tiers so every role — including
-// the light-tier workers (Intent / Coder / Secretary) — uses it; the env-detected
+// the light-tier workers (Intent / Executor / Secretary) — uses it; the env-detected
 // providers remain only as fallbacks. Previously the override hit the primary tier
 // only, so light-tier workers silently fell back to hardcoded models
 // (deepseek-chat / gpt-4o-mini) that don't exist on a custom endpoint, wasting
@@ -215,9 +215,9 @@ func DefaultOptions(moduleRoot, workspaceRoot string) Options {
 		WorkspaceRoot: workspaceRoot,
 		Input:         workerMode,
 		Planner:       workerMode,
-		Coder:         workerMode,
+		Executor:      workerMode,
 		Acceptor:      workerMode,
-		Executor:      "process",
+		ToolExecutor:  "process",
 		Agentic:       hasLLM, // enable agentic loop when LLM is available
 	}
 }
@@ -263,25 +263,25 @@ func (r Registry) Start(ctx context.Context, opts Options) (Dependencies, func()
 	cleanups = append(cleanups, plannerCleanup)
 	deps.Planner = planner
 
-	coderFactory, ok := r.Coders[opts.Coder]
+	executorFactory, ok := r.Executors[opts.Executor]
 	if !ok {
 		cleanup()
-		return Dependencies{}, func() {}, fmt.Errorf("unknown coder launcher: %s", opts.Coder)
+		return Dependencies{}, func() {}, fmt.Errorf("unknown executor launcher: %s", opts.Executor)
 	}
-	var coder workflow.Coder
-	var coderCleanup func()
-	// If agentic mode + LLM coder, create an agentic coder with workspace access.
-	if opts.Agentic && opts.Coder == "llm" && opts.WorkspaceRoot != "" {
-		coder, coderCleanup, err = newAgenticCoderFactory(r.chatter, opts.WorkspaceRoot)
+	var executor workflow.Executor
+	var executorCleanup func()
+	// If agentic mode + LLM executor, create an agentic executor with workspace access.
+	if opts.Agentic && opts.Executor == "llm" && opts.WorkspaceRoot != "" {
+		executor, executorCleanup, err = newAgenticExecutorFactory(r.chatter, opts.WorkspaceRoot)
 	} else {
-		coder, coderCleanup, err = coderFactory(ctx, opts.ModuleRoot)
+		executor, executorCleanup, err = executorFactory(ctx, opts.ModuleRoot)
 	}
 	if err != nil {
 		cleanup()
 		return Dependencies{}, func() {}, err
 	}
-	cleanups = append(cleanups, coderCleanup)
-	deps.Coder = coder
+	cleanups = append(cleanups, executorCleanup)
+	deps.Executor = executor
 
 	acceptorFactory, ok := r.Acceptors[opts.Acceptor]
 	if !ok {
@@ -302,29 +302,29 @@ func (r Registry) Start(ctx context.Context, opts Options) (Dependencies, func()
 	cleanups = append(cleanups, acceptorCleanup)
 	deps.Acceptor = acceptor
 
-	if opts.Executor == "process" {
-		// Process executor is handled directly to capture the MCP tool prompt.
-		executor, mcpPrompt, executorCleanup, execErr := buildProcessToolExecutor(ctx, opts.ModuleRoot, opts.WorkspaceRoot)
+	if opts.ToolExecutor == "process" {
+		// Process tool executor is handled directly to capture the MCP tool prompt.
+		toolExec, mcpPrompt, toolExecCleanup, execErr := buildProcessToolExecutor(ctx, opts.ModuleRoot, opts.WorkspaceRoot)
 		if execErr != nil {
 			cleanup()
 			return Dependencies{}, func() {}, execErr
 		}
-		cleanups = append(cleanups, executorCleanup)
-		deps.Executor = executor
+		cleanups = append(cleanups, toolExecCleanup)
+		deps.ToolExecutor = toolExec
 		deps.MCPToolPrompt = mcpPrompt
 	} else {
-		executorFactory, ok := r.Executors[opts.Executor]
+		toolExecFactory, ok := r.ToolExecutors[opts.ToolExecutor]
 		if !ok {
 			cleanup()
-			return Dependencies{}, func() {}, fmt.Errorf("unknown executor launcher: %s", opts.Executor)
+			return Dependencies{}, func() {}, fmt.Errorf("unknown tool executor launcher: %s", opts.ToolExecutor)
 		}
-		executor, executorCleanup, err := executorFactory(ctx, opts.ModuleRoot, opts.WorkspaceRoot)
+		toolExec, toolExecCleanup, err := toolExecFactory(ctx, opts.ModuleRoot, opts.WorkspaceRoot)
 		if err != nil {
 			cleanup()
 			return Dependencies{}, func() {}, err
 		}
-		cleanups = append(cleanups, executorCleanup)
-		deps.Executor = executor
+		cleanups = append(cleanups, toolExecCleanup)
+		deps.ToolExecutor = toolExec
 	}
 
 	// SA-10: Searcher is optional. Empty string skips, leaving the kernel to
@@ -378,15 +378,15 @@ func defaultSearcherFactories() map[string]SearcherFactory {
 
 // sharedChatterFactories returns factory functions that all close over the same Chatter.
 // Both *Broker (embedded) and *LLMServerClient (server mode) satisfy Chatter.
-func sharedChatterFactories(chatter llm.Chatter, _ *llm.Broker) (InputterFactory, PlannerFactory, CoderFactory, AcceptorFactory) {
+func sharedChatterFactories(chatter llm.Chatter, _ *llm.Broker) (InputterFactory, PlannerFactory, ExecutorFactory, AcceptorFactory) {
 	inputF := func(_ context.Context, _ string) (workflow.Inputter, func(), error) {
 		return llm.NewLLMInputter(chatter), func() {}, nil
 	}
 	planF := func(_ context.Context, _ string) (workflow.Planner, func(), error) {
 		return llm.NewLLMPlanner(chatter), func() {}, nil
 	}
-	codeF := func(_ context.Context, _ string) (workflow.Coder, func(), error) {
-		return llm.NewLLMCoder(chatter), func() {}, nil
+	codeF := func(_ context.Context, _ string) (workflow.Executor, func(), error) {
+		return llm.NewLLMExecutor(chatter), func() {}, nil
 	}
 	acceptF := func(_ context.Context, root string) (workflow.Acceptor, func(), error) {
 		if root != "" {
@@ -464,7 +464,7 @@ func buildProcessToolExecutor(ctx context.Context, moduleRoot, workspaceRoot str
 			mcpExec := mcppkg.NewExecutor(mcpManager)
 			for _, tool := range mcpManager.Tools() {
 				mcpToolKinds[tool.Kind()] = mcpExec
-				// Register in localExec's tool_search registry so Coder can
+				// Register in localExec's tool_search registry so Executor can
 				// discover MCP tools dynamically via tool_search.
 				if tr, ok := localExec.(toolruntime.ToolRegisterer); ok {
 					tr.RegisterTool(toolruntime.ToolMeta{
@@ -504,13 +504,16 @@ func buildProcessToolExecutor(ctx context.Context, moduleRoot, workspaceRoot str
 
 	executor := mux.New(writeExec, byKind)
 
-	// Format MCP tool descriptions for Coder prompt injection.
+	// Format MCP tool descriptions for Executor prompt injection.
 	var mcpToolPrompt string
 	if mcpManager != nil && mcpManager.ToolCount() > 0 {
 		var sb strings.Builder
 		sb.WriteString("## MCP Tools\n\n")
 		sb.WriteString("The following MCP (Model Context Protocol) tools are available. ")
-		sb.WriteString("Use them by emitting tool_calls with the specified kind.\n\n")
+		sb.WriteString("Call them like any other tool: emit a tool_call with the specified kind ")
+		sb.WriteString("and put the arguments as a JSON object in the \"content\" field, ")
+		sb.WriteString("matching the tool's input schema.\n")
+		sb.WriteString(`Example: {"kind": "mcp__server__tool", "content": "{\"arg\": \"value\"}"}` + "\n\n")
 		for _, tool := range mcpManager.Tools() {
 			sb.WriteString(fmt.Sprintf("### %s\n", tool.Kind()))
 			sb.WriteString(fmt.Sprintf("Server: %s | Tool: %s\n", tool.ServerName, tool.ToolName))
@@ -539,11 +542,11 @@ func buildProcessToolExecutor(ctx context.Context, moduleRoot, workspaceRoot str
 	return executor, mcpToolPrompt, cleanup, nil
 }
 
-// newAgenticCoderFactory creates an LLM coder with a local read-only executor
-// for the agentic discovery loop. The coder can read_file/search/list_dir
+// newAgenticExecutorFactory creates an LLM executor with a local read-only executor
+// for the agentic discovery loop. The executor can read_file/search/list_dir
 // locally during generation, then emit mutations for the kernel to execute.
-func newAgenticCoderFactory(chatter llm.Chatter, workspaceRoot string) (workflow.Coder, func(), error) {
+func newAgenticExecutorFactory(chatter llm.Chatter, workspaceRoot string) (workflow.Executor, func(), error) {
 	ws := workspace.New(workspaceRoot)
 	executor := toolruntime.NewLocalExecutor(ws)
-	return llm.NewAgenticCoder(chatter, executor), func() {}, nil
+	return llm.NewAgenticExecutor(chatter, executor), func() {}, nil
 }

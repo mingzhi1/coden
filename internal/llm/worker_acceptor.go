@@ -110,10 +110,10 @@ func (a *LLMAcceptor) Accept(ctx context.Context, workflowID string, intent mode
 		}
 	}
 
-	// Build execution evidence section from the coder's tool results.
+	// Build execution evidence section from the executor's tool results.
 	var evidenceSection string
 	if len(artifact.Evidence) > 0 {
-		evidenceSection = "\n\nCoder execution results (verified):\n" + bulletList(artifact.Evidence)
+		evidenceSection = "\n\nExecutor execution results (verified):\n" + bulletList(artifact.Evidence)
 	}
 
 	// Build task-level context so the acceptor evaluates the specific task, not the whole intent.
@@ -154,6 +154,11 @@ func (a *LLMAcceptor) Accept(ctx context.Context, workflowID string, intent mode
 			evidenceSection,
 			extraContent,
 		)
+	}
+
+	// Workflow-assigned objective: the exact condition that proves success.
+	if obj := strings.TrimSpace(wc.RoleObjectives[string(workflow.RoleAcceptor)]); obj != "" {
+		userMsg += "\n\n## Acceptance objective — the condition that proves success\n" + obj
 	}
 
 	slog.Info("[llm:acceptor] user message built",

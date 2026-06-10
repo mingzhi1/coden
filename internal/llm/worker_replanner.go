@@ -40,7 +40,7 @@ const (
 func (r *LLMReplanner) RePlan(ctx context.Context, intent model.IntentSpec, tasks []model.Task, snippets []model.FileSnippet) ([]model.Task, error) {
 	// SA-08: Build meso-level code context — per-snippet line cap + total budget.
 	// RePlanner needs file structure/signatures to produce concrete steps, not
-	// full implementations. Full snippets go to Coder.
+	// full implementations. Full snippets go to Executor.
 	var codeCtx strings.Builder
 	for _, s := range snippets {
 		if !s.Exists {
@@ -86,6 +86,11 @@ func (r *LLMReplanner) RePlan(ctx context.Context, intent model.IntentSpec, task
 
 	userMsg := fmt.Sprintf("%s## Goal\n%s\n\n## Original Plan\n%s\n## Discovered Code\n%s",
 		criticSection, intent.Goal, taskList.String(), codeCtx.String())
+
+	// Workflow-assigned objective: what the concrete steps must nail down.
+	if obj := strings.TrimSpace(model.WorkflowContextFrom(ctx).RoleObjectives[string(workflow.RoleReplanner)]); obj != "" {
+		userMsg += "\n\n## Objective — what the refined steps must achieve\n" + obj
+	}
 
 	reply, err := RecoverableChat(ctx, r.chatter, RoleReplanner, []Message{
 		{Role: "system", Content: systemPrompt},
@@ -162,7 +167,7 @@ func (r *LLMReplanner) RePlan(ctx context.Context, intent model.IntentSpec, task
 		if len(steps) > 3 {
 			steps = steps[:3]
 		}
-		// R-01 fix: ensure at least one step so downstream Coder has instructions.
+		// R-01 fix: ensure at least one step so downstream Executor has instructions.
 		if len(steps) == 0 {
 			steps = []string{title}
 		}

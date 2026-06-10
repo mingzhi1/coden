@@ -14,9 +14,9 @@ import (
 	"github.com/mingzhi1/coden/internal/llm"
 )
 
-// TestAgenticCoderWithTools runs the coder with an executor so that
+// TestAgenticExecutorWithTools runs the executor with an executor so that
 // read_file, search, grep, write_file etc. are actually executed and logged.
-func TestAgenticCoderWithTools(t *testing.T) {
+func TestAgenticExecutorWithTools(t *testing.T) {
 	miniMaxKey := os.Getenv("TEST_MINIMAX_API_KEY")
 	if miniMaxKey == "" {
 		t.Skip("TEST_MINIMAX_API_KEY not set")
@@ -85,8 +85,8 @@ func Min(a, b int) int {
 	})
 
 	broker := llm.NewBroker(pool)
-	executor := toolruntime.NewLocalExecutor(ws)
-	coder := llm.NewAgenticCoder(broker, executor)
+	toolExec := toolruntime.NewLocalExecutor(ws)
+	agentic := llm.NewAgenticExecutor(broker, toolExec)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -104,10 +104,10 @@ func Min(a, b int) int {
 		{ID: "task-2", Title: "Write unit test for Subtract"},
 	}
 
-	t.Log("=== Agentic Coder with tool execution ===")
-	codePlan, err := coder.Build(ctx, "wf-test-1", intent, tasks)
+	t.Log("=== Agentic Executor with tool execution ===")
+	codePlan, err := agentic.Build(ctx, "wf-test-1", intent, tasks)
 	if err != nil {
-		t.Fatalf("agentic coder failed: %v", err)
+		t.Fatalf("agentic executor failed: %v", err)
 	}
 
 	t.Logf("code plan: %d tool calls", len(codePlan.Calls()))

@@ -49,7 +49,7 @@ func (a *failFirstAcceptor) TakeMessages() []model.WorkerMessage {
 
 func TestAcceptorRetryOnFailure(t *testing.T) {
 	acceptor := &failFirstAcceptor{}
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, acceptor)
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, acceptor)
 	defer k.Close()
 	events, cancel := k.Subscribe("session-1")
 	defer cancel()
@@ -101,7 +101,7 @@ done:
 func TestSubmitEmitsWorkerAndToolMetadata(t *testing.T) {
 	t.Parallel()
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	defer k.Close()
 	events, cancel := k.Subscribe("session-1")
 	defer cancel()
@@ -168,7 +168,7 @@ func TestSubmitEmitsWorkerAndToolMetadata(t *testing.T) {
 func TestCancelWorkflowStopsActiveRun(t *testing.T) {
 	t.Parallel()
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	defer k.Close()
 	events, cancel := k.Subscribe("session-1")
 	defer cancel()
@@ -214,7 +214,7 @@ func TestCancelWorkflowStopsActiveRun(t *testing.T) {
 func TestCloseCancelsAndWaitsForActiveWorkflow(t *testing.T) {
 	t.Parallel()
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	events, cancel := k.Subscribe("session-1")
 	defer cancel()
 
@@ -249,8 +249,8 @@ func TestCloseCancelsAndWaitsForActiveWorkflow(t *testing.T) {
 func TestSubmitExecutesMultipleToolCallsSequentially(t *testing.T) {
 	t.Parallel()
 
-	multiCoder := &multiToolCoder{}
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, multiCoder, testExecutor{}, testAcceptor{})
+	multiExec := &multiToolExecutor{}
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, multiExec, testToolExecutor{}, testAcceptor{})
 	defer k.Close()
 	events, cancel := k.Subscribe("session-1")
 	defer cancel()
@@ -292,7 +292,7 @@ func TestSubmitExecutesMultipleToolCallsSequentially(t *testing.T) {
 func TestRunShellRequiresExplicitApprovalByDefault(t *testing.T) {
 	t.Parallel()
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, shellToolCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, shellToolExecutor{}, testToolExecutor{}, testAcceptor{})
 	defer k.Close()
 	events, cancel := k.Subscribe("session-1")
 	defer cancel()
@@ -328,7 +328,7 @@ func TestToolExecutionFailureEmitsFailedToolEvent(t *testing.T) {
 	t.Parallel()
 
 	failExecutor := &failExecutor{}
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, failExecutor, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, failExecutor, testAcceptor{})
 	defer k.Close()
 	events, cancel := k.Subscribe("session-1")
 	defer cancel()
@@ -416,7 +416,7 @@ func TestToolEventDetailIncludesReadablePreviews(t *testing.T) {
 func TestCheckpointQueries(t *testing.T) {
 	t.Parallel()
 
-	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testCoder{}, testExecutor{}, testAcceptor{})
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	defer k.Close()
 	events, cancel := k.Subscribe("session-1")
 	defer cancel()
@@ -461,9 +461,9 @@ func TestCheckpointQueries(t *testing.T) {
 
 // Helper functions and types for tests
 
-type multiToolCoder struct{}
+type multiToolExecutor struct{}
 
-func (c *multiToolCoder) Build(_ context.Context, workflowID string, intent model.IntentSpec, _ []model.Task) (workflow.CodePlan, error) {
+func (c *multiToolExecutor) Build(_ context.Context, workflowID string, intent model.IntentSpec, _ []model.Task) (workflow.CodePlan, error) {
 	return workflow.CodePlan{
 		ToolCalls: []workflow.ToolCall{
 			{
@@ -485,9 +485,9 @@ func (c *multiToolCoder) Build(_ context.Context, workflowID string, intent mode
 	}, nil
 }
 
-func (c *multiToolCoder) TakeMessages() []model.WorkerMessage {
+func (c *multiToolExecutor) TakeMessages() []model.WorkerMessage {
 	return []model.WorkerMessage{
-		{Kind: "info", Role: "coder", Content: "multi-tool coder produced tool calls"},
+		{Kind: "info", Role: "executor", Content: "multi-tool executor produced tool calls"},
 	}
 }
 

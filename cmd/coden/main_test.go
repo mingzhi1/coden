@@ -109,7 +109,7 @@ func TestNewLocalRPCClientCanSubmit(t *testing.T) {
 	opts := launcher.DefaultOptions(moduleRoot(), t.TempDir())
 	opts.Input = "loopback"
 	opts.Planner = "loopback"
-	opts.Coder = "loopback"
+	opts.Executor = "loopback"
 	opts.Acceptor = "loopback"
 	opts.Executor = "loopback"
 
@@ -155,7 +155,7 @@ func TestNewLocalRPCClientCanQueryCheckpoints(t *testing.T) {
 	opts := launcher.DefaultOptions(moduleRoot(), root)
 	opts.Input = "loopback"
 	opts.Planner = "loopback"
-	opts.Coder = "loopback"
+	opts.Executor = "loopback"
 	opts.Acceptor = "loopback"
 	opts.Executor = "loopback"
 
@@ -205,7 +205,7 @@ func TestNewLocalRPCClientWithProcessExecutorWritesWorkspaceFile(t *testing.T) {
 	opts := launcher.DefaultOptions(moduleRoot(), root)
 	opts.Input = "loopback"
 	opts.Planner = "loopback"
-	opts.Coder = "loopback"
+	opts.Executor = "loopback"
 	opts.Acceptor = "loopback"
 	opts.Executor = "process"
 
@@ -267,13 +267,13 @@ func TestDependencyOptions(t *testing.T) {
 		t.Fatalf("unexpected workspace root: %q", opts.WorkspaceRoot)
 	}
 	// Without API keys, DefaultOptions returns "loopback" for workers and "process" for executor.
-	if opts.Input != "loopback" || opts.Planner != "loopback" || opts.Coder != "loopback" || opts.Acceptor != "loopback" || opts.Executor != "process" {
+	if opts.Input != "loopback" || opts.Planner != "loopback" || opts.Executor != "loopback" || opts.Acceptor != "loopback" || opts.ToolExecutor != "process" {
 		t.Fatalf("unexpected auto-detected options: %+v", opts)
 	}
 
 	// Explicit overrides should take effect.
 	opts2 := dependencyOptions("workspace", "llm", "llm", "process", "loopback", "loopback")
-	if opts2.Input != "llm" || opts2.Planner != "llm" || opts2.Coder != "process" || opts2.Acceptor != "loopback" || opts2.Executor != "loopback" {
+	if opts2.Input != "llm" || opts2.Planner != "llm" || opts2.Executor != "process" || opts2.Acceptor != "loopback" || opts2.ToolExecutor != "loopback" {
 		t.Fatalf("unexpected overridden options: %+v", opts2)
 	}
 
@@ -291,7 +291,7 @@ func TestRunServeReturnsListenError(t *testing.T) {
 	opts := launcher.DefaultOptions(moduleRoot(), t.TempDir())
 	opts.Input = "loopback"
 	opts.Planner = "loopback"
-	opts.Coder = "loopback"
+	opts.Executor = "loopback"
 	opts.Acceptor = "loopback"
 	opts.Executor = "loopback"
 
@@ -423,7 +423,7 @@ func TestNewKernelCreatesWorkspaceRoot(t *testing.T) {
 	opts := launcher.DefaultOptions(moduleRoot(), workspaceRoot)
 	opts.Input = "loopback"
 	opts.Planner = "loopback"
-	opts.Coder = "loopback"
+	opts.Executor = "loopback"
 	opts.Acceptor = "loopback"
 	opts.Executor = "loopback"
 

@@ -47,7 +47,7 @@ func (s *Server) initProviders() {
 	// Set up routing
 	if routing == nil {
 		routing = map[string][]string{
-			"coder":    {"acp", "anthropic", "openai"},
+			"executor":    {"acp", "anthropic", "openai"},
 			"planner":  {"anthropic", "openai"},
 			"reviewer": {"openai"},
 			"light":    {"openai", "deepseek"},
@@ -239,7 +239,7 @@ func (s *Server) handleSideQuery(ctx context.Context, id *json.RawMessage, param
 
 // ChatParams are the parameters for llm/chat.
 type ChatParams struct {
-	RoleHint string          `json:"role_hint"`            // e.g. "coder", "planner", "light"
+	RoleHint string          `json:"role_hint"`            // e.g. "executor", "planner", "light"
 	Messages []providerMsg    `json:"messages,omitempty"`
 	Model    string          `json:"model,omitempty"`
 }

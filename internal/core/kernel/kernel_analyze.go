@@ -15,8 +15,8 @@ import (
 // runAnalyzeWorkflow handles Kind=analyze intents: a read-only investigation of
 // the code (Intent → Discovery → Analyzer → Responder). The Analyzer reads code
 // through tools but NEVER modifies it; its prose findings are the user-facing
-// answer. This replaces the earlier interim path that ran the Coder in
-// read-only mode — keeping the Coder pure-write and giving analysis its own
+// answer. This replaces the earlier interim path that ran the Executor in
+// read-only mode — keeping the Executor pure-write and giving analysis its own
 // Strong-tier role with an analysis-focused prompt.
 func (k *Kernel) runAnalyzeWorkflow(ctx context.Context, sessionID, workflowID string, intent model.IntentSpec) {
 	// Discovery: seed the Analyzer with code context before it starts reading.

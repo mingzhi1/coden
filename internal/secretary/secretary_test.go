@@ -36,7 +36,7 @@ func toSkillTargets(ts ...Target) []skill.Target {
 
 // allSkillTargets returns all four secretary targets converted to skill targets.
 func allSkillTargets() []skill.Target {
-	return toSkillTargets(TargetCoder, TargetPlanner, TargetAcceptor, TargetInputter)
+	return toSkillTargets(TargetExecutor, TargetPlanner, TargetAcceptor, TargetInputter)
 }
 
 // blockNames extracts the Name field from each ContextBlock.
@@ -63,7 +63,7 @@ func containsName(blocks []ContextBlock, name string) bool {
 //
 // Trust matrix (secretary trust levels):
 //
-//	                Acceptor(70)  Inputter(70)  Planner(50)  Coder(10)
+//	                Acceptor(70)  Inputter(70)  Planner(50)  Executor(10)
 //	builtin (90)       ✅            ✅            ✅            ✅
 //	user    (70)       ✅            ✅            ✅            ✅
 //	project (50)       ❌            ❌            ✅            ✅
@@ -84,31 +84,31 @@ func TestAssembleContext_TrustMatrix(t *testing.T) {
 		{"builtin→acceptor", skill.SourceBuiltin, TargetAcceptor, true},
 		{"builtin→inputter", skill.SourceBuiltin, TargetInputter, true},
 		{"builtin→planner", skill.SourceBuiltin, TargetPlanner, true},
-		{"builtin→coder", skill.SourceBuiltin, TargetCoder, true},
+		{"builtin→executor", skill.SourceBuiltin, TargetExecutor, true},
 
 		// user (70) — passes every target threshold
 		{"user→acceptor", skill.SourceUser, TargetAcceptor, true},
 		{"user→inputter", skill.SourceUser, TargetInputter, true},
 		{"user→planner", skill.SourceUser, TargetPlanner, true},
-		{"user→coder", skill.SourceUser, TargetCoder, true},
+		{"user→executor", skill.SourceUser, TargetExecutor, true},
 
 		// project (50) — blocked from acceptor/inputter (70)
 		{"project→acceptor", skill.SourceProject, TargetAcceptor, false},
 		{"project→inputter", skill.SourceProject, TargetInputter, false},
 		{"project→planner", skill.SourceProject, TargetPlanner, true},
-		{"project→coder", skill.SourceProject, TargetCoder, true},
+		{"project→executor", skill.SourceProject, TargetExecutor, true},
 
-		// plugin (30) — only passes coder (10)
+		// plugin (30) — only passes executor (10)
 		{"plugin→acceptor", skill.SourcePlugin, TargetAcceptor, false},
 		{"plugin→inputter", skill.SourcePlugin, TargetInputter, false},
 		{"plugin→planner", skill.SourcePlugin, TargetPlanner, false},
-		{"plugin→coder", skill.SourcePlugin, TargetCoder, true},
+		{"plugin→executor", skill.SourcePlugin, TargetExecutor, true},
 
-		// mcp (10) — only passes coder (10)
+		// mcp (10) — only passes executor (10)
 		{"mcp→acceptor", skill.SourceMCP, TargetAcceptor, false},
 		{"mcp→inputter", skill.SourceMCP, TargetInputter, false},
 		{"mcp→planner", skill.SourceMCP, TargetPlanner, false},
-		{"mcp→coder", skill.SourceMCP, TargetCoder, true},
+		{"mcp→executor", skill.SourceMCP, TargetExecutor, true},
 	}
 
 	for _, c := range cases {
@@ -135,21 +135,21 @@ func TestAssembleContext_TrustMatrix(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. TestAssembleContext_DefaultTargetIsCoder
+// 2. TestAssembleContext_DefaultTargetIsExecutor
 // ---------------------------------------------------------------------------
 
-func TestAssembleContext_DefaultTargetIsCoder(t *testing.T) {
+func TestAssembleContext_DefaultTargetIsExecutor(t *testing.T) {
 	reg := skill.NewRegistry()
-	// Empty Targets field → skillTargetsWorker defaults to coder only.
+	// Empty Targets field → skillTargetsWorker defaults to executor only.
 	sk := makeSkill("default-target", skill.SourceBuiltin, nil, "default body")
 	reg.Register(sk)
 
 	sec := New(reg, DefaultPolicy(), nil)
 
-	// Must appear for Coder.
-	blocks := sec.AssembleContext("sess", TargetCoder, nil)
+	// Must appear for Executor.
+	blocks := sec.AssembleContext("sess", TargetExecutor, nil)
 	if !containsName(blocks, "default-target") {
-		t.Error("skill with empty Targets should appear for Coder")
+		t.Error("skill with empty Targets should appear for Executor")
 	}
 
 	// Must NOT appear for Planner, Acceptor, or Inputter.
@@ -170,19 +170,19 @@ func TestAssembleContext_PathFiltering(t *testing.T) {
 
 	// Skill restricted to *.go files.
 	restricted := makeSkill("go-only", skill.SourceBuiltin,
-		toSkillTargets(TargetCoder), "go linting rules")
+		toSkillTargets(TargetExecutor), "go linting rules")
 	restricted.Frontmatter.Paths = []string{"**/*.go"}
 	reg.Register(restricted)
 
 	// Skill with no path restriction → always active.
 	unrestricted := makeSkill("always-on", skill.SourceBuiltin,
-		toSkillTargets(TargetCoder), "universal rules")
+		toSkillTargets(TargetExecutor), "universal rules")
 	reg.Register(unrestricted)
 
 	sec := New(reg, DefaultPolicy(), nil)
 
 	// Only a .ts file is touched → restricted skill must NOT appear.
-	blocks := sec.AssembleContext("sess", TargetCoder, []string{"main.ts"})
+	blocks := sec.AssembleContext("sess", TargetExecutor, []string{"main.ts"})
 
 	if containsName(blocks, "go-only") {
 		t.Error("go-only skill should NOT appear when touched files are [main.ts]")
@@ -192,7 +192,7 @@ func TestAssembleContext_PathFiltering(t *testing.T) {
 	}
 
 	// Now touch a .go file → both should appear.
-	blocks = sec.AssembleContext("sess", TargetCoder, []string{"main.go"})
+	blocks = sec.AssembleContext("sess", TargetExecutor, []string{"main.go"})
 	if !containsName(blocks, "go-only") {
 		t.Error("go-only skill should appear when a .go file is touched")
 	}
@@ -211,7 +211,7 @@ func TestAssembleContext_ContentTruncation(t *testing.T) {
 	// 20 KB of content from an MCP source.
 	bigContent := strings.Repeat("x", 20*1024)
 	sk := makeSkill("big-mcp-skill", skill.SourceMCP,
-		toSkillTargets(TargetCoder), bigContent)
+		toSkillTargets(TargetExecutor), bigContent)
 	reg.Register(sk)
 
 	policy := DefaultPolicy()
@@ -220,7 +220,7 @@ func TestAssembleContext_ContentTruncation(t *testing.T) {
 	}
 	sec := New(reg, policy, nil)
 
-	blocks := sec.AssembleContext("sess", TargetCoder, nil)
+	blocks := sec.AssembleContext("sess", TargetExecutor, nil)
 	if len(blocks) == 0 {
 		t.Fatal("expected at least one context block")
 	}
@@ -248,7 +248,7 @@ func TestAssembleContext_MaxSkillsPerWorker(t *testing.T) {
 		sk := makeSkill(
 			fmt.Sprintf("skill-%02d", i),
 			skill.SourceBuiltin,
-			toSkillTargets(TargetCoder),
+			toSkillTargets(TargetExecutor),
 			fmt.Sprintf("content for skill %d", i),
 		)
 		reg.Register(sk)
@@ -258,7 +258,7 @@ func TestAssembleContext_MaxSkillsPerWorker(t *testing.T) {
 	policy.MaxSkillsPerWorker = 3
 	sec := New(reg, policy, nil)
 
-	blocks := sec.AssembleContext("sess", TargetCoder, nil)
+	blocks := sec.AssembleContext("sess", TargetExecutor, nil)
 	if len(blocks) != 3 {
 		t.Errorf("expected exactly 3 blocks (MaxSkillsPerWorker=3), got %d: %v",
 			len(blocks), blockNames(blocks))
@@ -475,7 +475,7 @@ func TestFormatContextBlocks(t *testing.T) {
 		},
 	}
 
-	output := FormatContextBlocks(TargetCoder, blocks)
+	output := FormatContextBlocks(TargetExecutor, blocks)
 
 	if !strings.Contains(output, "## Active Context") {
 		t.Error("output should contain '## Active Context' header")
@@ -499,12 +499,12 @@ func TestFormatContextBlocks(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFormatContextBlocks_Empty(t *testing.T) {
-	output := FormatContextBlocks(TargetCoder, nil)
+	output := FormatContextBlocks(TargetExecutor, nil)
 	if output != "" {
 		t.Errorf("expected empty string for nil blocks, got %q", output)
 	}
 
-	output = FormatContextBlocks(TargetCoder, []ContextBlock{})
+	output = FormatContextBlocks(TargetExecutor, []ContextBlock{})
 	if output != "" {
 		t.Errorf("expected empty string for empty blocks, got %q", output)
 	}
@@ -519,7 +519,7 @@ func TestMinTrustForTarget(t *testing.T) {
 		target   Target
 		expected int
 	}{
-		{TargetCoder, 10},
+		{TargetExecutor, 10},
 		{TargetPlanner, 50},
 		{TargetAcceptor, 70},
 		{TargetInputter, 70},

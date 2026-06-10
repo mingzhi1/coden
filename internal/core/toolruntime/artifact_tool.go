@@ -8,7 +8,7 @@ import (
 	"github.com/mingzhi1/coden/internal/core/artifact"
 )
 
-// ArtifactTool exposes read_artifact and list_artifacts to the LLM Coder.
+// ArtifactTool exposes read_artifact and list_artifacts to the LLM Executor.
 // It allows the agent to retrieve previously saved tool results by ID,
 // eliminating the need to re-execute expensive queries.
 type ArtifactTool struct {

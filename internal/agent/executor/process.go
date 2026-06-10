@@ -1,4 +1,4 @@
-package code
+package executor
 
 import (
 	"context"
@@ -8,16 +8,16 @@ import (
 	"github.com/mingzhi1/coden/internal/rpc/subprocess"
 )
 
-func NewProcessRPCCoder(ctx context.Context, moduleRoot string) (workflow.Coder, func(), error) {
+func NewProcessRPCExecutor(ctx context.Context, moduleRoot string) (workflow.Executor, func(), error) {
 	clientRWC, err := subprocess.Start(ctx, subprocess.Spec{
 		ModuleRoot: moduleRoot,
-		BinaryName: "coden-agent-code",
-		GoPackage:  "./cmd/coden-agent-code",
+		BinaryName: "coden-agent-executor",
+		GoPackage:  "./cmd/coden-agent-executor",
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	client := NewRPCCoder(clientRWC)
+	client := NewRPCExecutor(clientRWC)
 	describeCtx, cancelDescribe := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelDescribe()
 	if _, err := client.Describe(describeCtx); err != nil {

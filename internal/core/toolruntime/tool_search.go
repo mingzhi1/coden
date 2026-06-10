@@ -5,9 +5,9 @@ import (
 	"strings"
 )
 
-// M12-02c: tool_search is a meta-tool that lets the Coder discover deferred
+// M12-02c: tool_search is a meta-tool that lets the Executor discover deferred
 // tools by keyword query. It is always available (non-deferred) and returns
-// matching tool descriptions so the Coder can invoke them.
+// matching tool descriptions so the Executor can invoke them.
 
 // executeToolSearch handles the "tool_search" tool kind.
 // It searches the registry for deferred tools matching the query and returns
