@@ -107,6 +107,7 @@ func (r *LLMReplanner) RePlan(ctx context.Context, intent model.IntentSpec, task
 		Files      []string `json:"files"`
 		DependsOn  []string `json:"depends_on"`
 		SuccessCmd string   `json:"success_cmd"`
+		SubGoal    string   `json:"sub_goal"`
 	}
 	if err := json.Unmarshal([]byte(extractJSON(reply)), &raw); err != nil || len(raw) == 0 {
 		// Fallback: return original tasks enriched with step hints.
@@ -162,14 +163,16 @@ func (r *LLMReplanner) RePlan(ctx context.Context, intent model.IntentSpec, task
 		if len(title) > 100 {
 			title = title[:100]
 		}
-		// Enforce steps count and length limits (1-3 items, 120 chars each)
+		// Recursive descent: each task is EITHER a base case (refined into concrete
+		// steps the Executor runs) OR a recursion case (a sub_goal too large to do
+		// in one pass, which the kernel decomposes into a child workflow). The two
+		// are mutually exclusive — a sub_goal supersedes any steps the model also
+		// emitted, since a decomposed task is planned by its child, not here.
+		subGoal := strings.TrimSpace(rt.SubGoal)
+
 		steps := rt.Steps
 		if len(steps) > 3 {
 			steps = steps[:3]
-		}
-		// R-01 fix: ensure at least one step so downstream Executor has instructions.
-		if len(steps) == 0 {
-			steps = []string{title}
 		}
 		for i := range steps {
 			if len(steps[i]) > 120 {
@@ -184,20 +187,29 @@ func (r *LLMReplanner) RePlan(ctx context.Context, intent model.IntentSpec, task
 			}
 		}
 		t := model.Task{
-			ID:         rt.ID,
-			Title:      title,
-			Status:     model.TaskStatusPlanned,
-			Files:      rt.Files,
-			DependsOn:  validDeps,
-			SuccessCmd: rt.SuccessCmd,
-			Steps:      steps,
+			ID:        rt.ID,
+			Title:     title,
+			Status:    model.TaskStatusPlanned,
+			Files:     rt.Files,
+			DependsOn: validDeps,
 		}
-		// RP-02 fix: if Replanner omitted success_cmd, preserve the Planner's original value.
-		// The Planner's success_cmd (e.g. "go build ./...") is the deterministic verification
-		// step; losing it degrades acceptance to LLM-only review.
-		if t.SuccessCmd == "" {
-			if orig, ok := origMap[rt.ID]; ok && orig.SuccessCmd != "" {
-				t.SuccessCmd = orig.SuccessCmd
+		if subGoal != "" {
+			// Recursion case: the child workflow plans and verifies the work, so the
+			// parent task carries neither steps nor a success_cmd.
+			t.SubGoal = subGoal
+		} else {
+			// Base case: ensure ≥1 step (R-01) so the Executor has instructions, and
+			// preserve the Planner's success_cmd (RP-02) if the Replanner dropped it —
+			// it is the deterministic verification the verify-in-loop gate runs.
+			if len(steps) == 0 {
+				steps = []string{title}
+			}
+			t.Steps = steps
+			t.SuccessCmd = rt.SuccessCmd
+			if t.SuccessCmd == "" {
+				if orig, ok := origMap[rt.ID]; ok && orig.SuccessCmd != "" {
+					t.SuccessCmd = orig.SuccessCmd
+				}
 			}
 		}
 		// Preserve Created time from original if it existed.

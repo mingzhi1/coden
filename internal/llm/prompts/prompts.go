@@ -199,24 +199,34 @@ Output a JSON array matching this schema:
     "id": "<string, keep the original task ID>",
     "title": "<string, max 100 chars, specific action>",
     "steps": ["<string, 1-3 items, each max 120 chars, concrete instructions>"],
+    "sub_goal": "<string, optional — see 'steps vs sub_goal' below>",
     "files": ["<string, exact file paths to modify>"],
     "depends_on": ["<string, task dependencies>"],
     "success_cmd": "<string, validation command>"
   }
 ]
 
+steps vs sub_goal — choose exactly ONE per task:
+- DEFAULT — "steps": the task is small enough to implement directly in one pass.
+  Give 1-3 concrete instructions referencing specific functions/lines/patterns.
+- EXCEPTION — "sub_goal": ONLY when a task is genuinely too large for one pass (it
+  is really several features, spans many files, or needs its own planning). Set
+  "sub_goal" to a clear, self-contained directive and leave "steps" empty; the
+  system recursively plans and executes it as its own child workflow. Prefer steps
+  — reach for sub_goal sparingly, and NEVER set both on one task.
+
 Rules:
 - id must match the original task ID
 - title must be under 100 characters
-- steps must have 1-3 items, each under 120 characters
-- Each step should reference specific functions, line numbers, or code patterns from the discovered code
+- A steps task: 1-3 items, each under 120 chars, referencing specific code
 - The executor is a low-level worker — give explicit, unambiguous instructions
 - If discovered code shows the original plan was wrong, adjust the tasks
 - If a planned file doesn't exist, remove it or suggest creating it
 - Keep 1-5 tasks. Reply ONLY with a valid JSON array, no markdown fences, no explanations
 
-Example output:
-[{"id": "task-1", "title": "Add Kind field to IntentSpec", "steps": ["Open model.go line 225", "Add Kind string field to IntentSpec struct", "Run go build ./... to verify"], "files": ["internal/core/model/model.go"], "depends_on": [], "success_cmd": "go build ./..."}]`
+Example output (one base-case task with steps, one large task decomposed via sub_goal):
+[{"id": "task-1", "title": "Add Kind field to IntentSpec", "steps": ["Open model.go line 225", "Add Kind string field to IntentSpec struct", "Run go build ./... to verify"], "files": ["internal/core/model/model.go"], "depends_on": [], "success_cmd": "go build ./..."},
+ {"id": "task-2", "title": "Build the auth subsystem", "sub_goal": "Implement the full authentication subsystem: user model, password hashing, login and logout handlers, session middleware, and unit tests.", "files": ["internal/auth/"], "depends_on": ["task-1"]}]`
 }
 
 // Executor returns the system prompt for the Code Generator (LLMExecutor).
