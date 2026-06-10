@@ -163,6 +163,16 @@ var builtinTools = map[string]ToolMeta{
 		Category:    "search",
 		SearchHints: []string{"fetch", "url", "http", "web", "download", "api"},
 	},
+	"web_search": {
+		Name:        "web_search",
+		Description: "Real-time web search for external knowledge (library docs, APIs, current info) via a search API.",
+		Parameters:  `{"query": "string (required)", "top_k": "int (optional, default 5)"}`,
+		Deferred:    true,
+		ReadOnly:    true,
+		Concurrent:  true,
+		Category:    "search",
+		SearchHints: []string{"search", "web", "google", "research", "docs", "documentation", "external", "internet", "look up"},
+	},
 }
 
 // IsMCPKind reports whether kind addresses an MCP tool ("mcp__<server>__<tool>").

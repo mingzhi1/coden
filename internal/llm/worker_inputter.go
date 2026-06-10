@@ -93,14 +93,10 @@ func (i *LLMInputter) Build(ctx context.Context, sessionID, prompt string) (mode
 			parsed.SuccessCriteria[i] = parsed.SuccessCriteria[i][:80]
 		}
 	}
-	// Validate kind; default to other for unknown values.
-	switch parsed.Kind {
-	case model.IntentKindCodeGen, model.IntentKindDebug, model.IntentKindRefactor,
-		model.IntentKindQuestion, model.IntentKindConfig,
-		model.IntentKindChat, model.IntentKindAnalyze, model.IntentKindPlanOnly,
-		model.IntentKindOther:
-		// valid
-	default:
+	// Validate kind against the single source of truth; default to other for
+	// unknown values. Deriving from model.AllIntentKinds keeps this in lock-step
+	// with the Dispatcher's routing table — no per-kind whitelist to drift.
+	if !model.IsKnownIntentKind(parsed.Kind) {
 		parsed.Kind = model.IntentKindOther
 	}
 

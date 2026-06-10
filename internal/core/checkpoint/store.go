@@ -21,6 +21,11 @@ type Store interface {
 	Latest(sessionID string) (model.CheckpointResult, bool)
 	Get(sessionID, workflowID string) (model.CheckpointResult, bool)
 	List(sessionID string, limit int) []model.CheckpointResult
+	// SaveBucket persists one incremental bucket-engine snapshot keyed by
+	// (session, workflow, seq) — the per-sequence crash-resume anchor (§6/§10.1).
+	SaveBucket(snap model.BucketSnapshot) error
+	// LatestBucket returns the highest-seq snapshot for a workflow, for resume.
+	LatestBucket(sessionID, workflowID string) (model.BucketSnapshot, bool)
 	Close() error
 }
 
@@ -28,13 +33,38 @@ type memoryStore struct {
 	mu      sync.RWMutex
 	latest  map[string]model.CheckpointResult
 	history map[string][]model.CheckpointResult
+	buckets map[string]model.BucketSnapshot // key: sessionID|workflowID → highest-seq snapshot
 }
 
 func NewStore() Store {
 	return &memoryStore{
 		latest:  make(map[string]model.CheckpointResult),
 		history: make(map[string][]model.CheckpointResult),
+		buckets: make(map[string]model.BucketSnapshot),
 	}
+}
+
+func bucketKey(sessionID, workflowID string) string { return sessionID + "|" + workflowID }
+
+func (s *memoryStore) SaveBucket(snap model.BucketSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := bucketKey(snap.SessionID, snap.WorkflowID)
+	if prev, ok := s.buckets[k]; ok && prev.Seq > snap.Seq {
+		return nil // never regress to an older seq
+	}
+	s.buckets[k] = cloneBucketSnapshot(snap)
+	return nil
+}
+
+func (s *memoryStore) LatestBucket(sessionID, workflowID string) (model.BucketSnapshot, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snap, ok := s.buckets[bucketKey(sessionID, workflowID)]
+	if !ok {
+		return model.BucketSnapshot{}, false
+	}
+	return cloneBucketSnapshot(snap), true
 }
 
 func NewSQLiteStore(path string) (Store, error) {
@@ -156,6 +186,20 @@ CREATE TABLE IF NOT EXISTS checkpoint_results (
 	}
 	// Migration: add fix_guidance column to existing databases.
 	s.db.Exec(`ALTER TABLE checkpoint_results ADD COLUMN fix_guidance TEXT NOT NULL DEFAULT ''`)
+
+	// Incremental bucket-engine snapshots (§6/§10.1): many rows per workflow, keyed
+	// by seq, for crash-resume / undo.
+	if _, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS bucket_snapshots (
+	session_id TEXT NOT NULL,
+	workflow_id TEXT NOT NULL,
+	seq INTEGER NOT NULL,
+	snapshot_json TEXT NOT NULL,
+	created_at_unix_nano INTEGER NOT NULL,
+	PRIMARY KEY (session_id, workflow_id, seq)
+)`); err != nil {
+		return fmt.Errorf("create bucket_snapshots table: %w", err)
+	}
 	return nil
 }
 
@@ -259,6 +303,53 @@ func (s *sqliteStore) Delete(workflowID, sessionID string) {
 
 func (s *sqliteStore) Close() error {
 	return s.db.Close()
+}
+
+func (s *sqliteStore) SaveBucket(snap model.BucketSnapshot) error {
+	blob, err := json.Marshal(snap)
+	if err != nil {
+		return fmt.Errorf("marshal bucket snapshot: %w", err)
+	}
+	// One row per (session, workflow, seq); INSERT OR IGNORE so a replayed seq is
+	// idempotent and never regresses the durable history.
+	_, err = s.db.Exec(`
+INSERT OR IGNORE INTO bucket_snapshots (session_id, workflow_id, seq, snapshot_json, created_at_unix_nano)
+VALUES (?, ?, ?, ?, ?)`,
+		snap.SessionID, snap.WorkflowID, snap.Seq, string(blob), snap.CreatedAt.UnixNano())
+	if err != nil {
+		return fmt.Errorf("insert bucket snapshot: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) LatestBucket(sessionID, workflowID string) (model.BucketSnapshot, bool) {
+	var blob string
+	err := s.db.QueryRow(`
+SELECT snapshot_json FROM bucket_snapshots
+WHERE session_id = ? AND workflow_id = ?
+ORDER BY seq DESC LIMIT 1`, sessionID, workflowID).Scan(&blob)
+	if err != nil {
+		return model.BucketSnapshot{}, false
+	}
+	var snap model.BucketSnapshot
+	if err := json.Unmarshal([]byte(blob), &snap); err != nil {
+		return model.BucketSnapshot{}, false
+	}
+	return snap, true
+}
+
+func cloneBucketSnapshot(in model.BucketSnapshot) model.BucketSnapshot {
+	out := in
+	out.Bucket = append([]model.Task(nil), in.Bucket...)
+	out.Completed = make(map[string]string, len(in.Completed))
+	for k, v := range in.Completed {
+		out.Completed[k] = v
+	}
+	out.Artifacts = make(map[string]model.Artifact, len(in.Artifacts))
+	for k, v := range in.Artifacts {
+		out.Artifacts[k] = v
+	}
+	return out
 }
 
 type rowScanner interface {

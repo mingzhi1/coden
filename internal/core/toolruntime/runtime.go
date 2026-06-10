@@ -194,13 +194,14 @@ func NewWithExecutor(executor Executor) (*Runtime, error) {
 }
 
 type LocalExecutor struct {
-	workspace    *workspace.Service
-	lspTools     map[string]Executor  // language -> LSP tool executor
-	ragTool      Executor             // RAG tool executor
-	webFetchTool Executor             // Web fetch tool executor
-	searchConfig *config.SearchConfig // search tool configuration (nil = defaults)
-	registry     *ToolRegistry        // M12-02: tool metadata registry
-	artifactMgr  artifact.Manager     // M13: optional artifact manager
+	workspace     *workspace.Service
+	lspTools      map[string]Executor  // language -> LSP tool executor
+	ragTool       Executor             // RAG tool executor
+	webFetchTool  Executor             // Web fetch tool executor
+	webSearchTool Executor             // Web search tool executor
+	searchConfig  *config.SearchConfig // search tool configuration (nil = defaults)
+	registry      *ToolRegistry        // M12-02: tool metadata registry
+	artifactMgr   artifact.Manager     // M13: optional artifact manager
 
 	// lifecycleCtx is cancelled when the executor is closed. Background
 	// goroutines (e.g. RAG incremental update) should use this context so
@@ -249,6 +250,7 @@ func NewLocalExecutor(workspace *workspace.Service) *LocalExecutor {
 		workspace:       workspace,
 		lspTools:        make(map[string]Executor),
 		webFetchTool:    NewWebFetchTool(),
+		webSearchTool:   NewWebSearchTool(newTavilyProviderFromEnv()),
 		registry:        NewToolRegistry(),
 		lifecycleCtx:    ctx,
 		lifecycleCancel: cancel,
@@ -262,6 +264,7 @@ func NewLocalExecutorWithLSP(workspace *workspace.Service, lspTools map[string]E
 		workspace:       workspace,
 		lspTools:        lspTools,
 		webFetchTool:    NewWebFetchTool(),
+		webSearchTool:   NewWebSearchTool(newTavilyProviderFromEnv()),
 		registry:        NewToolRegistry(),
 		lifecycleCtx:    ctx,
 		lifecycleCancel: cancel,
@@ -276,6 +279,7 @@ func NewLocalExecutorWithTools(workspace *workspace.Service, lspTools map[string
 		lspTools:        lspTools,
 		ragTool:         ragTool,
 		webFetchTool:    NewWebFetchTool(),
+		webSearchTool:   NewWebSearchTool(newTavilyProviderFromEnv()),
 		registry:        NewToolRegistry(),
 		lifecycleCtx:    ctx,
 		lifecycleCancel: cancel,
@@ -493,6 +497,19 @@ func (r *LocalExecutor) dispatch(ctx context.Context, req Request, start time.Ti
 			slog.Warn("[tool] web_fetch failed", "url", req.Path, "error", err, "duration_ms", dur)
 		} else {
 			slog.Info("[tool] web_fetch completed", "url", req.Path, "duration_ms", dur)
+		}
+		return res, err
+
+	case "web_search":
+		if r.webSearchTool == nil {
+			return Result{}, fmt.Errorf("web_search: tool not initialized")
+		}
+		res, err := r.webSearchTool.Execute(ctx, req)
+		dur := time.Since(start).Milliseconds()
+		if err != nil {
+			slog.Warn("[tool] web_search failed", "query", req.Query, "error", err, "duration_ms", dur)
+		} else {
+			slog.Info("[tool] web_search completed", "query", req.Query, "duration_ms", dur)
 		}
 		return res, err
 

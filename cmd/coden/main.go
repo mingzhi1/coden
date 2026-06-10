@@ -545,9 +545,11 @@ func newKernel(ctx context.Context, workspaceRoot, stateDBPath string, opts laun
 		// Analyzer performs read-only code investigation for analyze intents
 		// (Strong tier); shares the kernel's tool executor for its read loop.
 		k.SetAnalyzer(llm.NewLLMAnalyzer(chatter, deps.ToolExecutor))
-		// Dispatcher designs each run's workflow (mode + participating roles) via
-		// a lightweight SideQuery; falls back to the static policy table on error.
-		k.SetDispatcher(llm.NewLLMDispatcher(chatter))
+		// Routing is deterministic (`代码裁决`): the Kernel's built-in Dispatcher maps
+		// intent kind → WorkflowMode via the single-source policy table (policyForKind),
+		// so a new intent (e.g. research) is reachable the moment it's in the table —
+		// no flaky second LLM that re-classifies and drifts. (The former LLMDispatcher
+		// also wrote per-role objectives; that generative bit moves to the Planner.)
 		// Profiler fills the cached project profile (overview/style) once per
 		// manifest change; heuristic languages/toolchain work without it.
 		k.SetProfiler(llm.NewLLMProfiler(chatter))

@@ -149,3 +149,54 @@ func TestSQLiteStorePersistsHistory(t *testing.T) {
 		t.Fatalf("unexpected checkpoint list: %+v", list)
 	}
 }
+
+// TestBucketSnapshotRoundTrip verifies SaveBucket/LatestBucket persist a snapshot
+// and return the highest-seq one, for both the memory and SQLite stores.
+func TestBucketSnapshotRoundTrip(t *testing.T) {
+	t.Parallel()
+	stores := map[string]Store{"memory": NewStore()}
+	sq, err := NewSQLiteStore(filepath.Join(t.TempDir(), "snap.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer sq.Close()
+	stores["sqlite"] = sq
+
+	for name, store := range stores {
+		t.Run(name, func(t *testing.T) {
+			mk := func(seq int, st string) model.BucketSnapshot {
+				return model.BucketSnapshot{
+					SessionID: "s1", WorkflowID: "wf1", Seq: seq,
+					Bucket:    []model.Task{{ID: "t1", Status: st}},
+					Completed: map[string]string{"t1": st},
+					Artifacts: map[string]model.Artifact{"t1": {Path: "t1.go", Evidence: []string{"ok"}}},
+					CreatedAt: time.Now(),
+				}
+			}
+			if err := store.SaveBucket(mk(1, "coding")); err != nil {
+				t.Fatalf("SaveBucket seq1: %v", err)
+			}
+			if err := store.SaveBucket(mk(2, "passed")); err != nil {
+				t.Fatalf("SaveBucket seq2: %v", err)
+			}
+			// An older seq must not regress the latest.
+			if err := store.SaveBucket(mk(1, "stale")); err != nil {
+				t.Fatalf("SaveBucket stale: %v", err)
+			}
+
+			got, ok := store.LatestBucket("s1", "wf1")
+			if !ok {
+				t.Fatal("LatestBucket missing")
+			}
+			if got.Seq != 2 {
+				t.Errorf("expected latest seq 2, got %d", got.Seq)
+			}
+			if got.Completed["t1"] != "passed" || got.Artifacts["t1"].Path != "t1.go" {
+				t.Errorf("snapshot fields lost: %+v", got)
+			}
+			if _, ok := store.LatestBucket("s1", "other"); ok {
+				t.Error("expected no snapshot for unknown workflow")
+			}
+		})
+	}
+}

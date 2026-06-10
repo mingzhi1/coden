@@ -181,6 +181,14 @@ func contextSummary(ctx context.Context) string {
 		sb.WriteString(feedback)
 		sb.WriteString("\n")
 	}
+	// §11 DepArtifacts projection: findings/outputs from this task's completed
+	// dependencies (e.g. a gather-first research/analyze task), so a downstream
+	// task sees what was learned instead of re-discovering it.
+	if wc.DepFindings != "" {
+		sb.WriteString("\n## Findings from completed dependencies\n")
+		sb.WriteString(wc.DepFindings)
+		sb.WriteString("\n")
+	}
 	// Secretary Agent: inject authorized extension context (Skills, RULES.md, etc.)
 	if wc.SecretaryContext != "" {
 		sb.WriteString("\n")
@@ -521,6 +529,10 @@ func normalizePlanToolCalls(workflowID string, calls []codePlanToolCall) []workf
 		}
 		// web_fetch requires path (URL).
 		if kind == "web_fetch" && req.Path == "" && req.Query == "" {
+			continue
+		}
+		// web_search requires query.
+		if kind == "web_search" && req.Query == "" {
 			continue
 		}
 

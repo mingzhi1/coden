@@ -20,6 +20,10 @@ const (
 	WorkflowModeAnalyze WorkflowMode = "analyze"
 	// WorkflowModeExecute: Plan → [Critic] → [RePlan] → [Code → [Accept]] → Responder.
 	WorkflowModeExecute WorkflowMode = "execute"
+	// WorkflowModeResearch: gather EXTERNAL knowledge via the multi-agent bucket
+	// engine, read-only (Planner → Executor[web_search] → … → Responder). The
+	// external counterpart of Analyze; selected by intent recognition.
+	WorkflowModeResearch WorkflowMode = "research"
 )
 
 // WorkflowPlan is the declarative description of a single workflow run: the mode
@@ -35,8 +39,8 @@ const (
 // unconditional infrastructure (the prefetch goroutine), not an optional stage.
 // It becomes plan-controlled only when a mode that skips it actually exists.
 type WorkflowPlan struct {
-	Mode      WorkflowMode
-	Roles     map[Role]bool // optional stages enabled within Mode
+	Mode         WorkflowMode
+	Roles        map[Role]bool // optional stages enabled within Mode
 	ExecutorMode model.ExecutorMode
 	// Objectives is the per-role purpose the workflow hands each participating
 	// agent: a concrete, bounded brief that sharpens the raw intent goal so the
@@ -101,14 +105,15 @@ var _ Dispatcher = (*LocalDispatcher)(nil)
 // pipelinePolicy declares which workflow stages run for a given intent, and in
 // what mode. Every path closes with the Responder regardless of this policy.
 type pipelinePolicy struct {
-	Discovery bool            // gather code context (grep/LSP/RAG)
-	Analyzer  bool            // run the read-only Analyzer (analyze intent)
-	Plan      bool            // produce task DAG
-	Critic    bool            // review the plan
-	RePlan    bool            // refine the plan against critique + discovery
-	Code      bool            // run the (agentic) Executor
+	Discovery    bool               // gather code context (grep/LSP/RAG)
+	Analyzer     bool               // run the read-only Analyzer (analyze intent)
+	Research     bool               // run the read-only multi-agent research workflow (research intent)
+	Plan         bool               // produce task DAG
+	Critic       bool               // review the plan
+	RePlan       bool               // refine the plan against critique + discovery
+	Code         bool               // run the (agentic) Executor
 	ExecutorMode model.ExecutorMode // ReadWrite (may modify) or ReadOnly (analyze)
-	Accept    bool            // verify the produced artifact
+	Accept       bool               // verify the produced artifact
 }
 
 // policyForKind maps an IntentSpec.Kind to its pipeline policy. New kinds or
@@ -122,6 +127,11 @@ func policyForKind(kind string) pipelinePolicy {
 	case model.IntentKindAnalyze:
 		// Read code, never modify: Intent → Discovery → Analyzer → Responder.
 		return pipelinePolicy{Discovery: true, Analyzer: true}
+
+	case model.IntentKindResearch:
+		// Gather external knowledge, never modify the repo: multi-agent bucket
+		// engine, read-only (Planner → Executor[web_search] → … → Responder).
+		return pipelinePolicy{Research: true, ExecutorMode: model.ExecutorModeReadOnly}
 
 	case model.IntentKindPlanOnly:
 		// Produce & review a plan, do not execute: skip Code/Accept.
@@ -144,6 +154,8 @@ func planFromPolicy(p pipelinePolicy) WorkflowPlan {
 	switch {
 	case p.Analyzer:
 		return WorkflowPlan{Mode: WorkflowModeAnalyze, ExecutorMode: p.ExecutorMode}
+	case p.Research:
+		return WorkflowPlan{Mode: WorkflowModeResearch, ExecutorMode: p.ExecutorMode}
 	case !p.Plan:
 		return WorkflowPlan{Mode: WorkflowModeAnswer, ExecutorMode: p.ExecutorMode}
 	default:

@@ -181,3 +181,15 @@ func TestParticipates(t *testing.T) {
 		t.Errorf("Planner must always participate in execute mode")
 	}
 }
+
+// TestPolicyForKind_Research verifies intent recognition routes a research intent
+// to the read-only Research workflow mode (the external counterpart of Analyze).
+func TestPolicyForKind_Research(t *testing.T) {
+	plan := planFromPolicy(policyForKind(model.IntentKindResearch))
+	if plan.Mode != WorkflowModeResearch {
+		t.Errorf("research intent → mode %q, want %q", plan.Mode, WorkflowModeResearch)
+	}
+	if plan.ExecutorMode != model.ExecutorModeReadOnly {
+		t.Errorf("research must be read-only, got ExecutorMode %v", plan.ExecutorMode)
+	}
+}

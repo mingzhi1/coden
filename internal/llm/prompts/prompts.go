@@ -14,7 +14,7 @@ func Inputter(prevIntentHint string) string {
 
 {
   "goal": "<string, max 200 chars, one-sentence description of the user's goal>",
-  "kind": "<string, exactly one of: code_gen, debug, refactor, question, config, chat, analyze, plan_only, other>",
+  "kind": "<string, exactly one of: code_gen, debug, refactor, question, config, chat, analyze, research, plan_only, other>",
   "success_criteria": ["<string, 2-4 items, each max 80 chars, observable and testable>"]
 }
 
@@ -24,7 +24,8 @@ Rules for "kind":
 - "refactor" = restructure existing code without changing behavior
 - "config" = set up or configure something
 - "chat" = conversational discussion, brainstorming, casual explanation
-- "analyze" = code analysis, review, architecture understanding (read-only, never modifies code)
+- "analyze" = code analysis, review, architecture understanding of THIS codebase (read-only, never modifies code)
+- "research" = gather EXTERNAL knowledge not in this codebase — library docs, third-party APIs, current best practices, anything that needs the web (read-only)
 - "plan_only" = user wants a plan/design/approach but explicitly NOT execution ("just plan", "how would you", "draft a plan", "don't write code yet", "propose an approach")
 - "other" = greetings, meta-requests, ambiguous input that fits none of the above
 - "code_gen" = anything else involving writing or modifying code
@@ -152,6 +153,16 @@ Rules:
 - Look at the workspace files provided in the context to understand the current project state
 - If the workspace has no go.mod, package.json, etc., include an initialization task first
 
+Gather information first when materials are incomplete:
+- If you lack the information to specify a concrete task — an unfamiliar third-party
+  library/API, or an unclear part of THIS codebase — add a read-only investigation
+  task FIRST and make the implementation tasks depend_on it. Do not plan blind
+  against an API you would be guessing.
+- External knowledge (library docs, third-party APIs, current best practices): the
+  investigation task uses web_search / web_fetch. Internal code: read_file / search.
+- When the goal IS to research/understand (no code change needed), the whole plan is
+  read-only investigation tasks producing findings — no success_cmd required.
+
 Planning philosophy — minimum viable approach:
 - Try the simplest approach first. Do not over-engineer.
 - Prefer editing existing files over creating new ones — this prevents file bloat.
@@ -264,6 +275,11 @@ Given a goal and task list, produce a JSON tool plan matching this schema:
   arguments as a JSON object in the "content" field, matching the tool's input schema
 - For regex search, Go syntax: "func\s+\w+\(" matches function definitions
 - Keep tool calls ordered: discover first, then mutate
+- Research before implementing when materials are incomplete: if you lack knowledge
+  of an external library, framework, or third-party API the task needs, use
+  web_search (and web_fetch for a specific doc URL) to look it up BEFORE writing
+  code against it — never guess an external API. For unclear parts of THIS codebase,
+  read_file/search first. Discover web_search/web_fetch via tool_search if not listed.
 - Reply ONLY with valid JSON, no markdown fences, no explanations` +
 		executorSafetyRules() + executorStyleRules()
 
@@ -291,7 +307,8 @@ Additional tools are available but not listed here. Use tool_search to find them
 - Code navigation (go-to-definition, find references, symbol lists)
 - Semantic/embedding-based code search
 - Surrounding context for a specific line
-- Fetching content from URLs
+- Real-time web search for external knowledge (library docs, APIs) — web_search
+- Fetching content from a specific URL — web_fetch
 
 `
 }

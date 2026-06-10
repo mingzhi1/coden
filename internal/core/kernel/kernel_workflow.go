@@ -4,16 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/mingzhi1/coden/internal/core/discovery"
-	"github.com/mingzhi1/coden/internal/hook"
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/taskqueue"
 	"github.com/mingzhi1/coden/internal/core/toolruntime"
 	"github.com/mingzhi1/coden/internal/core/workflow"
+	"github.com/mingzhi1/coden/internal/hook"
 	clog "github.com/mingzhi1/coden/internal/log"
 	"github.com/mingzhi1/coden/internal/secretary"
 )
@@ -258,6 +257,13 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 			Status: model.TaskStatusCoding,
 		}})
 		k.runAnalyzeWorkflow(ctx, sessionID, workflowID, intentSpec)
+		return
+	case workflow.WorkflowModeResearch:
+		// research: gather external knowledge via the multi-agent bucket engine,
+		// read-only (Planner → Executor[web_search] → … → Responder).
+		wfCtx.ExecutorMode = model.ExecutorModeReadOnly
+		ctx = model.WithWorkflowContext(ctx, wfCtx)
+		k.runResearchWorkflow(ctx, sessionID, workflowID, intentSpec, wfCtx)
 		return
 	case workflow.WorkflowModeAnswer:
 		// Direct answer (greeting / question / chat): Intent → Responder.
@@ -552,82 +558,21 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	}
 	k.mu.Unlock()
 
-	// N-08: Execute tasks concurrently using DAG-level scheduling.
-	acceptEnabled := plan.Has(workflow.RoleAcceptor)
-	checkpointResult, artifact, llmOutputStr, taskErr := k.runTasksConcurrent(
-		ctx, sessionID, workflowID, intentSpec, queue, discoverySnippets, acceptEnabled)
-
-	// Handle "replan" failure policy: re-plan abandoned tasks and retry once.
-	if re, ok := taskErr.(*replanRequestedError); ok && k.workflow.Replanner() != nil {
-		clog.Session(sessionID).Info("replan policy triggered, re-planning remaining tasks",
-			"workflow_id", workflowID,
-			"evidence", re.evidence)
-
-		// Collect abandoned tasks from the queue.
-		var abandonedTasks []model.Task
-		for _, t := range queue.Snapshot() {
-			if t.Status == model.TaskStatusAbandoned {
-				t.Status = model.TaskStatusPlanned
-				abandonedTasks = append(abandonedTasks, t)
-			}
-		}
-
-		if len(abandonedTasks) > 0 {
-			// Inject failure evidence into the intent for the Replanner.
-			replanIntent := intentSpec
-			replanIntent.Goal = fmt.Sprintf("%s\n\n[REPLAN] Previous task failed: %s",
-				intentSpec.Goal, strings.Join(re.evidence, "; "))
-
-			k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
-				WorkflowID: workflowID,
-				Step:       "replan",
-				Status:     "running",
-			})
-
-			refined, rpErr := k.workflow.Replanner().RePlan(ctx, replanIntent, abandonedTasks, discoverySnippets)
-			if rpErr != nil {
-				slog.Warn("replan-on-failure failed, treating as hard failure",
-					"workflow", workflowID, "error", rpErr)
-				k.handleWorkflowError(sessionID, workflowID, taskErr)
-				return
-			}
-
-			k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
-				WorkflowID: workflowID,
-				Step:       "replan",
-				Status:     "done",
-			})
-
-			if len(refined) > 0 {
-				if dagErr := validateTaskDAG(refined); dagErr != nil {
-					k.handleWorkflowError(sessionID, workflowID,
-						fmt.Errorf("replan-on-failure produced invalid DAG: %w", dagErr))
-					return
-				}
-				// Replace queue with re-planned tasks and re-run.
-				replanQueue := taskqueue.New(refined)
-				k.emitTasksUpdated(sessionID, workflowID, refined)
-				cp2, art2, llm2, err2 := k.runTasksConcurrent(
-					ctx, sessionID, workflowID, intentSpec, replanQueue, discoverySnippets, acceptEnabled)
-				// Merge results: use replan results if available.
-				if cp2.Status != "" {
-					checkpointResult = cp2
-				}
-				if art2.Path != "" || art2.Summary != "" {
-					artifact = art2
-				}
-				llmOutputStr += llm2
-				taskErr = err2
-				queue = replanQueue
-			}
-		}
-	}
+	// Execute the planned tasks through the blackboard bucket engine (replaces the
+	// old DAG-level runTasksConcurrent + replan-on-failure loop). The engine owns
+	// readiness+priority scheduling, per-task retry/abandon (§5), Guardian
+	// termination, and incremental checkpoints. See docs/design/blackboard_bucket_workflow.md.
+	checkpointResult, artifact, finalTasks, taskErr := k.runTasksBucket(
+		ctx, sessionID, workflowID, intentSpec, tasks, wfCtx)
+	// The bucket engine surfaces evidence via the checkpoint, not a raw LLM
+	// transcript; turn memory below records status/dirty-paths instead.
+	llmOutputStr := ""
 
 	if taskErr != nil {
 		// Persist a partial turn summary even for failed workflows so that
 		// subsequent turns in the same session have context about what was
 		// attempted and what went wrong.
-		tasks = queue.Snapshot()
+		tasks = finalTasks
 		failedCP := checkpointResult
 		if failedCP.Status == "" {
 			failedCP.Status = "fail"
@@ -641,14 +586,19 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		return
 	}
 
-	// From this point, always use queue.Snapshot() to get the authoritative task list.
-	tasks = queue.Snapshot()
+	// The bucket engine's final task list is authoritative from here on.
+	tasks = finalTasks
 
 	// Guard: ensure checkpoint has a valid terminal status before saga commit.
 	// An empty status can occur in edge cases (e.g. all tasks skipped accept).
 	if checkpointResult.Status == "" {
 		checkpointResult.Status = "pass"
 	}
+
+	// Outer goal-critique (§3): a heterogeneous reviewer judges the assembled
+	// RESULT (evidence-annotated), not the plan. Best-effort and downgrade-only —
+	// it can turn a self-reported pass into a fail with guidance, never the reverse.
+	checkpointResult = k.applyGoalCritique(ctx, workflowID, intentSpec, tasks, checkpointResult)
 
 	// L4-07: Saga 事务提交 — 将所有工作流结束状态
 	//（checkpoint、turn 摘要、assistant 消息、turn 状态）作为 saga 持久化。
@@ -711,107 +661,6 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		taskTitles[i] = t.Title
 	}
 	k.persistTurnMemory(ctx, sessionID, workflowID, intentSpec.Goal, taskTitles, llmOutputStr, checkpointResult.Status, dirtyPaths)
-}
-
-// maxWorkflowDepth is the deepest workflow level allowed to decompose: a task
-// recurses into a child workflow only while its depth is < maxWorkflowDepth, so
-// the value caps nesting and prevents a misbehaving RePlanner from decomposing
-// forever. Depth 0 is the top-level workflow. With maxWorkflowDepth=1 the shape
-// is 父+子 (two layers): a depth-0 task may spawn one depth-1 child, and that
-// child's tasks (depth 1 ≥ limit) execute directly — no grandchildren. The
-// limit is enforced in runOneTask.
-const maxWorkflowDepth = 1
-
-// runChildWorkflow recursively runs a Plan→[RePlan]→execute pipeline against
-// subGoal as a child of the current workflow — the recursion primitive for task
-// decomposition. runOneTask invokes it when a task carries a SubGoal.
-//
-// Unlike runWorkflow, the child creates no turn and commits no saga: the parent
-// owns the turn, and the child's checkpoint/artifact become the parent task's
-// result. It runs synchronously in the parent's goroutine — no new sessionMutex
-// acquisition — so the single-writer invariant holds. depth is carried in the
-// WorkflowContext and bounds nesting.
-//
-// workflowID is the PARENT's workflow ID (the child shares the parent's identity,
-// see runSubWorkflowTask): the child's events, file changes, and worker states
-// roll up into the parent's records rather than orphaning under a fresh ID.
-//
-// parentFiles is the file scope of the task being decomposed: child tasks that
-// declare no Files of their own inherit it, so the child stays within the same
-// area the parent task was allowed to touch (keeping concurrent sibling children
-// disjoint, the same guarantee the flat DAG relies on). Empty = unrestricted.
-func (k *Kernel) runChildWorkflow(ctx context.Context, sessionID, workflowID, subGoal string, depth int, parentFiles []string) (model.CheckpointResult, model.Artifact, error) {
-	childIntent := model.IntentSpec{
-		ID:        nextKernelID("intent-sub"),
-		SessionID: sessionID,
-		Goal:      subGoal,
-		Kind:      model.IntentKindCodeGen,
-		CreatedAt: time.Now().UTC(),
-	}
-
-	// Carry depth so a nested SubGoal inside this child is bounded by runOneTask.
-	wfCtx := model.WorkflowContextFrom(ctx)
-	wfCtx.Depth = depth
-	ctx = model.WithWorkflowContext(ctx, wfCtx)
-	// Reuse the parent's discovery: a SubGoal refines a parent task the parent's
-	// discovery already covered, so a fresh search would mostly duplicate it.
-	childSnippets := wfCtx.DiscoveryContext
-
-	k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
-		WorkflowID: workflowID, Step: "plan", Status: "running",
-	})
-	planCtx := k.injectSecretaryContext(ctx, sessionID, secretary.TargetPlanner)
-	planResult, err := k.executeWorker(planCtx, sessionID, workflowID, "plan", workflow.RolePlanner, k.workflow.PlannerWorker(), workflow.WorkerInput{
-		SessionID:  sessionID,
-		WorkflowID: workflowID,
-		Intent:     childIntent,
-	})
-	if err != nil {
-		return model.CheckpointResult{}, model.Artifact{}, fmt.Errorf("child plan: %w", err)
-	}
-	tasks := planResult.Tasks
-	for i := range tasks {
-		if tasks[i].Status == "" {
-			tasks[i].Status = model.TaskStatusPlanned
-		}
-	}
-	if len(tasks) == 0 {
-		return model.CheckpointResult{}, model.Artifact{}, fmt.Errorf("child planner returned no tasks")
-	}
-	if err := validateTaskDAG(tasks); err != nil {
-		return model.CheckpointResult{}, model.Artifact{}, fmt.Errorf("child invalid task graph: %w", err)
-	}
-
-	// RePlan refines tasks (Steps/SuccessCmd) and is the only role that may emit a
-	// further SubGoal for deeper recursion. Best-effort: on failure keep the plan.
-	if rp := k.workflow.Replanner(); rp != nil {
-		if refined, rpErr := rp.RePlan(ctx, childIntent, tasks, childSnippets); rpErr == nil && len(refined) > 0 {
-			if validateTaskDAG(refined) == nil {
-				tasks = refined
-			}
-		}
-	}
-
-	// Constrain child writes to the parent task's scope: a child task that
-	// declares no Files inherits the parent's, so the soft scope guard bounds the
-	// child to the same area and concurrent sibling children stay disjoint.
-	if len(parentFiles) > 0 {
-		for i := range tasks {
-			if len(tasks[i].Files) == 0 {
-				tasks[i].Files = append([]string(nil), parentFiles...)
-			}
-		}
-	}
-
-	queue := taskqueue.New(tasks)
-	cp, art, _, taskErr := k.runTasksConcurrent(ctx, sessionID, workflowID, childIntent, queue, childSnippets, true)
-	if taskErr != nil {
-		return cp, art, fmt.Errorf("child execution: %w", taskErr)
-	}
-	if cp.Status == "" {
-		cp.Status = "pass"
-	}
-	return cp, art, nil
 }
 
 // finishPlanOnly commits a plan_only workflow: the reviewed plan IS the

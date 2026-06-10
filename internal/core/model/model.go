@@ -185,19 +185,19 @@ type SearchStartedPayload struct {
 
 // SA-09: SearchFinishedPayload is emitted when the discovery search phase ends.
 type SearchFinishedPayload struct {
-	WorkflowID   string   `json:"workflow_id"`
-	QueryID      string   `json:"query_id"`
-	SnippetCount int      `json:"snippet_count"`
-	EvidenceCount int     `json:"evidence_count"`
-	Confidence   float64  `json:"confidence"`
-	Layers       []string `json:"layers"`   // which retrieval layers were used: grep/lsp/rag
-	DurationMs   int64    `json:"duration_ms"`
+	WorkflowID    string   `json:"workflow_id"`
+	QueryID       string   `json:"query_id"`
+	SnippetCount  int      `json:"snippet_count"`
+	EvidenceCount int      `json:"evidence_count"`
+	Confidence    float64  `json:"confidence"`
+	Layers        []string `json:"layers"` // which retrieval layers were used: grep/lsp/rag
+	DurationMs    int64    `json:"duration_ms"`
 }
 
 // SA-09: SearchRefinedPayload is emitted after a discovery refinement pass.
 type SearchRefinedPayload struct {
-	WorkflowID    string  `json:"workflow_id"`
-	QueryID       string  `json:"query_id"`
+	WorkflowID     string `json:"workflow_id"`
+	QueryID        string `json:"query_id"`
 	SnippetsBefore int    `json:"snippets_before"`
 	SnippetsAfter  int    `json:"snippets_after"`
 	DurationMs     int64  `json:"duration_ms"`
@@ -282,16 +282,39 @@ type Workspace struct {
 
 // IntentKind classifies the user's request to enable pipeline routing.
 const (
-	IntentKindCodeGen  = "code_gen" // generate or modify code
-	IntentKindDebug    = "debug"    // fix a bug or error
-	IntentKindRefactor = "refactor" // restructure existing code
-	IntentKindQuestion = "question" // ask a question (no code changes)
-	IntentKindConfig   = "config"   // configuration or setup task
-	IntentKindChat     = "chat"     // conversational discussion, explanation
+	IntentKindCodeGen  = "code_gen"  // generate or modify code
+	IntentKindDebug    = "debug"     // fix a bug or error
+	IntentKindRefactor = "refactor"  // restructure existing code
+	IntentKindQuestion = "question"  // ask a question (no code changes)
+	IntentKindConfig   = "config"    // configuration or setup task
+	IntentKindChat     = "chat"      // conversational discussion, explanation
 	IntentKindAnalyze  = "analyze"   // code analysis, review, understanding (read-only)
+	IntentKindResearch = "research"  // gather EXTERNAL knowledge (library docs, APIs, web) — read-only
 	IntentKindPlanOnly = "plan_only" // produce & review a plan, do not execute
 	IntentKindOther    = "other"     // fallback for unclassifiable requests
 )
+
+// AllIntentKinds is the canonical list of intent kinds — the SINGLE SOURCE OF
+// TRUTH the Inputter prompt advertises, the Inputter validates against, and the
+// deterministic Dispatcher (policyForKind) routes on. Adding a kind here + a
+// policyForKind case is the only step to make a new intent reachable end-to-end;
+// it replaces the hand-maintained lists that previously drifted (e.g. "research"
+// was routable yet unreachable because the Inputter whitelist omitted it).
+var AllIntentKinds = []string{
+	IntentKindCodeGen, IntentKindDebug, IntentKindRefactor, IntentKindQuestion,
+	IntentKindConfig, IntentKindChat, IntentKindAnalyze, IntentKindResearch,
+	IntentKindPlanOnly, IntentKindOther,
+}
+
+// IsKnownIntentKind reports whether k is a canonical intent kind.
+func IsKnownIntentKind(k string) bool {
+	for _, kind := range AllIntentKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
 
 type IntentSpec struct {
 	ID              string
@@ -388,7 +411,16 @@ type Task struct {
 	// uses the child's checkpoint as this task's result. Empty means a normal
 	// task. Set by the Planner (static, at plan time) or the Executor (dynamic,
 	// at runtime) when a task is too large to execute in one pass.
+	//
+	// NOTE: SubGoal/recursion is superseded by the blackboard-bucket model
+	// (docs/design/blackboard_bucket_workflow.md) — retired in migration S2.
 	SubGoal string `json:"sub_goal,omitempty"`
+
+	// Priority orders ready tasks in the bucket scheduler: among tasks whose
+	// dependencies are satisfied, higher Priority runs first (ties broken by ID
+	// for determinism). Zero is the default. Part of the blackboard-bucket
+	// migration (S1): readiness + priority scheduling replaces DAG-level waves.
+	Priority int `json:"priority,omitempty"`
 
 	// Attempts records the number of Code→Accept cycles executed for this task.
 	// Set by the kernel at runtime; not part of the planner output.
@@ -409,6 +441,22 @@ type CheckpointResult struct {
 	Evidence      []string
 	FixGuidance   string // non-empty on fail: actionable instructions for the executor retry
 	CreatedAt     time.Time
+}
+
+// BucketSnapshot is a durable, per-sequence snapshot of the blackboard bucket
+// engine's authoritative state (blackboard_bucket_workflow.md §6/§10.1): the
+// remaining bucket, the completion record, retained artifacts, and a monotonic
+// seq. Persisted incrementally by the scheduler (single writer) so a workflow can
+// be resumed from the latest snapshot after a crash, or rewound for undo.
+type BucketSnapshot struct {
+	SessionID  string
+	WorkflowID string
+	Seq        int
+	Bucket     []Task
+	Completed  map[string]string
+	Artifacts  map[string]Artifact
+	Dispatches int
+	CreatedAt  time.Time
 }
 
 // FileChangeOp describes the kind of file modification within a turn.
@@ -560,6 +608,10 @@ type WorkflowContext struct {
 	// RetryFeedback is non-empty when the executor is being retried after
 	// an acceptor rejection. It contains the rejection evidence.
 	RetryFeedback string
+	// DepFindings holds the formatted findings/outputs of a task's completed
+	// dependencies (§11 DepArtifacts projection), set per-dispatch by the
+	// blackboard scheduler so a downstream task sees what upstream tasks learned.
+	DepFindings string
 	// PreviousTurns holds the last 5 TurnSummary records for this session
 	// (oldest first). Populated by the Kernel at workflow start (M8-08).
 	PreviousTurns []TurnSummary
@@ -688,12 +740,12 @@ type CritiqueResult struct {
 // variable, etc.) extracted from LSP or grep-based symbol analysis.
 type SymbolInfo struct {
 	Name      string   `json:"name"`
-	Kind      string   `json:"kind"`       // "func" | "type" | "var" | "const" | "method" | "field"
-	Path      string   `json:"path"`       // file path where the symbol is defined
-	Line      int      `json:"line"`       // 1-based line number of the definition
-	Signature string   `json:"signature"`  // e.g. "func Foo(x int) error"
-	Package   string   `json:"package"`    // Go package name or equivalent
-	Exported  bool     `json:"exported"`   // whether the symbol is exported/public
+	Kind      string   `json:"kind"`           // "func" | "type" | "var" | "const" | "method" | "field"
+	Path      string   `json:"path"`           // file path where the symbol is defined
+	Line      int      `json:"line"`           // 1-based line number of the definition
+	Signature string   `json:"signature"`      // e.g. "func Foo(x int) error"
+	Package   string   `json:"package"`        // Go package name or equivalent
+	Exported  bool     `json:"exported"`       // whether the symbol is exported/public
 	Refs      []string `json:"refs,omitempty"` // paths of files that reference this symbol
 }
 

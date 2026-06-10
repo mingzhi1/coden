@@ -2,7 +2,7 @@
 
 > **⚠️ Work In Progress** — 核心架构稳定，部分功能仍在开发中
 
-AI 编程系统。不是单体 Agent Loop，不是平权 Swarm——一个拥有唯一状态的 Core：每轮由 Dispatcher 设计流程、给每个无状态 Worker 明确目的，再由 Core 经真实工具执行。**LLM 提议，代码裁决。**
+AI 编程系统。不是单体 Agent Loop，不是平权 Swarm——一个拥有唯一状态的 Core：意图经确定性路由选定流程，任务进单写者黑板桶按就绪+优先级调度，再由 Core 经真实工具执行。**LLM 提议，代码裁决。**
 
 ---
 
@@ -13,12 +13,12 @@ AI 编程系统。不是单体 Agent Loop，不是平权 Swarm——一个拥有
 | 架构 | 单 Kernel + 无状态 Worker | 单体 Agent Loop | 平权 Swarm |
 | 状态归属 | Kernel 唯一写入者 | Agent 自持状态 | 各 Agent 自持 |
 | LLM 角色 | 分层（强/轻/异构 Critic） | 单模型兜底 | 角色平权 |
-| 执行调度 | Kernel 掌控循环（Dispatcher 设计流程，但 LLM 不驱动执行、不持状态） | LLM 决定下一步 | LLM 互相调用 |
+| 执行调度 | 黑板桶引擎：就绪+优先级、单写者、Guardian 守护（路由/调度是确定性代码，LLM 不驱动执行） | LLM 决定下一步 | LLM 互相调用 |
 | 工具执行 | Kernel 子系统，零 LLM 成本 | LLM 发起工具调用 | LLM 发起工具调用 |
-| Critic | 优先异构 Provider（反自恋；单 provider 时回退同家） | 无 | 无 |
+| Critic | 优先异构 Provider（plan + goal 两道，反自恋；单 provider 时回退同家） | 无 | 无 |
 | 验收 | 独立 Acceptor Worker | 自我验证 | 自我验证 |
 
-**核心哲学**：LLM 产出 spec/plan/patch，并由 Dispatcher 设计本轮流程；但**执行、状态写入、提交、验收**始终在 Kernel 手里（Dispatcher 失败回退确定性策略表）。LLM 提议，代码裁决。
+**核心哲学**：LLM 产出 spec/plan/patch；但**路由、执行、状态写入、提交、验收**始终在 Kernel 手里——意图→流程的路由是确定性单一真相表，执行是单写者黑板桶。LLM 提议，代码裁决。
 
 ---
 
@@ -35,9 +35,9 @@ Clients: TUI / CLI / Web
 │       │                                                    │
 │  Kernel（单写者）                                           │
 │  ├── Workflow Engine                                       │
-│  │   Intent → Profile → Dispatcher(WorkflowPlan)          │
+│  │   Intent → Profile → Dispatcher(确定性路由)            │
 │  │   → Discovery → Plan → Critic → RePlan                 │
-│  │   → [Code → Accept] × N → Checkpoint                   │
+│  │   → 黑板桶引擎(就绪+优先级·单写者) → Checkpoint(增量)  │
 │  │                                                         │
 │  ├── Secretary（策略引擎）                                  │
 │  │   ContextGate · ExecGate · AfterTurn → MEMORY.md       │
@@ -64,41 +64,45 @@ Clients: TUI / CLI / Web
 
 ```
 用户输入
-  → Intent       意图解析 → IntentSpec + Kind                        [Light LLM]
+  → Intent       意图规整 + 跟随解析 → IntentSpec + Kind               [Light LLM]
   → ProjectProfile  载入缓存(语言/工具链/概览/风格);失效则重建        [缓存命中零成本 / 一次 Light LLM]
-  → Dispatcher   设计本次 workflow → WorkflowPlan                     [Strong LLM]
-  │   { Mode, 参与角色集, 每角色 Objective, ExecutorMode }
-  │   解析失败 → 回退静态策略表 (LocalDispatcher: Kind → 阶段集)
+  → Dispatcher   确定性路由 Kind → WorkflowMode (policyForKind 单一真相表)  [零 LLM·代码裁决]
   │
   ├─ 按 Mode 路由（所有路径收口 Responder）:
   │   answer    → Responder                                          （直答 / 问答 / 闲聊）
-  │   analyze   → Discovery → Analyzer(只读) → Responder              （读代码出分析,零修改）
+  │   analyze   → Discovery → Analyzer(只读) → Responder              （读本仓库代码出分析,零修改）
+  │   research  → 黑板桶引擎(只读·web_search) → Responder             （取外部知识:库文档/API/web）
   │   execute   → 下方完整流水线;plan_only = execute 但不含 Executor/Accept
   │
   → Discovery  WHERE：grep / LSP / RAG 捞片段                        [零 LLM 成本]
-  → Plan       WHAT：任务 DAG + 依赖（注入 Dispatcher 下发的 Objective）[Strong LLM]
-  → Critic     REVIEW：异构 Provider 审查,反自恋                      [Strong LLM, 不同厂商]
+  → Plan       WHAT：任务 + 依赖；资料不齐则先产只读调研任务(gather-first) [Strong LLM]
+  → Critic     plan 审查：异构 Provider,反自恋                       [Strong LLM, 不同厂商]
   → RePlan     HOW：细化到函数/行号                                  [Strong LLM]
-  → Kernel 调度（按 DAG 并行）
-      ├─→ Executor × N   执行 patch（注入 Objective）                   [Light LLM]
-      ├─→ Tool Runtime write / edit / shell
-      └─→ Acceptor    pass/fail + FixGuidance                        [Strong LLM]
-            ├─ pass → task.passed
-            └─ fail → inject FixGuidance → Executor retry
+  → 黑板桶引擎（就绪 + 优先级 · 单写者调度 · Guardian 守护）
+      ├─→ Executor   执行 patch；缺外部知识先 web_search 再写         [Light LLM]
+      ├─→ Tool Runtime write / edit / shell / web_search
+      ├─→ Acceptor    pass/fail + FixGuidance（内层逐任务）           [Strong LLM]
+      │     ├─ pass → 完成记录 + 产物留存
+      │     └─ fail → 重派带反馈(#3) → 超 N 次 abandon
+      ├─  依赖产物经 DepArtifacts 投影喂下游任务(#4 §11)
+      └─  每 apply 发增量 checkpoint(桶+完成记录+产物,可恢复)
+  → goal-critique  外层异构 Critic 审「结果是否达标」,可降级 pass    [Strong LLM]
   → Responder  收口：成功→简洁总结;失败/部分→进展 + 下一步建议        [Light LLM]
-  → Checkpoint 存档 + Secretary AfterTurn → MEMORY.md（并判断 Profile 是否过期）
+  → Checkpoint 终态 saga + Secretary AfterTurn → MEMORY.md（并判断 Profile 是否过期）
 ```
 
-> **设计要点（Dispatcher + WorkflowPlan）**：每轮由 **Dispatcher(LLM)** 设计 workflow,产出
-> `WorkflowPlan{ Mode, 参与角色, 每角色 Objective, ExecutorMode }` —— 运行时单一真相源;Dispatcher
-> 解析失败则**回退**到静态策略表 `policyForKind`(LocalDispatcher),保证永不卡死。角色不混用:
-> - **Dispatcher 给每个参与角色一个明确 Objective**(有边界的目的+完成判据),让 Analyzer/Planner/Executor
->   收敛而非空转——弱目的曾让 Analyzer 无限读到超时;
-> - **Analyzer 只服务 `analyze`**(只读、零修改);**Executor 纯写**、**Responder 纯收口**、**Discovery 纯检索**;
-> - **`plan_only`** = execute 去掉 Executor/Accept(只出并审核计划,不执行);
-> - 简单意图(`hi`)→ `answer` 直达 Responder;
-> - **ProjectProfile 缓存**:语言/工具链/概览/风格按 manifest hash + Secretary 的结构性判断失效,
->   跨轮复用,让各 agent 开局即懂项目,不必每轮重新发现基础事实。
+> **设计要点（确定性路由 + 黑板桶执行）**：详见 `docs/design/intent_routing.md` 与 `docs/design/blackboard_bucket_workflow.md`。
+> - **路由是确定性代码,不是 LLM**：Intent 出 `Kind`,`policyForKind` 单一真相表把 `Kind → WorkflowMode`
+>   一一映射(`AllIntentKinds` 是唯一权威列表,加意图只改一处)。曾经的 LLMDispatcher 二次粗分被退役——
+>   省一段 LLM、消词表漂移、`代码裁决` 不抖不 fallback。
+> - **执行是黑板桶引擎**:任务进一个总桶,按**就绪+优先级**调度(依赖一满足就跑,不再等 DAG 整层);
+>   **单写者**串行 apply 状态/产物/checkpoint(无锁);**Guardian** 确定性守预算/震荡/死锁;
+>   **重试带反馈**(上次为何失败投影回 Executor);**依赖产物**经 DepArtifacts 投影喂下游。
+> - **资料不齐先研究再做**:Planner 信息不足时先产只读调研任务、实现任务依赖之;Executor 单轮内缺
+>   外部知识也会先 `web_search/web_fetch` 再写代码,不臆测外部 API。
+> - **research 是和 analyze 平级的 workflow 类型**:由意图识别选中,用**多 agent 桶引擎只读**实现,零新角色。
+> - **角色不混用**:Analyzer 只读本仓库;Executor 通用工具 worker(可只读);Responder 纯收口;Discovery 纯检索。
+> - **ProjectProfile 缓存**:语言/工具链/概览/风格按 manifest hash + Secretary 结构性判断失效,跨轮复用。
 >
 > 详见 `docs/ARCHITECTURE.md`。
 
@@ -107,17 +111,18 @@ Clients: TUI / CLI / Web
 | 类别 | 组件 | 说明 |
 |------|------|------|
 | **Dispatched Workers**（经 `executeWorker` 调度） | Intent / Plan / Executor / Acceptor | 标准 Worker 生命周期，产生事件与 tracing |
-| **Inline Components**（Kernel 直接调用） | Dispatcher / Discovery / Analyzer / Critic / RePlan / Responder | Kernel 内部同步调用，不经过 Worker dispatch |
+| **Deterministic Code**（零 LLM·`代码裁决`） | Dispatcher（路由）/ Guardian（守护）/ 桶调度器（单写者） | 确定性决策，可测、不抖、零成本 |
+| **Inline Components**（Kernel 直接调用） | Discovery / Analyzer / Critic / RePlan / Responder | Kernel 内部同步调用，不经过 Worker dispatch |
 | **Background Service** | Secretary（含 ProjectProfile 失效判断） / Profiler | 异步执行，策略引擎 + MEMORY.md 写入 + 一次性项目画像 |
 
 **LLM 模型分层原则**
 
 | 组件 | 档次 | 原因 |
 |------|------|------|
-| Dispatcher / Planner / Critic / Replanner / Acceptor / Analyzer | **Strong** | 决策 / 流程设计 / 分析点，错误代价高 |
-| Intent / Executor / Responder / Profiler | **Light** | 执行 / 收口 / 摘要画像，速度优先 |
+| Planner / Critic / Replanner / Acceptor / Analyzer | **Strong** | 决策 / 流程设计 / 分析点，错误代价高 |
+| Intent / Executor / Responder / Profiler | **Light** | 规整 / 执行 / 收口 / 摘要画像，速度优先 |
 | Critic | **异构 Provider** | 与 Planner 不同厂商，消除盲区 |
-| Discovery | **零 LLM** | 纯代码工具（grep / LSP / RAG），不调用 LLM |
+| Dispatcher / Guardian / 桶调度 / Discovery | **零 LLM** | 路由/守护/调度是确定性代码；检索是纯工具（grep/LSP/RAG） |
 | Secretary | **条件性 Light** | AfterTurn 提取 insight + 判断 ProjectProfile 是否过期 |
 
 ---
@@ -179,8 +184,8 @@ llm:
 
 | 层 | 控制者 | 职责 | 循环上限 |
 |---|--------|------|---------|
-| **L1** Workflow | `runWorkflow()` | 线性流水线调度 | 1（线性） |
-| **L2** Task DAG | `runOneTask()` | 按依赖图并行调度，失败重试 | `maxTaskRetries=1`（共 2 次尝试） |
+| **L1** Workflow | `runWorkflow()` | 路由(确定性) + 外层阶段调度 | 1（线性外壳） |
+| **L2** 黑板桶 | `bucketScheduler.run()` | 就绪+优先级·单写者调度，重试带反馈，Guardian 守护 | `maxTaskRetries=1`（共 2 次尝试） |
 | **L3** Agentic | `agenticBuild()` | LLM 多轮工具循环（Executor） | `maxExecutorRounds=5` |
 
 ---
@@ -318,7 +323,7 @@ llm:
 |------|------|------|
 | Kernel & 状态核心 | `█████████░` 95% | Session/Turn/Task/Checkpoint/Event Bus 全部完成，Artifact 接入完成 |
 | RPC 协议层 | `█████████░` 95% | JSON-RPC 2.0，客户端面 29 个方法接入 handler（protocol 共定义 59 个方法常量，含 worker/tool 方向） |
-| Workflow Engine | `█████████░` 95% | Dispatcher(LLM)→WorkflowPlan 驱动路由（策略表回退）、每角色 Objective（Analyzer/Planner/Executor 已消费）、任务状态机完成，L2 Regression 尚未实现 |
+| Workflow Engine | `█████████░` 95% | 确定性路由(policyForKind 单一真相表,含 research)、黑板桶执行引擎(就绪+优先级·单写者·Guardian·重试带反馈·DepArtifacts 投影·增量 checkpoint)、plan+goal 双 Critic 收口;外层 blackboard 化已评估为不追求(保守 cutover 即终态),L2 Regression 未实现 |
 | Hook System | `█████████░` 90% | 9 阶段统一框架完成，Config/RPC/Event Bus 全部接入，Filter/Webhook 待实现 |
 | LLM Broker | `█████████░` 90% | per-role pool、provider fallback、usage stats 完成，Sidecar 模式接入完成 |
 | Tool Runtime | `█████████░` 90% | 14 工具完成，MCP 动态发现完成，tool_search 延迟注册完成 |
