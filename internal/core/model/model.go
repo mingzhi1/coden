@@ -627,6 +627,12 @@ type WorkflowContext struct {
 	// and code style), cached across runs. It lets agents start informed instead
 	// of rediscovering the basics every workflow. Empty when no profile is built.
 	ProjectProfile string
+
+	// Depth is the recursive sub-workflow nesting level: 0 for the top-level
+	// workflow, incremented each time a task with a SubGoal spawns a child
+	// workflow. The kernel bounds it by maxWorkflowDepth so a misbehaving
+	// RePlanner cannot decompose forever.
+	Depth int
 }
 
 // ExecutorMode controls the agentic Executor's tool execution policy.

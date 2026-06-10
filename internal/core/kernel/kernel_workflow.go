@@ -713,6 +713,107 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 	k.persistTurnMemory(ctx, sessionID, workflowID, intentSpec.Goal, taskTitles, llmOutputStr, checkpointResult.Status, dirtyPaths)
 }
 
+// maxWorkflowDepth is the deepest workflow level allowed to decompose: a task
+// recurses into a child workflow only while its depth is < maxWorkflowDepth, so
+// the value caps nesting and prevents a misbehaving RePlanner from decomposing
+// forever. Depth 0 is the top-level workflow. With maxWorkflowDepth=1 the shape
+// is 父+子 (two layers): a depth-0 task may spawn one depth-1 child, and that
+// child's tasks (depth 1 ≥ limit) execute directly — no grandchildren. The
+// limit is enforced in runOneTask.
+const maxWorkflowDepth = 1
+
+// runChildWorkflow recursively runs a Plan→[RePlan]→execute pipeline against
+// subGoal as a child of the current workflow — the recursion primitive for task
+// decomposition. runOneTask invokes it when a task carries a SubGoal.
+//
+// Unlike runWorkflow, the child creates no turn and commits no saga: the parent
+// owns the turn, and the child's checkpoint/artifact become the parent task's
+// result. It runs synchronously in the parent's goroutine — no new sessionMutex
+// acquisition — so the single-writer invariant holds. depth is carried in the
+// WorkflowContext and bounds nesting.
+//
+// workflowID is the PARENT's workflow ID (the child shares the parent's identity,
+// see runSubWorkflowTask): the child's events, file changes, and worker states
+// roll up into the parent's records rather than orphaning under a fresh ID.
+//
+// parentFiles is the file scope of the task being decomposed: child tasks that
+// declare no Files of their own inherit it, so the child stays within the same
+// area the parent task was allowed to touch (keeping concurrent sibling children
+// disjoint, the same guarantee the flat DAG relies on). Empty = unrestricted.
+func (k *Kernel) runChildWorkflow(ctx context.Context, sessionID, workflowID, subGoal string, depth int, parentFiles []string) (model.CheckpointResult, model.Artifact, error) {
+	childIntent := model.IntentSpec{
+		ID:        nextKernelID("intent-sub"),
+		SessionID: sessionID,
+		Goal:      subGoal,
+		Kind:      model.IntentKindCodeGen,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	// Carry depth so a nested SubGoal inside this child is bounded by runOneTask.
+	wfCtx := model.WorkflowContextFrom(ctx)
+	wfCtx.Depth = depth
+	ctx = model.WithWorkflowContext(ctx, wfCtx)
+	// Reuse the parent's discovery: a SubGoal refines a parent task the parent's
+	// discovery already covered, so a fresh search would mostly duplicate it.
+	childSnippets := wfCtx.DiscoveryContext
+
+	k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
+		WorkflowID: workflowID, Step: "plan", Status: "running",
+	})
+	planCtx := k.injectSecretaryContext(ctx, sessionID, secretary.TargetPlanner)
+	planResult, err := k.executeWorker(planCtx, sessionID, workflowID, "plan", workflow.RolePlanner, k.workflow.PlannerWorker(), workflow.WorkerInput{
+		SessionID:  sessionID,
+		WorkflowID: workflowID,
+		Intent:     childIntent,
+	})
+	if err != nil {
+		return model.CheckpointResult{}, model.Artifact{}, fmt.Errorf("child plan: %w", err)
+	}
+	tasks := planResult.Tasks
+	for i := range tasks {
+		if tasks[i].Status == "" {
+			tasks[i].Status = model.TaskStatusPlanned
+		}
+	}
+	if len(tasks) == 0 {
+		return model.CheckpointResult{}, model.Artifact{}, fmt.Errorf("child planner returned no tasks")
+	}
+	if err := validateTaskDAG(tasks); err != nil {
+		return model.CheckpointResult{}, model.Artifact{}, fmt.Errorf("child invalid task graph: %w", err)
+	}
+
+	// RePlan refines tasks (Steps/SuccessCmd) and is the only role that may emit a
+	// further SubGoal for deeper recursion. Best-effort: on failure keep the plan.
+	if rp := k.workflow.Replanner(); rp != nil {
+		if refined, rpErr := rp.RePlan(ctx, childIntent, tasks, childSnippets); rpErr == nil && len(refined) > 0 {
+			if validateTaskDAG(refined) == nil {
+				tasks = refined
+			}
+		}
+	}
+
+	// Constrain child writes to the parent task's scope: a child task that
+	// declares no Files inherits the parent's, so the soft scope guard bounds the
+	// child to the same area and concurrent sibling children stay disjoint.
+	if len(parentFiles) > 0 {
+		for i := range tasks {
+			if len(tasks[i].Files) == 0 {
+				tasks[i].Files = append([]string(nil), parentFiles...)
+			}
+		}
+	}
+
+	queue := taskqueue.New(tasks)
+	cp, art, _, taskErr := k.runTasksConcurrent(ctx, sessionID, workflowID, childIntent, queue, childSnippets, true)
+	if taskErr != nil {
+		return cp, art, fmt.Errorf("child execution: %w", taskErr)
+	}
+	if cp.Status == "" {
+		cp.Status = "pass"
+	}
+	return cp, art, nil
+}
+
 // finishPlanOnly commits a plan_only workflow: the reviewed plan IS the
 // deliverable — Plan + Critic + RePlan ran, but no code is executed. The
 // Responder presents the plan to the user and the workflow auto-passes.

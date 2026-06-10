@@ -160,6 +160,19 @@ func (k *Kernel) runOneTask(
 ) taskExecResult {
 	task := shared.get(taskIdx)
 
+	// Recursive decomposition: a task carrying a SubGoal runs as a child workflow
+	// (Plan→execute against the sub-goal) instead of a single Code→Accept pass —
+	// unless the depth limit is reached, in which case the SubGoal is ignored and
+	// the task executes normally below. RePlanner is the only role that sets it.
+	if subGoal := strings.TrimSpace(task.SubGoal); subGoal != "" {
+		if wfCtx.Depth >= maxWorkflowDepth {
+			clog.Session(sessionID).Warn("sub-workflow depth limit reached; executing task directly",
+				"workflow_id", workflowID, "task_id", task.ID, "depth", wfCtx.Depth)
+		} else {
+			return k.runSubWorkflowTask(ctx, sessionID, workflowID, taskIdx, task, shared, wfCtx.Depth)
+		}
+	}
+
 	var taskRetryFeedback string
 	var retryCtx model.RetryContext
 	var llmOut strings.Builder
@@ -544,6 +557,71 @@ func (k *Kernel) runOneTask(
 	}
 }
 
+// runSubWorkflowTask resolves a task that carries a SubGoal by recursing into a
+// child workflow (runChildWorkflow); the child's checkpoint/artifact become this
+// task's result. The caller guarantees depth < maxWorkflowDepth.
+//
+// A child error OR a fail checkpoint is treated as a task failure and routed
+// through the SAME failure policy as a normal task (applyTaskFailurePolicy), so a
+// SubGoal task behaves consistently with the user's stop/skip/replan config
+// rather than always aborting.
+func (k *Kernel) runSubWorkflowTask(ctx context.Context, sessionID, workflowID string, taskIdx int, task model.Task, shared *sharedTasks, depth int) taskExecResult {
+	snap := shared.setStatus(taskIdx, model.TaskStatusCoding)
+	k.emitTasksUpdated(sessionID, workflowID, snap)
+
+	// The child runs under the PARENT's workflow identity, not a fresh ID: its
+	// events, file changes, and worker states then roll up into the parent's
+	// turn-summary/audit/activeWorkflow instead of orphaning under an unregistered
+	// ID. Distinguishing child vs parent in the event stream is deferred to the
+	// stage-3 parentWorkflowID nesting work.
+	clog.Session(sessionID).Info("decomposing task into child workflow",
+		"workflow_id", workflowID, "task_id", task.ID,
+		"depth", depth+1, "sub_goal", truncateCmdOutput(task.SubGoal, 80))
+
+	cp, art, err := k.runChildWorkflow(ctx, sessionID, workflowID, task.SubGoal, depth+1, task.Files)
+	if err != nil || cp.Status == "fail" {
+		shared.setStatus(taskIdx, model.TaskStatusFailed)
+		return k.applyTaskFailurePolicy(sessionID, workflowID, taskIdx, shared.get(taskIdx), cp, art, err)
+	}
+	shared.setStatus(taskIdx, model.TaskStatusPassed)
+	return taskExecResult{taskIdx: taskIdx, task: shared.get(taskIdx), checkpoint: cp, artifact: art}
+}
+
+// applyTaskFailurePolicy maps a failed task to the taskExecResult dictated by the
+// kernel failure policy: skip → continue (err nil), replan → re-plan remaining
+// (replanEvidence set), stop (default) → abort (err set). It mirrors the policy
+// branch in runOneTask's retry loop so SubGoal tasks honor the same configuration.
+func (k *Kernel) applyTaskFailurePolicy(sessionID, workflowID string, taskIdx int, task model.Task, cp model.CheckpointResult, art model.Artifact, cause error) taskExecResult {
+	k.mu.Lock()
+	fp := k.failurePolicy
+	k.mu.Unlock()
+	res := taskExecResult{taskIdx: taskIdx, task: task, checkpoint: cp, artifact: art}
+	switch fp {
+	case "skip":
+		clog.Session(sessionID).Info("sub-workflow task failed but skipping per failure policy",
+			"workflow_id", workflowID, "task_id", task.ID, "policy", fp)
+		return res // err nil — workflow continues
+	case "replan":
+		clog.Session(sessionID).Info("sub-workflow task failed, requesting replan",
+			"workflow_id", workflowID, "task_id", task.ID, "policy", fp)
+		res.replanEvidence = cp.Evidence
+		if len(res.replanEvidence) == 0 {
+			if cause != nil {
+				res.replanEvidence = []string{cause.Error()}
+			} else {
+				res.replanEvidence = []string{fmt.Sprintf("sub-workflow for task %q failed", task.ID)}
+			}
+		}
+		return res // err nil — workflow re-plans remaining tasks
+	default: // stop (default)
+		if cause == nil {
+			cause = fmt.Errorf("sub-workflow failed for task %q (checkpoint status %q)", task.ID, cp.Status)
+		}
+		res.err = cause
+		return res // abort the workflow
+	}
+}
+
 // runTasksConcurrent runs all tasks using level-based DAG scheduling (N-08).
 // Tasks at the same DAG level execute in parallel; the next level only starts
 // after all tasks in the current level complete successfully.
@@ -583,6 +661,9 @@ func (k *Kernel) runTasksConcurrent(
 			Confidence: discoveryConfidence(discoverySnippets),
 		}
 		wfCtx.DiscoveryContext = discoverySnippets
+		// Preserve recursion depth across the per-level rebuild so a SubGoal task
+		// can bound its own nesting (buildWorkflowContext starts fresh at 0).
+		wfCtx.Depth = model.WorkflowContextFrom(ctx).Depth
 
 		results := make([]taskExecResult, len(levelTaskIdxs))
 		var wg sync.WaitGroup
@@ -668,6 +749,10 @@ func (k *Kernel) runTasksConcurrent(
 			Confidence: discoveryConfidence(discoverySnippets),
 		}
 		wfCtx.DiscoveryContext = discoverySnippets
+		// Preserve recursion depth (buildWorkflowContext starts fresh at 0) so an
+		// appended task carrying a SubGoal cannot escape the depth bound and
+		// recurse from a deeper level — same guard as the per-level path above.
+		wfCtx.Depth = model.WorkflowContextFrom(ctx).Depth
 
 		for _, rt := range remaining {
 			taskIdx, ok := remainingIdxMap[rt.ID]
