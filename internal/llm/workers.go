@@ -15,8 +15,54 @@ import (
 	"github.com/mingzhi1/coden/internal/llm/tokenbudget"
 )
 
-// contextSummary formats the WorkflowContext as a compact string for LLM prompts.
-// Budget allocation: FileTree 30%, History 60%, Retry 10%.
+// inputterContext builds a SCOPED context for the Inputter — only what intent
+// classification + goal normalization + follow-up resolution need: previous
+// turns, recent conversation, and a light project orientation. It deliberately
+// OMITS the FileTree / Discovery / Git / AccumChanges that contextSummary dumps:
+// the Inputter classifies a one-line intent, and a 9K file tree both wastes tokens
+// and biases ambiguous prompts toward code_gen (an info-lookup prompt surrounded by
+// .go files reads as "write code", mis-routing it away from research/question).
+// See the per-agent context audit; this is the first §11 per-role projection.
+func inputterContext(ctx context.Context) string {
+	wc := model.WorkflowContextFrom(ctx)
+	var sb strings.Builder
+
+	// Light project orientation (languages/overview) — helps distinguish "about
+	// THIS codebase" (analyze) from "external knowledge" (research), without the
+	// file-level detail that biases toward coding.
+	if wc.ProjectProfile != "" {
+		sb.WriteString(wc.ProjectProfile)
+		sb.WriteString("\n")
+	}
+	// Previous turns + recent conversation: needed to resolve follow-ups
+	// ("do it", "continue", "yes") against what was actually said.
+	if len(wc.PreviousTurns) > 0 {
+		sb.WriteString("\n## Previous turns\n")
+		for i, t := range wc.PreviousTurns {
+			fmt.Fprintf(&sb, "### Turn %d\nIntent: %s\nOutcome: %s\n", i+1, t.Intent.Goal, t.Checkpoint.Status)
+		}
+	}
+	if len(wc.History) > 0 {
+		const historyBudget = 18000
+		histStrs := make([]string, len(wc.History))
+		for i, msg := range wc.History {
+			histStrs[i] = msg.Role + ": " + msg.Content
+		}
+		if kept, _ := tokenbudget.TruncateHistory(histStrs, historyBudget); len(kept) > 0 {
+			sb.WriteString("\n## Recent conversation\n")
+			for _, s := range kept {
+				sb.WriteString(s)
+				sb.WriteString("\n")
+			}
+		}
+	}
+	return sb.String()
+}
+
+// contextSummary formats the WorkflowContext as a compact string for the working
+// agents (Executor / Planner / Analyzer) — the full blob (file tree, discovery,
+// dirty paths, dep findings, retry feedback, …). The Inputter uses the leaner
+// inputterContext instead. Budget allocation: FileTree 30%, History 60%, Retry 10%.
 func contextSummary(ctx context.Context) string {
 	wc := model.WorkflowContextFrom(ctx)
 	var sb strings.Builder

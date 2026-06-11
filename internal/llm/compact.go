@@ -1,10 +1,85 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
 )
+
+// Summarizer produces a faithful prose digest of a slice of conversation
+// messages. It is the L2 (semantic) layer of the two-layer Compact: when the
+// cheap structural passes can't fit history into budget, the dropped middle is
+// summarized by an LLM instead of being collapsed lossily. Implemented by
+// chatSummarizer over the loop's own Chatter.
+type Summarizer interface {
+	Summarize(ctx context.Context, messages []Message) (string, error)
+}
+
+// autoCompactBuffer is the token headroom below budget at which the L2 collapse
+// triggers. It is a package var (not a const) so config (Context.AutoCompactThreshold)
+// can activate the previously-dead knob via SetAutoCompactBuffer.
+var autoCompactBuffer = 13000
+
+// SetAutoCompactBuffer wires the configured auto-compact threshold into the
+// Compact chain. A non-positive value is ignored (keeps the default).
+func SetAutoCompactBuffer(tokens int) {
+	if tokens > 0 {
+		autoCompactBuffer = tokens
+	}
+}
+
+// CompactHistory is the two-layer convergence shared by every agentic loop
+// (executor, analyzer): L1 cheap structural trims (Snip → MicroCompact →
+// compressAgenticHistory), then — only if still over budget — L2 semantic
+// compaction (a faithful LLM summary of the dropped middle), falling back to the
+// lossy rule-based AutoCompact when no summarizer is wired or the LLM fails.
+// L2 fires only on genuine overflow, so a normal task pays zero extra LLM cost.
+func CompactHistory(ctx context.Context, messages []Message, round, budget int, sum Summarizer) []Message {
+	// L1: cheap, zero-LLM-cost structural passes.
+	messages = SnipHistory(messages, snipMaxMessages)
+	messages = MicroCompact(messages, round)
+	messages = compressAgenticHistory(messages, budget)
+	if msgTokens(messages) <= budget-autoCompactBuffer {
+		return messages
+	}
+	// L2: faithful semantic summary preferred; lossy collapse as the safety net.
+	if sum != nil {
+		if out, ok := llmCompact(ctx, messages, sum); ok {
+			return out
+		}
+	}
+	return AutoCompact(messages, budget)
+}
+
+// llmCompact replaces the conversation's middle (everything but the system +
+// initial user and the latest round) with a faithful LLM-produced digest. Returns
+// ok=false (caller falls back) when there is nothing to summarize or the LLM fails.
+func llmCompact(ctx context.Context, messages []Message, sum Summarizer) ([]Message, bool) {
+	if len(messages) < 6 {
+		return nil, false
+	}
+	head := messages[:2]               // system + initial user
+	tail := messages[len(messages)-2:] // latest assistant + tool-result
+	middle := messages[2 : len(messages)-2]
+	if len(middle) == 0 {
+		return nil, false
+	}
+	digest, err := sum.Summarize(ctx, middle)
+	if err != nil || strings.TrimSpace(digest) == "" {
+		slog.Warn("[llm:compact] L2 summary unavailable, falling back to lossy collapse", "error", err)
+		return nil, false
+	}
+	slog.Info("[llm:compact] L2 semantic summary applied", "summarized_messages", len(middle), "digest_len", len(digest))
+	out := make([]Message, 0, 4)
+	out = append(out, head...)
+	out = append(out, Message{
+		Role:    "user",
+		Content: "[Earlier work summarized to fit the context window — facts below are authoritative]\n" + digest,
+	})
+	out = append(out, tail...)
+	return out, true
+}
 
 // snipMaxMessages is the default threshold for SnipHistory. When the
 // conversation exceeds this many messages the oldest middle messages are
@@ -37,6 +112,37 @@ func SnipHistory(messages []Message, maxMessages int) []Message {
 	})
 	out = append(out, messages[len(messages)-keep:]...)
 	return out
+}
+
+// chatSummarizer is the production Summarizer: it asks the loop's own Chatter to
+// digest a run of messages. Used as the L2 layer; it runs at most once per loop
+// when history overflows, so the extra LLM call is rare and bounded.
+type chatSummarizer struct {
+	chatter Chatter
+	role    string
+}
+
+func newChatSummarizer(c Chatter, role string) Summarizer {
+	if c == nil {
+		return nil
+	}
+	return chatSummarizer{chatter: c, role: role}
+}
+
+func (s chatSummarizer) Summarize(ctx context.Context, messages []Message) (string, error) {
+	var b strings.Builder
+	for _, m := range messages {
+		fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
+	}
+	prompt := []Message{
+		{Role: "system", Content: "You compress an AI coding agent's work history. Produce a faithful, concise digest that PRESERVES: decisions made, files read and what was learned, mutations performed (writes/edits/commands and their results), and any unresolved problems. Drop only redundancy and verbatim file dumps. Output prose, no preamble."},
+		{Role: "user", Content: "Summarize this work history:\n\n" + b.String()},
+	}
+	reply, err := RecoverableChat(ctx, s.chatter, s.role, prompt, defaultRecoveryConfig())
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(reply), nil
 }
 
 // readOnlyTools lists tool kinds whose results are safe to strip from older
@@ -162,8 +268,8 @@ func AutoCompact(messages []Message, tokenBudget int) []Message {
 		return messages
 	}
 
-	// The auto-compact buffer: we trigger when within 13000 tokens of the limit.
-	const autoCompactBuffer = 13000
+	// Trigger when within autoCompactBuffer tokens of the limit (config-driven via
+	// SetAutoCompactBuffer; the L1→L2 chain already gates on the same threshold).
 	if msgTokens(messages) < tokenBudget-autoCompactBuffer {
 		return messages
 	}

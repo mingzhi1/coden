@@ -80,28 +80,29 @@ func (a *retryAcceptor) TakeMessages() []model.WorkerMessage {
 // TestCriticReplannerIntegration verifies that the kernel wires Critic and
 // Replanner correctly: critique feedback flows to the replanner and refined
 // tasks are used for coding.
-func TestCriticReplannerIntegration(t *testing.T) {
+// TestCriticIntegration verifies the plan-Critic runs in the execute pipeline.
+// (RePlan is retired from the execute path — the agentic Executor does the HOW —
+// so a Replanner is intentionally NOT asserted here; it remains only for plan_only.)
+func TestCriticIntegration(t *testing.T) {
 	t.Parallel()
 
 	critic := &criticStub{}
-	replanner := &replannerStub{}
 
 	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, testExecutor{}, testToolExecutor{}, testAcceptor{})
 	k.SetCritic(critic)
-	k.SetReplanner(replanner)
 	defer k.Close()
 
 	events, cancel := k.Subscribe("session-cr")
 	defer cancel()
 
-	_, err := k.Submit(context.Background(), "session-cr", "test critic replanner")
+	_, err := k.Submit(context.Background(), "session-cr", "test critic")
 	if err != nil {
 		t.Fatalf("Submit failed: %v", err)
 	}
 
 	// Wait for workflow completion.
 	timeout := time.After(5 * time.Second)
-	var gotCritique, gotReplan, gotCheckpoint bool
+	var gotCritique, gotCheckpoint bool
 	for {
 		select {
 		case ev, ok := <-events:
@@ -114,9 +115,6 @@ func TestCriticReplannerIntegration(t *testing.T) {
 					if payload.Step == "critique" && payload.Status == "done" {
 						gotCritique = true
 					}
-					if payload.Step == "replan" && payload.Status == "done" {
-						gotReplan = true
-					}
 				}
 			}
 			if ev.Topic == "checkpoint.updated" {
@@ -124,26 +122,18 @@ func TestCriticReplannerIntegration(t *testing.T) {
 				goto done
 			}
 		case <-timeout:
-			t.Fatalf("timed out: gotCritique=%v gotReplan=%v gotCheckpoint=%v", gotCritique, gotReplan, gotCheckpoint)
+			t.Fatalf("timed out: gotCritique=%v gotCheckpoint=%v", gotCritique, gotCheckpoint)
 		}
 	}
 done:
 	if !gotCritique {
 		t.Error("expected critique step event")
 	}
-	if !gotReplan {
-		t.Error("expected replan step event")
-	}
 	if !gotCheckpoint {
 		t.Error("expected checkpoint event")
 	}
-
-	// Verify critic and replanner were actually called.
 	if critic.calls.Load() < 1 {
 		t.Error("critic was not called")
-	}
-	if replanner.called.Load() < 1 {
-		t.Error("replanner was not called")
 	}
 }
 

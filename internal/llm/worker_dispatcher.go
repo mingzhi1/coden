@@ -88,13 +88,13 @@ var _ workflow.Dispatcher = (*LLMDispatcher)(nil)
 // model explicitly sets it false.
 func parseDispatcherPlan(reply string) (workflow.WorkflowPlan, bool) {
 	var raw struct {
-		Mode       string            `json:"mode"`
-		Critic     *bool             `json:"critic"`
-		Replan     *bool             `json:"replan"`
-		Executor      *bool             `json:"executor"`
-		Accept     *bool             `json:"accept"`
-		ExecutorMode  string            `json:"executor_mode"`
-		Objectives map[string]string `json:"objectives"`
+		Mode         string            `json:"mode"`
+		Critic       *bool             `json:"critic"`
+		Replan       *bool             `json:"replan"`
+		Executor     *bool             `json:"executor"`
+		Accept       *bool             `json:"accept"`
+		ExecutorMode string            `json:"executor_mode"`
+		Objectives   map[string]string `json:"objectives"`
 	}
 	if err := json.Unmarshal([]byte(extractJSON(reply)), &raw); err != nil {
 		return workflow.WorkflowPlan{}, false
@@ -162,7 +162,7 @@ func sanitizeObjectives(raw map[string]string) map[workflow.Role]string {
 	known := map[string]workflow.Role{
 		string(workflow.RoleAnalyzer):  workflow.RoleAnalyzer,
 		string(workflow.RolePlanner):   workflow.RolePlanner,
-		string(workflow.RoleExecutor):     workflow.RoleExecutor,
+		string(workflow.RoleExecutor):  workflow.RoleExecutor,
 		string(workflow.RoleCritic):    workflow.RoleCritic,
 		string(workflow.RoleReplanner): workflow.RoleReplanner,
 		string(workflow.RoleAcceptor):  workflow.RoleAcceptor,

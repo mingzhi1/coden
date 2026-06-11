@@ -28,9 +28,9 @@ func TestIsDegenerateReply(t *testing.T) {
 
 func TestReplyDeclaresDone(t *testing.T) {
 	cases := []struct {
-		name string
+		name  string
 		reply string
-		done bool
+		done  bool
 	}{
 		{"plain empty array", `{"tool_calls": []}`, true},
 		{"fenced empty array", "```json\n{\n  \"tool_calls\": []\n}\n```", true},

@@ -259,11 +259,15 @@ func (k *Kernel) runWorkflow(ctx context.Context, sessionID, workflowID, prompt 
 		k.runAnalyzeWorkflow(ctx, sessionID, workflowID, intentSpec)
 		return
 	case workflow.WorkflowModeResearch:
-		// research: gather external knowledge via the multi-agent bucket engine,
-		// read-only (Planner → Executor[web_search] → … → Responder).
-		wfCtx.ExecutorMode = model.ExecutorModeReadOnly
+		// research: gather EXTERNAL knowledge via a read-only investigate loop
+		// (the external twin of analyze) — produces a prose answer, never writes.
 		ctx = model.WithWorkflowContext(ctx, wfCtx)
-		k.runResearchWorkflow(ctx, sessionID, workflowID, intentSpec, wfCtx)
+		k.emitTasksUpdated(sessionID, workflowID, []model.Task{{
+			ID:     "research",
+			Title:  intentSpec.Goal,
+			Status: model.TaskStatusCoding,
+		}})
+		k.runResearchWorkflow(ctx, sessionID, workflowID, intentSpec)
 		return
 	case workflow.WorkflowModeAnswer:
 		// Direct answer (greeting / question / chat): Intent → Responder.

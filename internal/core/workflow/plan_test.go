@@ -22,10 +22,10 @@ func TestPlanFromPolicy_PerKind(t *testing.T) {
 		{model.IntentKindOther, WorkflowModeAnswer, false, false, false, false},
 		{model.IntentKindAnalyze, WorkflowModeAnalyze, false, false, false, false},
 		{model.IntentKindPlanOnly, WorkflowModeExecute, true, true, false, false},
-		{model.IntentKindCodeGen, WorkflowModeExecute, true, true, true, true},
-		{model.IntentKindDebug, WorkflowModeExecute, true, true, true, true},
-		{model.IntentKindRefactor, WorkflowModeExecute, true, true, true, true},
-		{model.IntentKindConfig, WorkflowModeExecute, true, true, true, true},
+		{model.IntentKindCodeGen, WorkflowModeExecute, true, false, true, true},
+		{model.IntentKindDebug, WorkflowModeExecute, true, false, true, true},
+		{model.IntentKindRefactor, WorkflowModeExecute, true, false, true, true},
+		{model.IntentKindConfig, WorkflowModeExecute, true, false, true, true},
 	}
 	for _, tc := range cases {
 		p := planFromPolicy(policyForKind(tc.kind))

@@ -56,23 +56,57 @@ func FormatToolsPrompt(inv *Inventory) string {
 	return sb.String()
 }
 
-// FormatEnvironmentPrompt generates a user context section describing
-// external tools available via run_shell. This helps the LLM make
-// informed decisions about which shell commands to use.
+// FormatEnvironmentPrompt generates the repo-wide Environment section: every
+// available tool, across all detected languages. Used as the fallback when a task
+// has no scope to project onto. Prefer FormatEnvironmentPromptForLanguages so a
+// task only sees its own subproject's toolchain.
 func FormatEnvironmentPrompt(inv *Inventory) string {
-	if inv == nil {
-		return ""
-	}
+	return formatEnvironment(inv, nil)
+}
 
-	available := inv.Available()
-	if len(available) == 0 {
+// FormatEnvironmentPromptForLanguages scopes the Environment section to a set of
+// languages — the per-task projection: a task that only touches web/ gets the JS
+// toolchain, not the whole monorepo's five languages. An empty langs falls back to
+// the full repo-wide view.
+func FormatEnvironmentPromptForLanguages(inv *Inventory, langs []string) string {
+	if len(langs) == 0 {
+		return formatEnvironment(inv, nil)
+	}
+	filter := make(map[string]bool, len(langs))
+	for _, l := range langs {
+		filter[l] = true
+	}
+	return formatEnvironment(inv, filter)
+}
+
+// toolInScope reports whether a tool entry belongs in a language-filtered view:
+// language-agnostic tools (search) are always in; otherwise at least one of its
+// languages must be in the filter. A nil filter admits everything.
+func toolInScope(e *ToolEntry, filter map[string]bool) bool {
+	if filter == nil || len(e.Languages) == 0 {
+		return true
+	}
+	for _, l := range e.Languages {
+		if filter[l] {
+			return true
+		}
+	}
+	return false
+}
+
+// formatEnvironment renders the Environment section, optionally filtered to a set
+// of languages. Deliberately omits, vs the old version: absolute paths (leak the
+// home dir, useless to the model), install hints (tempt the model to install
+// global tools as a side effect), and LSP servers (driven by the lsp_* first-class
+// tools, NOT run_shell — listing them here mislead the model into shelling out).
+func formatEnvironment(inv *Inventory, filter map[string]bool) string {
+	if inv == nil {
 		return ""
 	}
 
 	var sb strings.Builder
 	sb.WriteString("## Environment\n\n")
 
-	// Group by category
 	categories := []struct {
 		cat   Category
 		label string
@@ -82,49 +116,52 @@ func FormatEnvironmentPrompt(inv *Inventory) string {
 		{CatFormatter, "Formatters"},
 		{CatLinter, "Linters"},
 		{CatSearch, "Search Tools"},
-		{CatLSP, "LSP Servers"},
 	}
 
 	hasContent := false
 	for _, c := range categories {
-		entries := inv.ByCategory(c.cat)
-		if len(entries) == 0 {
+		var lines []string
+		for _, e := range inv.ByCategory(c.cat) {
+			if !toolInScope(e, filter) {
+				continue
+			}
+			line := "- " + e.Command
+			if e.Version != "" {
+				line += " " + e.Version
+			}
+			if len(e.Languages) > 0 {
+				line += " — " + strings.Join(e.Languages, ", ")
+			}
+			lines = append(lines, line)
+		}
+		if len(lines) == 0 {
 			continue
 		}
 		hasContent = true
-		sb.WriteString(fmt.Sprintf("**%s:**\n", c.label))
-		for _, e := range entries {
-			line := fmt.Sprintf("- %s", e.Command)
-			if e.Version != "" {
-				line += fmt.Sprintf(" %s", e.Version)
-			}
-			if e.Path != "" {
-				line += fmt.Sprintf(" (%s)", e.Path)
-			}
-			if len(e.Languages) > 0 {
-				line += fmt.Sprintf(" — %s", strings.Join(e.Languages, ", "))
-			}
-			sb.WriteString(line + "\n")
+		fmt.Fprintf(&sb, "**%s:**\n%s\n\n", c.label, strings.Join(lines, "\n"))
+	}
+
+	// Layer-4 long-tail fallback: what the catalog could NOT serve, so the model
+	// drives it via run_shell with its own toolchain knowledge (keeps unconfigured
+	// languages — nim, crystal, … — workable rather than invisible). Always shown
+	// (unfiltered): it is precisely the case where no scoped tool exists.
+	unserved := inv.UnservedLanguages()
+	unknownExts := inv.UnknownExtensions()
+	longTail := len(unserved) > 0 || len(unknownExts) > 0
+	if longTail {
+		sb.WriteString("**Detected, but no preconfigured tooling** (use run_shell with your own knowledge of the toolchain — install deps, build, test, format via shell):\n")
+		if len(unserved) > 0 {
+			fmt.Fprintf(&sb, "- languages: %s\n", strings.Join(unserved, ", "))
+		}
+		if len(unknownExts) > 0 {
+			fmt.Fprintf(&sb, "- unrecognized source files: %s\n", strings.Join(unknownExts, ", "))
 		}
 		sb.WriteString("\n")
 	}
 
-	if !hasContent {
+	if !hasContent && !longTail {
 		return ""
 	}
-
-	// Add missing tool hints
-	unavailable := inv.Unavailable()
-	if len(unavailable) > 0 {
-		sb.WriteString("**Not installed (install hints):**\n")
-		for _, e := range unavailable {
-			if e.InstallHint != "" {
-				sb.WriteString(fmt.Sprintf("- %s: `%s`\n", e.Name, e.InstallHint))
-			}
-		}
-		sb.WriteString("\n")
-	}
-
 	return sb.String()
 }
 

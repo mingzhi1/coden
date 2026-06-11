@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/mingzhi1/coden/internal/core/model"
@@ -43,7 +44,7 @@ func scriptedExecutor(chat func(int) string, exec func(toolruntime.Request) (too
 		Execute: func(_ context.Context, req toolruntime.Request) (toolruntime.Result, error) {
 			return exec(req)
 		},
-		Compress: func(m []Message, _ int, _ int) []Message { return m },
+		Compress: func(_ context.Context, m []Message, _ int, _ int) []Message { return m },
 	})
 	return c
 }
@@ -179,5 +180,41 @@ func TestCollectVerifyCmds(t *testing.T) {
 	})
 	if len(got) != 2 || got[0] != "go test ./..." || got[1] != "go build ./..." {
 		t.Errorf("expected de-duped non-empty cmds, got %v", got)
+	}
+}
+
+// TestExecutor_RequestResearchTerminates verifies the agentic loop treats
+// request_research as a TERMINAL control signal: it LIFTS the need into
+// CodePlan.ResearchNeed (a dedicated field) and NEVER executes it as a tool nor
+// emits it in the tool stream. Without this the loop would classify it as a read
+// and the runtime would execute it (no handler → error), losing the signal.
+func TestExecutor_RequestResearchTerminates(t *testing.T) {
+	var executed []string
+	c := scriptedExecutor(
+		func(int) string {
+			return `{"tool_calls":[{"kind":"request_research","query":"how to use the Acme API"}]}`
+		},
+		func(req toolruntime.Request) (toolruntime.Result, error) {
+			executed = append(executed, req.Kind)
+			return toolruntime.Result{}, nil
+		},
+	)
+	intent := model.IntentSpec{ID: "i1", SessionID: "s1", Goal: "integrate Acme", Kind: model.IntentKindCodeGen}
+	tasks := []model.Task{{ID: "t1", Title: "integrate Acme"}}
+
+	plan, err := c.Build(context.Background(), "wf1", intent, tasks)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !strings.Contains(plan.ResearchNeed, "Acme API") {
+		t.Fatalf("the need must be lifted into CodePlan.ResearchNeed, got %q", plan.ResearchNeed)
+	}
+	if len(plan.Calls()) != 0 {
+		t.Errorf("request_research must NOT remain in the tool stream, got %+v", plan.Calls())
+	}
+	for _, k := range executed {
+		if k == "request_research" {
+			t.Error("request_research must NOT be executed as a tool (no runtime handler → error)")
+		}
 	}
 }

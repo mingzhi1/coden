@@ -241,6 +241,7 @@ func NewWithStores(workspaceRoot, mainDBPath string, sessionStore session.Store,
 		secretary:              sec,
 		inventoryToolsPrompt:   toolsPrompt,
 		inventoryEnvPrompt:     envPrompt,
+		inventory:              inv,
 		maxTaskRetries:         1,      // N-06: default 1 = two total attempts per task
 		failurePolicy:          "stop", // M11-04: default = abandon remaining on failure
 	}

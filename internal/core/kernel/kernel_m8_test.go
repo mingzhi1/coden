@@ -12,7 +12,6 @@ import (
 	"github.com/mingzhi1/coden/internal/core/turnsummary"
 )
 
-
 // TestBuildAccumChanges verifies deduplicated file-change accumulation across turns.
 func TestBuildAccumChanges(t *testing.T) {
 	t.Parallel()

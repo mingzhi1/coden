@@ -173,6 +173,16 @@ var builtinTools = map[string]ToolMeta{
 		Category:    "search",
 		SearchHints: []string{"search", "web", "google", "research", "docs", "documentation", "external", "internet", "look up"},
 	},
+	"request_research": {
+		Name:        "request_research",
+		Description: "Signal that you are BLOCKED on external knowledge too large to look up inline. The system spawns a research task and rebuilds this task to depend on it, so you re-run with the findings. Use only when a quick web_search/web_fetch is not enough.",
+		Parameters:  `{"query": "string (required) — what to research"}`,
+		Deferred:    true,
+		ReadOnly:    true, // a control signal, not a mutation; the engine intercepts it
+		Concurrent:  false,
+		Category:    "control",
+		SearchHints: []string{"blocked", "need research", "insufficient information", "re-plan", "investigate first"},
+	},
 }
 
 // IsMCPKind reports whether kind addresses an MCP tool ("mcp__<server>__<tool>").

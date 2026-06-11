@@ -72,6 +72,48 @@
     files_written_min: 1  # executor actually wrote a file
     build: "go build ./..."   # the produced code must compile
 
+# A multi-file dependency scenario: an impl file plus a test file that depends on
+# it, gated on a real `go test`. Outcome-only by design — the bucket engine's
+# readiness+priority scheduling and cross-task DepArtifacts flow (§11) are verified
+# DETERMINISTICALLY in scheduler_test.go; here we never assert HOW the planner
+# decomposed (1 task writing both files or 2 with a dep are both valid), only that
+# both files were written and the dependent tests compose and pass — matching this
+# suite's outcome-not-route principle.
+- name: multi-task-dependency-builds
+  prompt: "在 calc 包里新建 stack.go 实现 IntStack 类型(基于 []int)及 Push/Pop/Len 方法,并在 stack_test.go 写覆盖 Push/Pop/Len 的测试;go test ./... 必须通过"
+  fixture: eval/fixtures/calc
+  allow_shell: true
+  expect:
+    checkpoint: pass
+    files_written_min: 2     # stack.go + stack_test.go both written (outcome, not plan shape)
+    build: "go test ./..."   # impl + dependent tests compose and pass
+
+# Exercises the research WorkflowMode (intent recognition → research) + external
+# knowledge lookup (web_search / web_fetch over Go docs — "先查 golang doc"). The
+# route and tool are the engine's call, so this asserts only that it completes with
+# a substantive answer. NOTE: web_search needs TAVILY_API_KEY; without it the lookup
+# falls back to web_fetch / model knowledge, so the assertion stays lenient.
+- name: research-looks-up-golang-doc
+  workspace: .
+  prompt: "查一下 Go 标准库 slices 包提供了哪些常用函数(如 Contains/Sort/Index),简要说明各自用途"
+  expect:
+    checkpoint: pass
+    min_chars: 200
+
+# A code task with an external-package dependency: the executor may resolve it
+# inline (web_search/read), via a gather-first investigation task, or a mid-execution
+# request_research re-plan — any route is valid. Outcome-gated on a real compile, so
+# it tests the research-then-code capability end-to-end (the request_research
+# mechanism itself is unit-tested in scheduler_test.go, not asserted here).
+- name: code-with-external-dep-builds
+  prompt: "在 calc.go 里加一个 Hypot(a, b float64) float64,返回 sqrt(a*a+b*b)(用 Go 标准库 math 包),确保 go build 通过"
+  fixture: eval/fixtures/calc
+  allow_shell: true
+  expect:
+    checkpoint: pass
+    files_written_min: 1
+    build: "go build ./..."
+
 # ── Multi-turn cases ─────────────────────────────────────────────────────────
 # Each turn after the first APPENDS to the same session in a NEW process, so the
 # session must be reloaded from disk. These guard the conversational paths the

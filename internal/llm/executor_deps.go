@@ -17,9 +17,9 @@ type ExecutorDeps struct {
 	// Production: executor.Execute(ctx, request)
 	Execute func(ctx context.Context, req toolruntime.Request) (toolruntime.Result, error)
 
-	// Compress applies the 4-layer compression chain to the message history.
-	// Production: Snip → MicroCompact → compressAgenticHistory → AutoCompact
-	Compress func(messages []Message, round int, budget int) []Message
+	// Compress applies the two-layer Compact chain to the message history.
+	// Production: CompactHistory (L1 structural → L2 LLM summary on overflow).
+	Compress func(ctx context.Context, messages []Message, round int, budget int) []Message
 }
 
 // ProductionExecutorDeps creates a ExecutorDeps wired to the real implementations
@@ -35,12 +35,8 @@ func ProductionExecutorDeps(chatter Chatter, executor toolruntime.Executor, tool
 		Execute: func(ctx context.Context, req toolruntime.Request) (toolruntime.Result, error) {
 			return executor.Execute(ctx, req)
 		},
-		Compress: func(messages []Message, round int, budget int) []Message {
-			messages = SnipHistory(messages, snipMaxMessages)
-			messages = MicroCompact(messages, round)
-			messages = compressAgenticHistory(messages, budget)
-			messages = AutoCompact(messages, budget)
-			return messages
+		Compress: func(ctx context.Context, messages []Message, round int, budget int) []Message {
+			return CompactHistory(ctx, messages, round, budget, newChatSummarizer(chatter, RoleExecutor))
 		},
 	}
 }

@@ -139,8 +139,12 @@ func policyForKind(kind string) pipelinePolicy {
 
 	default:
 		// code_gen / debug / refactor / config: full modifying pipeline.
+		// RePlan retired from the execute path: the agentic Executor reads code and
+		// figures out HOW itself, making a separate step-refinement LLM call
+		// redundant. (plan_only keeps RePlan above — there the refined plan IS the
+		// deliverable, with no Executor to do the HOW.) Validated via eval.
 		return pipelinePolicy{
-			Discovery: true, Plan: true, Critic: true, RePlan: true,
+			Discovery: true, Plan: true, Critic: true,
 			Code: true, ExecutorMode: model.ExecutorModeReadWrite, Accept: true,
 		}
 	}

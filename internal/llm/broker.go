@@ -13,12 +13,12 @@ import (
 // Strong roles (decision points) use the primary pool tier by default.
 // Light roles (execution points) use the light pool tier by default.
 const (
-	RoleInputter  = "inputter"
-	RolePlanner   = "planner"
-	RoleCritic    = "critic"
-	RoleExecutor     = "executor"
-	RoleAcceptor  = "acceptor"
-	RoleReplanner = "replanner"
+	RoleInputter   = "inputter"
+	RolePlanner    = "planner"
+	RoleCritic     = "critic"
+	RoleExecutor   = "executor"
+	RoleAcceptor   = "acceptor"
+	RoleReplanner  = "replanner"
 	RoleResponder  = "responder"  // final user-facing response; Light tier (not in strongRoles)
 	RoleAnalyzer   = "analyzer"   // read-only code investigation & diagnosis; Strong tier
 	RoleDispatcher = "dispatcher" // designs the run's flow + per-role objectives; Strong tier
@@ -28,9 +28,9 @@ const (
 // strongRoles identifies which roles default to the primary (strong) pool tier.
 // Decision points are strong; execution points are light.
 var strongRoles = map[string]bool{
-	RolePlanner:   true, // decides WHAT to build
-	RoleCritic:    true, // cross-reviews the plan (anti-narcissism)
-	RoleAcceptor:  true, // decides whether the build is correct
+	RolePlanner:    true, // decides WHAT to build
+	RoleCritic:     true, // cross-reviews the plan (anti-narcissism)
+	RoleAcceptor:   true, // decides whether the build is correct
 	RoleReplanner:  true, // revises the plan based on critic + discovery
 	RoleAnalyzer:   true, // diagnoses code (analyze intent) — quality matters
 	RoleDispatcher: true, // designs flow + writes each agent's objective — reasoning-heavy

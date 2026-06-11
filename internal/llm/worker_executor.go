@@ -28,7 +28,7 @@ import (
 type LLMExecutor struct {
 	chatter          Chatter
 	executor         toolruntime.Executor // optional; enables agentic read loop
-	deps             *ExecutorDeps           // optional; nil = use production defaults
+	deps             *ExecutorDeps        // optional; nil = use production defaults
 	outputCompressor *outputcompressor.Compressor
 	msgBuffer
 }
@@ -210,7 +210,7 @@ func (c *LLMExecutor) agenticBuild(ctx context.Context, workflowID string, inten
 	for round := 0; round < maxExecutorRounds; round++ {
 		prof.Checkpoint(fmt.Sprintf("round_%d_compress_start", round+1))
 		// M12-03: 4-layer compression chain (delegated to deps.Compress).
-		messages = deps.Compress(messages, round, toolHistoryBudget)
+		messages = deps.Compress(ctx, messages, round, toolHistoryBudget)
 		prof.Checkpoint(fmt.Sprintf("round_%d_compress_end", round+1))
 
 		prof.Checkpoint("api_request_sent")
@@ -226,6 +226,17 @@ func (c *LLMExecutor) agenticBuild(ctx context.Context, workflowID string, inten
 
 		calls := parsePlanToolCalls(workflowID, reply)
 		slog.Info("[llm:executor] parsed tool calls from reply", "round", round+1, "total", len(calls), "reads", len(func() []workflow.ToolCall { r, _ := splitToolCalls(calls); return r }()), "mutations", len(func() []workflow.ToolCall { _, m := splitToolCalls(calls); return m }()))
+
+		// request_research is a CONTROL signal, not a tool: if the model emits it,
+		// STOP the agentic loop and lift it into CodePlan.ResearchNeed (a dedicated
+		// field, NOT the tool stream) so the engine turns it into a research task +
+		// a rebuilt implementation task (§6.1). Routing it through ToolCalls would let
+		// the runtime try to execute it (no handler → error) and lose the signal.
+		if q := firstResearchNeed(calls); q != "" {
+			c.push("info", "executor", fmt.Sprintf("round %d: research requested — blocked on external knowledge, deferring to research task", round+1))
+			return workflow.CodePlan{ResearchNeed: q}, nil
+		}
+
 		if len(calls) == 0 {
 			// Check for degenerate response (rate-limit degradation).
 			// Degenerate replies are very short and contain no tool calls — they
@@ -522,6 +533,22 @@ func (c *LLMExecutor) recoverTruncation(ctx context.Context, messages []Message,
 		return combined, true
 	}
 	return "", false
+}
+
+// firstResearchNeed returns the query of the first request_research control signal
+// in the tool calls, or "" if none. The agentic loop treats it as terminal and
+// lifts it into CodePlan.ResearchNeed — request_research is NOT an executable tool
+// (the engine turns the need into a research task + a rebuilt dependent task).
+func firstResearchNeed(calls []workflow.ToolCall) string {
+	for i := range calls {
+		if calls[i].Request.Kind == "request_research" {
+			if q := strings.TrimSpace(calls[i].Request.Query); q != "" {
+				return q
+			}
+			return strings.TrimSpace(calls[i].Request.Content)
+		}
+	}
+	return ""
 }
 
 // compressAgenticHistory trims the agentic message history to fit within

@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 
 	"github.com/mingzhi1/coden/internal/core/artifact"
-	"github.com/mingzhi1/coden/internal/hook"
 	"github.com/mingzhi1/coden/internal/core/checkpoint"
 	"github.com/mingzhi1/coden/internal/core/events"
 	"github.com/mingzhi1/coden/internal/core/gitstate"
@@ -23,7 +22,9 @@ import (
 	"github.com/mingzhi1/coden/internal/core/turnsummary"
 	"github.com/mingzhi1/coden/internal/core/workflow"
 	"github.com/mingzhi1/coden/internal/core/workspace"
+	"github.com/mingzhi1/coden/internal/hook"
 	"github.com/mingzhi1/coden/internal/secretary"
+	"github.com/mingzhi1/coden/internal/tool/inventory"
 )
 
 // Kernel 是核心编排引擎，管理会话、工作流执行、存储和事件。
@@ -58,7 +59,8 @@ type Kernel struct {
 	secretary              *secretary.Secretary // Secretary Agent for context/permission/state management
 	mcpToolPrompt          string               // pre-formatted MCP tool descriptions for Executor prompt
 	inventoryToolsPrompt   string               // dynamic "Available tools" section from inventory discovery
-	inventoryEnvPrompt     string               // environment info (interpreters, formatters etc.) from inventory
+	inventoryEnvPrompt     string               // repo-wide environment info (fallback); per-task projection prefers inventory.Inventory
+	inventory              *inventory.Inventory // discovered tools + subproject map; source for per-task Environment projection
 	rollbackPolicy         string               // "auto" | "manual" | "off"; default "auto"
 	maxTaskRetries         int                  // N-06: per-task retry budget; default 1 (= 2 total attempts)
 	failurePolicy          string               // M11-04: "stop" | "skip" | "replan"; default "stop"

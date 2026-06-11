@@ -25,6 +25,13 @@ type CodePlan struct {
 	// to the TaskQueue after executing the current task. The kernel enforces
 	// a per-source cap (maxAppendPerExecutor) to prevent runaway LLM loops.
 	AppendTasks []model.Task `json:"append_tasks,omitempty"`
+
+	// ResearchNeed, when non-empty, signals the Executor is BLOCKED on external
+	// knowledge it cannot look up inline — it carries WHAT to research. This is a
+	// CONTROL signal, not a tool call: the agentic loop lifts it out of the tool
+	// stream here so it never reaches the runtime, and the bucket scheduler turns
+	// it into a research task + a rebuilt implementation task that depends on it.
+	ResearchNeed string `json:"research_need,omitempty"`
 }
 
 type ToolCall struct {

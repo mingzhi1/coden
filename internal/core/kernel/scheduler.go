@@ -9,6 +9,8 @@ import (
 
 	"github.com/mingzhi1/coden/internal/core/model"
 	"github.com/mingzhi1/coden/internal/core/workflow"
+	clog "github.com/mingzhi1/coden/internal/log"
+	"github.com/mingzhi1/coden/internal/tool/inventory"
 )
 
 // bucketScheduler is the heart of the blackboard workflow engine: it owns a
@@ -34,6 +36,11 @@ type bucketScheduler struct {
 	seq     int                                                             // monotonic checkpoint sequence (§6); bumped per apply
 	persist checkpointer                                                    // incremental snapshot sink; nil = pure in-memory run
 	onRetry func(taskID string, attempt, maxRetries int, evidence []string) // retry observability hook; nil = silent
+
+	// onResearch observes a research block: a task was broken and rebuilt behind a
+	// research task. deduped is true when the research task already existed (a shared
+	// need across tasks reused one research task). nil = silent.
+	onResearch func(origID, researchID, rebuiltID string, deduped bool)
 }
 
 // bucketSnapshot is an incremental checkpoint of the engine's authoritative state
@@ -124,7 +131,14 @@ type taskOutcome struct {
 	// originate from a Planner outcome, applied by the scheduler, never added by
 	// a worker mutating the bucket directly.
 	newTasks []model.Task
-	err      error
+	// researchNeed, when non-empty, reports the Executor was BLOCKED on external
+	// knowledge (the string is WHAT to research). The scheduler (single writer)
+	// turns it into a research task + a rebuilt dependent task in apply(); two
+	// tasks blocked on the same need share one research task (bucket id dedup).
+	// status is set to failed alongside it, so if the rebuild budget is exhausted
+	// it degrades to an ordinary failure.
+	researchNeed string
+	err          error
 }
 
 // taskInput is what the scheduler projects to a worker at dispatch (§11): the task
@@ -269,6 +283,18 @@ func (s *bucketScheduler) apply(out taskOutcome) {
 	// and §10.2 evidence_ref. Kept even on a failed attempt (last evidence wins).
 	if !artifactEmpty(out.artifact) {
 		s.artifacts[out.taskID] = out.artifact
+	}
+
+	// Research block (§6.1): the Executor was blocked on external knowledge. BREAK
+	// the task and REBUILD it behind a research task that supplies the findings — a
+	// shared need across concurrent tasks dedups to one research task (bucket id
+	// uniqueness, single-writer-safe). Bounded by maxResearchRebuilds; once the
+	// budget is spent the outcome falls through as an ordinary failure below
+	// (status is already failed), so a persistently-blocked task is abandoned.
+	if out.researchNeed != "" && researchGen(out.taskID) < maxResearchRebuilds {
+		s.handleResearchBlock(out)
+		s.checkpoint()
+		return
 	}
 
 	// Failed task → retry by re-dispatch until cycles exceed maxRetries, then abandon
@@ -464,6 +490,15 @@ func (k *Kernel) executeTask(ctx context.Context, sessionID, workflowID string, 
 	// findings of completed dependencies (#4 — §11 DepArtifacts).
 	wfCtx.RetryFeedback = in.retryFeedback
 	wfCtx.DepFindings = formatDepFindings(in.depArtifacts)
+	// Per-task Environment projection: scope the toolchain to THIS task's subproject
+	// (by its file paths) instead of the whole repo. A task touching only web/ gets
+	// the JS toolchain, not a monorepo's five languages. Falls back to the repo-wide
+	// prompt when the task declares no files or none map to a known subproject.
+	if k.inventory != nil {
+		if langs := inventory.SubprojectLanguagesForFiles(k.inventory.Subprojects(), task.Files); len(langs) > 0 {
+			wfCtx.EnvironmentPrompt = inventory.FormatEnvironmentPromptForLanguages(k.inventory, langs)
+		}
+	}
 	taskCtx := model.WithWorkflowContext(ctx, wfCtx)
 	fail := func(format string, args ...any) taskOutcome {
 		return taskOutcome{taskID: task.ID, status: model.TaskStatusFailed, err: fmt.Errorf(format, args...)}
@@ -479,6 +514,19 @@ func (k *Kernel) executeTask(ctx context.Context, sessionID, workflowID string, 
 	if codeResult.CodePlan == nil {
 		return fail("executor returned nil code plan for %q", task.Title)
 	}
+
+	// 1b. Mid-execution research block (§6.1): the Executor reports it is BLOCKED on
+	// external knowledge it couldn't look up inline (CodePlan.ResearchNeed — a
+	// dedicated control field, never the tool stream). Hand the need straight to the
+	// scheduler as a failed-with-researchNeed outcome; apply() (single writer) turns
+	// it into a research task + a rebuilt dependent task, deduping a shared need
+	// across concurrent tasks. status=failed so an exhausted rebuild budget degrades
+	// to an ordinary failure.
+	if q := strings.TrimSpace(codeResult.CodePlan.ResearchNeed); q != "" {
+		return taskOutcome{taskID: task.ID, status: model.TaskStatusFailed, researchNeed: q,
+			err: fmt.Errorf("blocked on external knowledge: %s", q)}
+	}
+
 	toolCalls := codeResult.CodePlan.Calls()
 	if len(toolCalls) == 0 {
 		return fail("executor returned empty tool plan for %q", task.Title)
@@ -579,6 +627,12 @@ func (k *Kernel) runTasksBucket(ctx context.Context, sessionID, workflowID strin
 			Evidence:   evidence,
 		})
 	}
+	s.onResearch = func(origID, researchID, rebuiltID string, deduped bool) {
+		k.emitTasksUpdated(sessionID, workflowID, s.finalTasks())
+		clog.Session(sessionID).Info("research block: task rebuilt behind research task",
+			"workflow_id", workflowID, "blocked_task", origID, "research_task", researchID,
+			"rebuilt_task", rebuiltID, "deduped", deduped)
+	}
 	worker := func(c context.Context, in taskInput) taskOutcome {
 		return k.dispatchTask(c, sessionID, workflowID, intent, in, wfCtx)
 	}
@@ -624,11 +678,13 @@ func (k *Kernel) resumeTasksBucket(sessionID, workflowID string) (*bucketSchedul
 	return s, true
 }
 
-// notPassedCount returns how many recorded tasks reached a non-passed terminal.
+// notPassedCount returns how many recorded tasks reached a genuine non-passed
+// terminal. A skipped task was superseded (e.g. broken & rebuilt behind a research
+// task), not a failure, so it does not count.
 func (s *bucketScheduler) notPassedCount() int {
 	n := 0
 	for _, st := range s.completed {
-		if st != model.TaskStatusPassed {
+		if st != model.TaskStatusPassed && st != model.TaskStatusSkipped {
 			n++
 		}
 	}
@@ -711,7 +767,9 @@ func (s *bucketScheduler) result() (status string, artifactPaths, evidence []str
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		if s.completed[id] != model.TaskStatusPassed {
+		// A skipped task was superseded (e.g. broken & rebuilt behind a research
+		// task), not a failure — only a genuine non-pass terminal fails the run.
+		if st := s.completed[id]; st != model.TaskStatusPassed && st != model.TaskStatusSkipped {
 			status = "fail"
 		}
 		if a, ok := s.artifacts[id]; ok {
@@ -747,6 +805,157 @@ func (s *bucketScheduler) depArtifactsFor(t model.Task) map[string]model.Artifac
 		deps[dep] = a
 	}
 	return deps
+}
+
+// maxResearchRebuilds bounds how many times a single task lineage may be broken
+// and rebuilt behind a research task. 1 means: a blocked task is rebuilt once
+// (behind its research findings); if the rebuilt task blocks AGAIN it falls through
+// to an ordinary failure rather than looping. Combined with the Guardian budget,
+// this makes research-driven re-planning strictly terminating.
+const maxResearchRebuilds = 1
+
+// handleResearchBlock breaks a research-blocked task and rebuilds it behind a
+// research task (single-writer mutation, called only from apply): (1) the blocked
+// task is superseded (skipped, not failed); (2) a research task for the need is
+// admitted, deduped by a query-derived id so a SHARED need across concurrent tasks
+// maps to ONE research task; (3) the implementation work is rebuilt at the next
+// research-generation id, depending on the research task; (4) anything that
+// depended on the broken task is rewired onto the rebuild so the graph follows the
+// work. The research task's findings reach the rebuild via DepArtifacts (§11).
+func (s *bucketScheduler) handleResearchBlock(out taskOutcome) {
+	origID := out.taskID
+	q := strings.TrimSpace(out.researchNeed)
+
+	// (1) Break the blocked task — superseded by the rebuild, not a failure.
+	s.setStatus(origID, model.TaskStatusSkipped)
+	s.completed[origID] = model.TaskStatusSkipped
+	delete(s.feedback, origID)
+
+	// (2) Admit the research task, deduped by query identity. If one already exists
+	// (in the bucket or completed) the rebuild simply depends on it — no duplicate.
+	researchID := researchTaskIDPrefix + slugForResearch(q)
+	deduped := s.inBucket(researchID) || s.completedHas(researchID)
+	if !deduped {
+		s.bucket = append(s.bucket, model.Task{
+			ID:      researchID,
+			Title:   "research: " + q,
+			Status:  model.TaskStatusPlanned,
+			SubGoal: q, // the research query; dispatchTask routes by id to runResearchTask
+		})
+	}
+
+	// (3) Rebuild the implementation work behind the research task.
+	rebuilt := s.cloneTaskByID(origID)
+	rebuilt.ID = nextResearchGenID(origID)
+	rebuilt.Status = model.TaskStatusPlanned
+	rebuilt.Attempts = 0
+	rebuilt.DependsOn = appendUnique(rebuilt.DependsOn, researchID)
+
+	// (4) Rewire downstream dependents from the broken task onto the rebuild.
+	s.rewireDeps(origID, rebuilt.ID)
+
+	s.bucket = append(s.bucket, rebuilt)
+
+	if s.onResearch != nil {
+		s.onResearch(origID, researchID, rebuilt.ID, deduped)
+	}
+}
+
+// completedHas reports whether id has a terminal outcome in the completion record.
+func (s *bucketScheduler) completedHas(id string) bool {
+	_, ok := s.completed[id]
+	return ok
+}
+
+// cloneTaskByID returns a deep copy of the bucket task with the given id (zero
+// value if absent), so the caller can derive a rebuilt task without aliasing.
+func (s *bucketScheduler) cloneTaskByID(id string) model.Task {
+	for _, t := range s.bucket {
+		if t.ID == id {
+			return cloneTasks([]model.Task{t})[0]
+		}
+	}
+	return model.Task{}
+}
+
+// rewireDeps repoints every bucket task's DependsOn entry from → to, so a rebuilt
+// task inherits the dependents of the task it supersedes.
+func (s *bucketScheduler) rewireDeps(from, to string) {
+	for i := range s.bucket {
+		for j, dep := range s.bucket[i].DependsOn {
+			if dep == from {
+				s.bucket[i].DependsOn[j] = to
+			}
+		}
+	}
+}
+
+// researchTaskIDPrefix / researchGen / nextResearchGenID encode the research
+// rebuild generation in a task id as a "#r<N>" suffix (gen 0 = no suffix). The
+// generation bounds rebuilds (maxResearchRebuilds) and keeps each rebuild's id
+// distinct from the superseded task's (already in the completion record).
+const researchGenSep = "#r"
+
+func researchGen(id string) int {
+	i := strings.LastIndex(id, researchGenSep)
+	if i < 0 {
+		return 0
+	}
+	n := 0
+	for _, r := range id[i+len(researchGenSep):] {
+		if r < '0' || r > '9' {
+			return 0 // not a generation suffix — treat as base id
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+func nextResearchGenID(id string) string {
+	gen := researchGen(id)
+	base := id
+	if gen > 0 {
+		base = id[:strings.LastIndex(id, researchGenSep)]
+	}
+	return fmt.Sprintf("%s%s%d", base, researchGenSep, gen+1)
+}
+
+// slugForResearch derives a stable, id-safe slug from a research query so the same
+// need maps to the same research-task id (the basis of dedup). Lowercased, runs of
+// non-alphanumerics collapsed to a single '-', trimmed, and capped.
+func slugForResearch(q string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(q) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			dash = false
+		default:
+			if !dash && b.Len() > 0 {
+				b.WriteByte('-')
+				dash = true
+			}
+		}
+		if b.Len() >= 48 {
+			break
+		}
+	}
+	s := strings.Trim(b.String(), "-")
+	if s == "" {
+		return "need"
+	}
+	return s
+}
+
+// appendUnique appends v to xs only if absent, preserving order.
+func appendUnique(xs []string, v string) []string {
+	for _, x := range xs {
+		if x == v {
+			return xs
+		}
+	}
+	return append(xs, v)
 }
 
 // failureFeedback distills a failed outcome into a short retry hint (#3): the error
@@ -798,9 +1007,15 @@ func formatDepFindings(deps map[string]model.Artifact) string {
 }
 
 // dispatchTask is the Dispatcher's code-level routing (§5) as a single worker
-// function: a task carrying a plan-request (SubGoal set) goes to the Planner (the
-// sole producer); any other task is an execute-task and runs execute→accept.
+// function: a task in the reserved research-task namespace goes to the read-only
+// research producer; a task carrying a plan-request (SubGoal set) goes to the
+// Planner (the sole producer); any other task is an execute-task and runs
+// execute→accept. The research check is first because a research task also carries
+// its query in SubGoal — it must not be mistaken for a plan-request.
 func (k *Kernel) dispatchTask(ctx context.Context, sessionID, workflowID string, intent model.IntentSpec, in taskInput, wfCtx model.WorkflowContext) taskOutcome {
+	if isResearchTaskID(in.task.ID) {
+		return k.runResearchTask(ctx, sessionID, workflowID, intent, in, wfCtx)
+	}
 	if strings.TrimSpace(in.task.SubGoal) != "" {
 		return k.runPlanTask(ctx, sessionID, workflowID, intent, in, wfCtx)
 	}

@@ -1,0 +1,597 @@
+languages:
+    indicators:
+        CMakeLists.txt:
+            - c
+            - cpp
+        Cargo.lock:
+            - rust
+        Cargo.toml:
+            - rust
+        Gemfile:
+            - ruby
+        Makefile:
+            - c
+            - cpp
+        Pipfile:
+            - python
+        Rakefile:
+            - ruby
+        build.gradle:
+            - java
+        build.gradle.kts:
+            - java
+            - kotlin
+        compile_commands.json:
+            - c
+            - cpp
+        composer.json:
+            - php
+        go.mod:
+            - go
+        go.sum:
+            - go
+        jsconfig.json:
+            - javascript
+        package-lock.json:
+            - javascript
+            - typescript
+        package.json:
+            - javascript
+            - typescript
+        pnpm-lock.yaml:
+            - javascript
+            - typescript
+        pom.xml:
+            - java
+        pyproject.toml:
+            - python
+        requirements.txt:
+            - python
+        setup.cfg:
+            - python
+        setup.py:
+            - python
+        tsconfig.json:
+            - typescript
+        uv.lock:
+            - python
+        yarn.lock:
+            - javascript
+            - typescript
+    extensions:
+        .c: c
+        .cc: cpp
+        .cpp: cpp
+        .cs: csharp
+        .dart: dart
+        .ex: elixir
+        .exs: elixir
+        .go: go
+        .h: c
+        .hpp: cpp
+        .java: java
+        .js: javascript
+        .jsx: javascript
+        .kt: kotlin
+        .lua: lua
+        .php: php
+        .py: python
+        .rb: ruby
+        .rs: rust
+        .swift: swift
+        .ts: typescript
+        .tsx: typescript
+        .zig: zig
+tools:
+    - name: gopls
+      category: lsp
+      languages:
+        - go
+      command: gopls
+      args:
+        - serve
+      version_cmd:
+        - gopls
+        - version
+      install_hint: go install golang.org/x/tools/gopls@latest
+      priority: 100
+      indicators:
+        - go.mod
+        - go.sum
+    - name: pylsp
+      category: lsp
+      languages:
+        - python
+      command: pylsp
+      version_cmd:
+        - pylsp
+        - --version
+      install_hint: pip install python-lsp-server
+      priority: 100
+      indicators:
+        - pyproject.toml
+        - setup.py
+        - requirements.txt
+        - Pipfile
+    - name: pyright
+      category: lsp
+      languages:
+        - python
+      command: pyright-langserver
+      args:
+        - --stdio
+      version_cmd:
+        - pyright
+        - --version
+      install_hint: npm install -g pyright / pip install pyright
+      priority: 90
+      indicators:
+        - pyrightconfig.json
+        - pyproject.toml
+        - setup.py
+        - requirements.txt
+    - name: typescript-language-server
+      category: lsp
+      languages:
+        - typescript
+        - javascript
+      command: typescript-language-server
+      args:
+        - --stdio
+      version_cmd:
+        - typescript-language-server
+        - --version
+      install_hint: npm install -g typescript-language-server typescript
+      priority: 100
+      indicators:
+        - package.json
+        - tsconfig.json
+    - name: rust-analyzer
+      category: lsp
+      languages:
+        - rust
+      command: rust-analyzer
+      version_cmd:
+        - rust-analyzer
+        - --version
+      install_hint: rustup component add rust-analyzer
+      priority: 100
+      indicators:
+        - Cargo.toml
+    - name: clangd
+      category: lsp
+      languages:
+        - c
+        - cpp
+      command: clangd
+      version_cmd:
+        - clangd
+        - --version
+      install_hint: apt install clangd / brew install llvm
+      priority: 100
+      indicators:
+        - CMakeLists.txt
+        - Makefile
+        - compile_commands.json
+    - name: jdtls
+      category: lsp
+      languages:
+        - java
+      command: jdtls
+      version_cmd:
+        - jdtls
+        - --version
+      install_hint: See https://github.com/eclipse-jdtls/eclipse.jdt.ls
+      priority: 100
+      indicators:
+        - pom.xml
+        - build.gradle
+        - build.gradle.kts
+    - name: go-mod
+      category: package_manager
+      languages:
+        - go
+      command: go
+      version_cmd:
+        - go
+        - version
+      priority: 100
+      indicators:
+        - go.mod
+    - name: npm
+      category: package_manager
+      languages:
+        - javascript
+        - typescript
+      command: npm
+      version_cmd:
+        - npm
+        - --version
+      priority: 80
+      indicators:
+        - package.json
+        - package-lock.json
+    - name: yarn
+      category: package_manager
+      languages:
+        - javascript
+        - typescript
+      command: yarn
+      version_cmd:
+        - yarn
+        - --version
+      priority: 70
+      indicators:
+        - yarn.lock
+    - name: pnpm
+      category: package_manager
+      languages:
+        - javascript
+        - typescript
+      command: pnpm
+      version_cmd:
+        - pnpm
+        - --version
+      priority: 75
+      indicators:
+        - pnpm-lock.yaml
+    - name: pip
+      category: package_manager
+      languages:
+        - python
+      command: pip
+      version_cmd:
+        - pip
+        - --version
+      priority: 70
+      indicators:
+        - requirements.txt
+    - name: uv
+      category: package_manager
+      languages:
+        - python
+      command: uv
+      version_cmd:
+        - uv
+        - version
+      install_hint: pip install uv / brew install uv
+      priority: 90
+      indicators:
+        - pyproject.toml
+        - uv.lock
+    - name: poetry
+      category: package_manager
+      languages:
+        - python
+      command: poetry
+      version_cmd:
+        - poetry
+        - --version
+      install_hint: pipx install poetry / pip install poetry
+      priority: 85
+      indicators:
+        - poetry.lock
+        - pyproject.toml
+    - name: pipenv
+      category: package_manager
+      languages:
+        - python
+      command: pipenv
+      version_cmd:
+        - pipenv
+        - --version
+      install_hint: pip install pipenv
+      priority: 75
+      indicators:
+        - Pipfile
+        - Pipfile.lock
+    - name: cargo
+      category: package_manager
+      languages:
+        - rust
+      command: cargo
+      version_cmd:
+        - cargo
+        - --version
+      priority: 100
+      indicators:
+        - Cargo.toml
+    - name: maven
+      category: package_manager
+      languages:
+        - java
+      command: mvn
+      version_cmd:
+        - mvn
+        - --version
+      priority: 80
+      indicators:
+        - pom.xml
+    - name: gradle
+      category: package_manager
+      languages:
+        - java
+      command: gradle
+      version_cmd:
+        - gradle
+        - --version
+      priority: 80
+      indicators:
+        - build.gradle
+        - build.gradle.kts
+    - name: go
+      category: interpreter
+      languages:
+        - go
+      command: go
+      version_cmd:
+        - go
+        - version
+      priority: 100
+      indicators:
+        - go.mod
+        - go.sum
+    - name: python3
+      category: interpreter
+      languages:
+        - python
+      command: python3
+      version_cmd:
+        - python3
+        - --version
+      priority: 100
+      indicators:
+        - pyproject.toml
+        - setup.py
+        - requirements.txt
+        - '*.py'
+    - name: python
+      category: interpreter
+      languages:
+        - python
+      command: python
+      version_cmd:
+        - python
+        - --version
+      priority: 90
+      indicators:
+        - pyproject.toml
+        - setup.py
+        - requirements.txt
+        - '*.py'
+    - name: node
+      category: interpreter
+      languages:
+        - javascript
+        - typescript
+      command: node
+      version_cmd:
+        - node
+        - --version
+      priority: 100
+      indicators:
+        - package.json
+        - tsconfig.json
+    - name: rustc
+      category: interpreter
+      languages:
+        - rust
+      command: rustc
+      version_cmd:
+        - rustc
+        - --version
+      priority: 100
+      indicators:
+        - Cargo.toml
+    - name: java
+      category: interpreter
+      languages:
+        - java
+      command: java
+      version_cmd:
+        - java
+        - -version
+      priority: 100
+      indicators:
+        - pom.xml
+        - build.gradle
+    - name: ruby
+      category: interpreter
+      languages:
+        - ruby
+      command: ruby
+      version_cmd:
+        - ruby
+        - --version
+      priority: 100
+      indicators:
+        - Gemfile
+        - '*.rb'
+    - name: gofmt
+      category: formatter
+      languages:
+        - go
+      command: gofmt
+      args:
+        - -w
+      version_cmd:
+        - go
+        - version
+      priority: 90
+      indicators:
+        - go.mod
+    - name: goimports
+      category: formatter
+      languages:
+        - go
+      command: goimports
+      args:
+        - -w
+      version_cmd:
+        - goimports
+        - -e
+        - /dev/null
+      install_hint: go install golang.org/x/tools/cmd/goimports@latest
+      priority: 100
+      indicators:
+        - go.mod
+    - name: black
+      category: formatter
+      languages:
+        - python
+      command: black
+      version_cmd:
+        - black
+        - --version
+      install_hint: pip install black
+      priority: 100
+      indicators:
+        - pyproject.toml
+        - setup.py
+        - requirements.txt
+    - name: isort
+      category: formatter
+      languages:
+        - python
+      command: isort
+      version_cmd:
+        - isort
+        - --version
+      install_hint: pip install isort
+      priority: 80
+      indicators:
+        - pyproject.toml
+        - .isort.cfg
+        - setup.cfg
+    - name: prettier
+      category: formatter
+      languages:
+        - javascript
+        - typescript
+        - css
+        - html
+        - json
+        - yaml
+        - markdown
+      command: prettier
+      args:
+        - --write
+      version_cmd:
+        - prettier
+        - --version
+      install_hint: npm install -g prettier
+      priority: 100
+      indicators:
+        - package.json
+        - .prettierrc
+    - name: rustfmt
+      category: formatter
+      languages:
+        - rust
+      command: rustfmt
+      version_cmd:
+        - rustfmt
+        - --version
+      install_hint: rustup component add rustfmt
+      priority: 100
+      indicators:
+        - Cargo.toml
+    - name: golangci-lint
+      category: linter
+      languages:
+        - go
+      command: golangci-lint
+      args:
+        - run
+      version_cmd:
+        - golangci-lint
+        - --version
+      install_hint: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      priority: 100
+      indicators:
+        - go.mod
+        - .golangci.yml
+    - name: ruff
+      category: linter
+      languages:
+        - python
+      command: ruff
+      args:
+        - check
+      version_cmd:
+        - ruff
+        - --version
+      install_hint: pip install ruff
+      priority: 100
+      indicators:
+        - pyproject.toml
+        - ruff.toml
+    - name: mypy
+      category: linter
+      languages:
+        - python
+      command: mypy
+      version_cmd:
+        - mypy
+        - --version
+      install_hint: pip install mypy
+      priority: 90
+      indicators:
+        - pyproject.toml
+        - mypy.ini
+        - setup.cfg
+    - name: eslint
+      category: linter
+      languages:
+        - javascript
+        - typescript
+      command: eslint
+      version_cmd:
+        - eslint
+        - --version
+      install_hint: npm install -g eslint
+      priority: 100
+      indicators:
+        - package.json
+        - .eslintrc
+        - .eslintrc.js
+        - .eslintrc.json
+    - name: clippy
+      category: linter
+      languages:
+        - rust
+      command: cargo
+      args:
+        - clippy
+      version_cmd:
+        - cargo
+        - clippy
+        - --version
+      install_hint: rustup component add clippy
+      priority: 100
+      indicators:
+        - Cargo.toml
+    - name: ripgrep
+      category: search
+      command: rg
+      version_cmd:
+        - rg
+        - --version
+      install_hint: cargo install ripgrep / brew install ripgrep / apt install ripgrep
+      priority: 100
+    - name: fd
+      category: search
+      command: fd
+      version_cmd:
+        - fd
+        - --version
+      install_hint: cargo install fd-find / brew install fd / apt install fd-find
+      priority: 80
+    - name: fzf
+      category: search
+      command: fzf
+      version_cmd:
+        - fzf
+        - --version
+      install_hint: brew install fzf / apt install fzf
+      priority: 80

@@ -86,16 +86,17 @@ type Metrics struct {
 	DurSec     float64 `json:"dur_sec"`
 
 	// Per-role signals (0 / "" when that role didn't run for this path).
-	Snippets     int     `json:"snippets"`      // searcher: discovery snippets prefetched
-	Tasks        int     `json:"tasks"`         // planner: tasks in the DAG
-	CriticScore  float64 `json:"critic_score"`  // critic: plan score
-	CriticIssues int     `json:"critic_issues"` // critic: issues raised
-	CoderRounds  int     `json:"executor_rounds"`  // executor: agentic read/build rounds
-	FilesWritten int     `json:"files_written"` // executor: write_file/edit_file calls
+	Snippets     int     `json:"snippets"`        // searcher: discovery snippets prefetched
+	Tasks        int     `json:"tasks"`           // planner: tasks in the DAG
+	CriticScore  float64 `json:"critic_score"`    // critic: plan score
+	CriticIssues int     `json:"critic_issues"`   // critic: issues raised
+	CoderRounds  int     `json:"executor_rounds"` // executor: agentic read/build rounds
+	FilesWritten int     `json:"files_written"`   // executor: write_file/edit_file calls
+	Research     int     `json:"research"`        // scheduler: research blocks (task broken & rebuilt behind research)
 }
 
 var (
-	reAnalyzeLen  = regexp.MustCompile(`analysis_len=(\d+)`)
+	reAnalyzeLen  = regexp.MustCompile(`(?:analysis|findings)_len=(\d+)`)
 	reRAGHits     = regexp.MustCompile(`rag_search.*?hits=(\d+)`)
 	reInsights    = regexp.MustCompile(`extracted insights.*?count=(\d+)`)
 	reRecall      = regexp.MustCompile(`recalled insights.*?count=(\d+)`)
@@ -106,6 +107,7 @@ var (
 	reCritic      = regexp.MustCompile(`critique complete.*?score=([\d.]+).*?issues=(\d+)`)
 	reCoderRounds = regexp.MustCompile(`\[llm:executor\] executing reads in parallel round=(\d+)`)
 	reFileWrite   = regexp.MustCompile(`executing kind=(?:write_file|edit_file)`)
+	reResearch    = regexp.MustCompile(`research block: task rebuilt behind research task`)
 )
 
 func main() {
@@ -432,6 +434,8 @@ func parse(out string) Metrics {
 		m.Path = "plan_only"
 	case strings.Contains(out, "question answered directly"):
 		m.Path = "question"
+	case strings.Contains(out, "research workflow completed"):
+		m.Path = "research"
 	case strings.Contains(out, "workflow completed") || strings.Contains(out, "checkpoint: pass"):
 		m.Path = "code"
 	default:
@@ -454,6 +458,7 @@ func parse(out string) Metrics {
 	}
 	m.CoderRounds = maxInt(reCoderRounds, out)
 	m.FilesWritten = len(reFileWrite.FindAllStringIndex(out, -1))
+	m.Research = len(reResearch.FindAllStringIndex(out, -1))
 	return m
 }
 
@@ -472,6 +477,9 @@ func rolesDetail(m Metrics) string {
 	}
 	if m.CoderRounds > 0 || m.FilesWritten > 0 {
 		parts = append(parts, fmt.Sprintf("executor(rounds=%d,files=%d)", m.CoderRounds, m.FilesWritten))
+	}
+	if m.Research > 0 {
+		parts = append(parts, fmt.Sprintf("research(blocks=%d)", m.Research))
 	}
 	if m.Chars > 0 {
 		parts = append(parts, fmt.Sprintf("analyzer(chars=%d)", m.Chars))

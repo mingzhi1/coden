@@ -53,13 +53,17 @@ func OptionsFromConfig(dc config.DiscoveryConfig) DiscoverOptions {
 func Discover(workspaceRoot string, cfg *config.ToolsConfig) *Inventory {
 	opts := OptionsFromConfig(cfg.Discovery)
 
-	// Step 1: Detect project languages.
-	langs := DetectProjectLanguages(workspaceRoot)
-	slog.Info("[inventory] detected project languages", "languages", langs)
+	// Step 0: Load the merged catalog (embedded + user/project overrides) ONCE.
+	cat := LoadCatalog(workspaceRoot)
 
-	// Step 2: Filter catalog.
-	candidates := FilterByLanguages(BuiltinCatalog(), langs)
-	slog.Info("[inventory] filtered candidates", "count", len(candidates), "from", len(builtinCatalog))
+	// Step 1: Walk the tree once — detect languages AND the subproject map (each
+	// manifest dir → its languages), so a monorepo's modules are located up front.
+	langs, subs := detectProject(workspaceRoot, cat.Languages)
+	slog.Info("[inventory] detected project", "languages", langs, "subprojects", len(subs))
+
+	// Step 2: Filter catalog to relevant candidates.
+	candidates := FilterByLanguages(cat.Tools, langs)
+	slog.Info("[inventory] filtered candidates", "count", len(candidates), "from", len(cat.Tools))
 
 	// Step 2.5: Open cache (best-effort; nil cache = probe everything).
 	cache, cacheErr := OpenCache(workspaceRoot)
@@ -117,11 +121,40 @@ func Discover(workspaceRoot string, cfg *config.ToolsConfig) *Inventory {
 	}
 	wg.Wait()
 
+	// Layer 4 (long-tail fallback): record what the catalog could NOT serve, so the
+	// prompt can hand the raw signal to the LLM (use run_shell + own knowledge).
+	unserved := unservedLanguages(langs, inv)
+	unknownExts := ScanUnknownExtensions(workspaceRoot, cat.Languages.Extensions)
+	inv.SetLongTail(langs, unserved, unknownExts)
+	inv.SetSubprojects(subs)
+	if len(unserved) > 0 || len(unknownExts) > 0 {
+		slog.Info("[inventory] long-tail signals (no preconfigured tooling)",
+			"unserved_languages", unserved, "unknown_extensions", unknownExts)
+	}
+
 	slog.Info("[inventory] discovery complete",
 		"summary", inv.Summary(),
 		"cache_hits", cacheHits,
 		"probed", len(candidates)-cacheHits)
 	return inv
+}
+
+// unservedLanguages returns detected languages for which NO available tool exists
+// in the inventory — the languages the catalog recognized but cannot accelerate.
+func unservedLanguages(detected []string, inv *Inventory) []string {
+	served := make(map[string]bool)
+	for _, e := range inv.Available() {
+		for _, l := range e.Languages {
+			served[l] = true
+		}
+	}
+	var out []string
+	for _, l := range detected {
+		if !served[l] {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // DiscoverFresh forces a full re-probe, ignoring the cache.

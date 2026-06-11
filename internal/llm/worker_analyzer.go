@@ -98,9 +98,12 @@ func (a *LLMAnalyzer) investigate(ctx context.Context, messages []Message) (stri
 	degenerateCount := 0
 	const maxDegenerateRetries = 2
 
+	summarizer := newChatSummarizer(a.chatter, RoleAnalyzer)
 	for round := 0; round < maxAnalyzerRounds; round++ {
-		messages = SnipHistory(messages, snipMaxMessages)
-		messages = compressAgenticHistory(messages, toolHistoryBudget)
+		// Same two-layer Compact as the executor (was: Snip + compress only — the
+		// read-heavy investigation loop never stripped read-only results or collapsed
+		// on overflow). L2 fires only when L1 can't fit, so normal runs pay nothing.
+		messages = CompactHistory(ctx, messages, round, toolHistoryBudget, summarizer)
 
 		reply, err := RecoverableChat(ctx, a.chatter, RoleAnalyzer, messages, defaultRecoveryConfig())
 		if err != nil {

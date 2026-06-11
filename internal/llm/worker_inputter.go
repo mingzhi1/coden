@@ -48,7 +48,7 @@ func (i *LLMInputter) Build(ctx context.Context, sessionID, prompt string) (mode
 
 	systemPrompt := prompts.Inputter(prevIntentHint)
 
-	ctxInfo := contextSummary(ctx)
+	ctxInfo := inputterContext(ctx) // scoped: prev-turns + history + light profile (no FileTree bias)
 	userContent := prompt
 	if ctxInfo != "" {
 		userContent = ctxInfo + "\n## Current request\n" + prompt
@@ -69,10 +69,13 @@ func (i *LLMInputter) Build(ctx context.Context, sessionID, prompt string) (mode
 	}
 	if err := json.Unmarshal([]byte(extractJSON(reply)), &parsed); err != nil {
 		parsed.Goal = strings.TrimSpace(reply)
-		// Default to code_gen so that parse failures still go through the full
-		// Plan/Code/Accept pipeline rather than being misrouted as a question.
-		parsed.Kind = model.IntentKindCodeGen
-		parsed.SuccessCriteria = []string{"task is completed"}
+		// Default to analyze (READ-ONLY) on parse failure, never code_gen: an
+		// unparseable intent must NOT be routed to the file-WRITING pipeline. The
+		// worst case for an uncertain request is read-only investigation — a misread
+		// write-request degraded to analysis is merely re-asked; a misread
+		// read-request that writes files is destructive. Worst case = analyze.
+		parsed.Kind = model.IntentKindAnalyze
+		parsed.SuccessCriteria = []string{"investigate and report"}
 	}
 	if parsed.Goal == "" {
 		parsed.Goal = strings.TrimSpace(prompt)
@@ -100,6 +103,18 @@ func (i *LLMInputter) Build(ctx context.Context, sessionID, prompt string) (mode
 		parsed.Kind = model.IntentKindOther
 	}
 
+	// Safety guard (代码裁决): a pure look-up / explain request must NEVER route to
+	// the file-WRITING pipeline, even if the LLM classified it as a write-kind. The
+	// prompt asks for this, but a Light-tier model often mis-picks code for "查 X 文档".
+	// Downgrade to read-only — research when it's about external knowledge, else
+	// analyze. This only ever downgrades TOWARD read-only, so a false positive costs
+	// convenience (a code request answered as analysis, re-asked), never a wrongful
+	// write. Worst case for an uncertain request is read-only.
+	// Run the guard on the RAW prompt, not the normalized goal: the Inputter LLM
+	// often rephrases "查一下 X 有哪些" into a goal that drops the look-up cues, so
+	// the user's actual words are the faithful signal for read-only intent.
+	parsed.Kind = safeIntentKind(parsed.Kind, prompt)
+
 	i.push("info", "input", fmt.Sprintf("intent parsed: [%s] %s", parsed.Kind, parsed.Goal))
 
 	return model.IntentSpec{
@@ -110,6 +125,67 @@ func (i *LLMInputter) Build(ctx context.Context, sessionID, prompt string) (mode
 		SuccessCriteria: parsed.SuccessCriteria,
 		CreatedAt:       time.Now(),
 	}, nil
+}
+
+// --- intent safety guard helpers (deterministic look-up vs write detection) ---
+
+func isWriteKind(k string) bool {
+	switch k {
+	case model.IntentKindCodeGen, model.IntentKindDebug, model.IntentKindRefactor, model.IntentKindConfig:
+		return true
+	}
+	return false
+}
+
+// lookupCues are STRONG look-up phrasings (zh + en). Kept strict — bare "查"
+// matches 查询/检查 in coding contexts, so only unambiguous phrases are listed.
+var lookupCues = []string{
+	"查一下", "查询一下", "查下", "有哪些", "怎么用", "如何使用", "如何用", "什么是", "是什么",
+	"介绍一下", "说明一下", "解释一下", "怎么实现的", "是怎么", "了解一下", "查看文档",
+	"look up", "what is", "what are", "how does", "how do i use", "explain ", "list the", "describe ", "docs for", "documentation for",
+}
+
+// writeVerbs are kept comprehensive so a real coding request (which the guard must
+// NOT downgrade) is reliably detected and left alone.
+var writeVerbs = []string{
+	"实现", "写", "加", "添加", "改", "修改", "优化", "重构", "创建", "新建", "建一个", "修复", "生成",
+	"删除", "重命名", "封装", "集成", "支持", "搭建", "迁移", "升级",
+	"implement", "write", "add ", "create", "fix", "refactor", "optimize", "build ", "generate",
+	"modify", "edit ", "delete", "rename", "wrap", "integrate", "migrate", "upgrade", "scaffold",
+}
+
+// externalCues mark a look-up as about EXTERNAL knowledge (→ research) rather than
+// this codebase (→ analyze).
+var externalCues = []string{
+	"标准库", "三方", "第三方", "外部", "官方文档", "library", "package", "sdk", "api", "stdlib", "framework",
+}
+
+func containsAny(s string, cues []string) bool {
+	s = strings.ToLower(s)
+	for _, c := range cues {
+		if strings.Contains(s, strings.ToLower(c)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLookupGoal(g string) bool              { return containsAny(g, lookupCues) }
+func hasWriteVerb(g string) bool              { return containsAny(g, writeVerbs) }
+func mentionsExternalKnowledge(g string) bool { return containsAny(g, externalCues) }
+
+// safeIntentKind enforces the read-only-on-uncertainty invariant: a pure look-up /
+// explain goal classified as a write-kind is downgraded to read-only (research for
+// external knowledge, else analyze). It only ever downgrades toward read-only, so
+// it can never turn a request into a wrongful write.
+func safeIntentKind(kind, goal string) string {
+	if isWriteKind(kind) && isLookupGoal(goal) && !hasWriteVerb(goal) {
+		if mentionsExternalKnowledge(goal) {
+			return model.IntentKindResearch
+		}
+		return model.IntentKindAnalyze
+	}
+	return kind
 }
 
 var _ workflow.Inputter = (*LLMInputter)(nil)

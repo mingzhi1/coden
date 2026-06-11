@@ -530,6 +530,11 @@ func newKernel(ctx context.Context, workspaceRoot, stateDBPath string, opts laun
 	if err != nil {
 		return nil, nil, err
 	}
+	// Activate the configured auto-compact threshold (the L2 trigger headroom) in
+	// the Compact chain. Previously this config knob was parsed but never applied.
+	if fullCfg, cfgErr := config.NewLoader(workspaceRoot).Load(); cfgErr == nil {
+		llm.SetAutoCompactBuffer(fullCfg.Core.Context.AutoCompactThreshold)
+	}
 	k, err := kernel.NewPersistentWithWorkflowDependencies(workspaceRoot, stateDBPath, deps.Inputter, deps.Planner, deps.Executor, deps.ToolExecutor, deps.Acceptor)
 	if err != nil {
 		cleanup()

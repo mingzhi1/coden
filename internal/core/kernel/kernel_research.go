@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mingzhi1/coden/internal/core/model"
@@ -10,45 +11,55 @@ import (
 )
 
 // runResearchWorkflow handles Kind=research intents: gather EXTERNAL knowledge
-// (library docs, APIs, web) the codebase doesn't contain. It is the external,
-// read-only counterpart of runAnalyzeWorkflow, but realized through MULTI-AGENT
-// collaboration rather than a single role: the blackboard bucket engine runs the
-// existing agent pool (Planner → Executor[web_search/web_fetch] → Acceptor),
-// read-only, and the Responder synthesizes the findings. No new role is added —
-// the workflow TYPE (chosen by intent recognition) shapes the flow, the existing
-// agents collaborate, and read-only mode keeps research from touching the repo.
-func (k *Kernel) runResearchWorkflow(ctx context.Context, sessionID, workflowID string, intent model.IntentSpec, wfCtx model.WorkflowContext) {
-	wfCtx.ExecutorMode = model.ExecutorModeReadOnly // research never modifies the repo
-	taskCtx := model.WithWorkflowContext(ctx, wfCtx)
-
+// (library docs, APIs, web) the codebase doesn't contain. It is the EXTERNAL,
+// read-only TWIN of runAnalyzeWorkflow and shares its shape: a single read-only
+// investigate loop (the Analyzer machinery — no new role) that produces a PROSE
+// answer.
+//
+// It deliberately does NOT use the Planner→Executor→Acceptor bucket engine: that
+// shape PRODUCES code artifacts (success_cmd gates, file writes, accept), which is
+// wrong for a "look up and explain" task — there is no artifact to verify and the
+// deliverable is prose, not files. The Analyzer's investigate loop reaches
+// web_search / web_fetch via tool_search, so it researches the outside world; being
+// an investigate loop it never mutates the repo (read-only by construction).
+func (k *Kernel) runResearchWorkflow(ctx context.Context, sessionID, workflowID string, intent model.IntentSpec) {
 	k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
 		WorkflowID: workflowID, Step: "research", Status: "running",
 	})
 
-	// Multi-agent bucket engine: the Planner expands the research goal into
-	// read-only investigation tasks, the Executor runs them with web_search /
-	// web_fetch, the Acceptor judges each, Guardian bounds the loop.
-	s, runErr := k.runBucketWorkflow(taskCtx, sessionID, workflowID, intent, wfCtx)
-	content, checkpointResult := k.finishBucketWorkflow(taskCtx, sessionID, workflowID, intent, s, runErr)
+	findings, err := k.workflow.Analyzer().Analyze(ctx, intent)
+	if err != nil {
+		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("research: %w", err))
+		return
+	}
+	findings = strings.TrimSpace(findings)
 
 	k.events.Emit(sessionID, model.EventWorkflowStepUpdate, model.WorkflowStepUpdatedPayload{
 		WorkflowID: workflowID, Step: "research", Status: "done",
 	})
 
-	tasks := s.finalTasks()
-	if runErr != nil {
-		// Persist a partial turn summary, then surface the failure (mirrors the
-		// execute path's failure handling).
-		failedTS := k.buildTurnSummary(sessionID, workflowID, intent, tasks, checkpointResult)
-		if saveErr := k.turnSummaries.Save(failedTS); saveErr != nil {
-			clog.Session(sessionID).Warn("failed to save partial research turn summary",
-				"workflow_id", workflowID, "error", saveErr)
-		}
-		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("research: %w", runErr))
-		return
+	// Read-only by construction — auto-pass with no artifacts.
+	checkpointResult := model.CheckpointResult{
+		WorkflowID: workflowID,
+		SessionID:  sessionID,
+		Status:     "pass",
+		Evidence:   []string{"external research (read-only, no changes made)"},
+		CreatedAt:  time.Now().UTC(),
 	}
 
-	turnSummary := k.buildTurnSummary(sessionID, workflowID, intent, tasks, checkpointResult)
+	// The investigate loop's prose IS the user-facing answer; fall back to the
+	// Responder only when it came back empty.
+	content := findings
+	if content == "" {
+		content = k.buildResponderMessage(ctx, sessionID, intent, nil, checkpointResult, model.Artifact{})
+	}
+
+	turnSummary := k.buildTurnSummary(sessionID, workflowID, intent, []model.Task{{
+		ID:     "research",
+		Title:  intent.Goal,
+		Status: model.TaskStatusPassed,
+	}}, checkpointResult)
+
 	assistantMessage := model.Message{
 		ID:        nextKernelID("msg-assistant"),
 		SessionID: sessionID,
@@ -61,8 +72,7 @@ func (k *Kernel) runResearchWorkflow(ctx context.Context, sessionID, workflowID 
 		k.handleWorkflowError(sessionID, workflowID, fmt.Errorf("saga commit failed: %w", err))
 		return
 	}
-	clog.Session(sessionID).Info("research workflow completed",
-		"workflow_id", workflowID, "status", checkpointResult.Status, "tasks", len(tasks))
+	clog.Session(sessionID).Info("research workflow completed", "workflow_id", workflowID, "findings_len", len(content))
 
 	k.events.Emit(sessionID, model.EventMessageCreated, model.MessageCreatedPayload{
 		MessageID: assistantMessage.ID,
@@ -75,7 +85,6 @@ func (k *Kernel) runResearchWorkflow(ctx context.Context, sessionID, workflowID 
 		Evidence:   checkpointResult.Evidence,
 	})
 
-	// External findings are the most valuable thing to remember across turns
-	// (analyze_research.md §6 沉淀): persist via the shared memory pipeline.
+	// External findings are valuable to remember across turns (analyze_research.md §6).
 	k.persistTurnMemory(ctx, sessionID, workflowID, intent.Goal, nil, content, checkpointResult.Status, nil)
 }

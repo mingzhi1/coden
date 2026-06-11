@@ -44,8 +44,8 @@ func (p *searchCapturingPlanner) captured() []model.WorkflowContext {
 // searchExecutor responds to search requests with canned grep output.
 type searchExecutor struct {
 	testToolExecutor // embeds the pass-through executor
-	mu           sync.Mutex
-	kindsSeen    []string
+	mu               sync.Mutex
+	kindsSeen        []string
 }
 
 func (e *searchExecutor) Execute(ctx context.Context, req toolruntime.Request) (toolruntime.Result, error) {

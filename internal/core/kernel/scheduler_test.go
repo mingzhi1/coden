@@ -9,7 +9,155 @@ import (
 	"testing"
 
 	"github.com/mingzhi1/coden/internal/core/model"
+	"github.com/mingzhi1/coden/internal/core/workflow"
 )
+
+// researchRequestingExecutor reports it is BLOCKED on external knowledge via the
+// dedicated CodePlan.ResearchNeed control field (NOT a tool call) — §6.1.
+type researchRequestingExecutor struct{}
+
+func (researchRequestingExecutor) Build(_ context.Context, _ string, _ model.IntentSpec, _ []model.Task) (workflow.CodePlan, error) {
+	return workflow.CodePlan{ResearchNeed: "how to use the Acme payment API"}, nil
+}
+func (researchRequestingExecutor) TakeMessages() []model.WorkerMessage { return nil }
+
+// TestExecuteTask_ResearchSurfacesNeed verifies executeTask turns a blocked-on-
+// knowledge Executor (CodePlan.ResearchNeed set) into a failed outcome carrying the
+// research need — the signal the scheduler's apply() acts on, not the tool stream.
+func TestExecuteTask_ResearchSurfacesNeed(t *testing.T) {
+	k := NewWithWorkflowDependencies(t.TempDir(), testInputter{}, testPlanner{}, researchRequestingExecutor{}, testToolExecutor{}, testAcceptor{})
+	defer k.Close()
+	intent := model.IntentSpec{ID: "i1", SessionID: "s1", Goal: "integrate Acme payments", Kind: model.IntentKindCodeGen}
+	wfCtx := model.WorkflowContext{WorkspaceRoot: k.workspace.Root()}
+
+	in := taskInput{task: model.Task{ID: "t1", Title: "implement Acme payment", Status: model.TaskStatusCoding}}
+	out := k.executeTask(context.Background(), "s1", "wf", intent, in, wfCtx)
+
+	if out.status != model.TaskStatusFailed {
+		t.Errorf("research-blocked task surfaces as failed-with-need, got %q", out.status)
+	}
+	if !strings.Contains(out.researchNeed, "Acme payment API") {
+		t.Errorf("executeTask must surface the research need, got %q", out.researchNeed)
+	}
+}
+
+func hasStr(xs []string, v string) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// TestApply_ResearchBlockBreaksAndRebuilds verifies the single-writer break-and-
+// rebuild: a research-blocked task is superseded (skipped), a research task is
+// admitted for the need, the implementation is rebuilt at the next generation
+// depending on it (inheriting the work scope), and a downstream dependent is
+// rewired onto the rebuild so the graph follows the work.
+func TestApply_ResearchBlockBreaksAndRebuilds(t *testing.T) {
+	orig := model.Task{ID: "impl", Title: "implement Acme", Status: model.TaskStatusCoding, Files: []string{"pay.go"}}
+	downstream := model.Task{ID: "test", Title: "test it", Status: model.TaskStatusPlanned, DependsOn: []string{"impl"}}
+	s := newBucketScheduler([]model.Task{orig, downstream}, 1)
+
+	need := "how to use the Acme payment API"
+	s.apply(taskOutcome{taskID: "impl", status: model.TaskStatusFailed, researchNeed: need})
+
+	if s.completed["impl"] != model.TaskStatusSkipped {
+		t.Fatalf("blocked task should be superseded (skipped), got %q", s.completed["impl"])
+	}
+	researchID := researchTaskIDPrefix + slugForResearch(need)
+	rebuiltID := "impl" + researchGenSep + "1"
+	var research, rebuilt, dep *model.Task
+	for i := range s.bucket {
+		switch s.bucket[i].ID {
+		case researchID:
+			research = &s.bucket[i]
+		case rebuiltID:
+			rebuilt = &s.bucket[i]
+		case "test":
+			dep = &s.bucket[i]
+		}
+	}
+	if research == nil {
+		t.Fatal("expected a research task admitted for the need")
+	}
+	if !strings.Contains(research.SubGoal, "Acme") {
+		t.Errorf("research task should carry the query, got %q", research.SubGoal)
+	}
+	if rebuilt == nil {
+		t.Fatal("expected the implementation rebuilt at the next research generation")
+	}
+	if !hasStr(rebuilt.DependsOn, researchID) {
+		t.Errorf("rebuild must depend on the research task, deps=%v", rebuilt.DependsOn)
+	}
+	if !hasStr(rebuilt.Files, "pay.go") {
+		t.Errorf("rebuild must inherit the work scope, files=%v", rebuilt.Files)
+	}
+	if dep == nil || !hasStr(dep.DependsOn, rebuiltID) || hasStr(dep.DependsOn, "impl") {
+		t.Errorf("downstream must be rewired onto the rebuild, deps=%v", dep.DependsOn)
+	}
+}
+
+// TestApply_ResearchBlockDedupsSharedNeed verifies the bucket-as-dedup property:
+// two tasks blocked on the SAME need (applied serially by the single writer) admit
+// exactly ONE research task, and both rebuilds depend on it.
+func TestApply_ResearchBlockDedupsSharedNeed(t *testing.T) {
+	a := model.Task{ID: "a", Status: model.TaskStatusCoding}
+	b := model.Task{ID: "b", Status: model.TaskStatusCoding}
+	s := newBucketScheduler([]model.Task{a, b}, 2)
+
+	need := "how to use the Acme payment API"
+	s.apply(taskOutcome{taskID: "a", status: model.TaskStatusFailed, researchNeed: need})
+	s.apply(taskOutcome{taskID: "b", status: model.TaskStatusFailed, researchNeed: need})
+
+	researchID := researchTaskIDPrefix + slugForResearch(need)
+	count := 0
+	for _, tk := range s.bucket {
+		if tk.ID == researchID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("shared need must dedup to ONE research task, got %d", count)
+	}
+	for _, base := range []string{"a", "b"} {
+		rb := base + researchGenSep + "1"
+		var found *model.Task
+		for i := range s.bucket {
+			if s.bucket[i].ID == rb {
+				found = &s.bucket[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("expected rebuilt task %s", rb)
+		}
+		if !hasStr(found.DependsOn, researchID) {
+			t.Errorf("%s must depend on the shared research task, deps=%v", rb, found.DependsOn)
+		}
+	}
+}
+
+// TestApply_ResearchRebuildBudgetExhausted verifies the rebuild bound: a task
+// already at the max research generation that blocks AGAIN is not rebuilt — the
+// outcome degrades to the ordinary failure path (abandoned once retries are spent),
+// so research-driven re-planning strictly terminates.
+func TestApply_ResearchRebuildBudgetExhausted(t *testing.T) {
+	orig := model.Task{ID: "impl" + researchGenSep + "1", Status: model.TaskStatusCoding, Attempts: 2}
+	s := newBucketScheduler([]model.Task{orig}, 1)
+	s.maxRetries = 0 // no retries left → straight to abandon
+
+	s.apply(taskOutcome{taskID: orig.ID, status: model.TaskStatusFailed, researchNeed: "anything"})
+
+	for _, tk := range s.bucket {
+		if isResearchTaskID(tk.ID) {
+			t.Error("budget exhausted: must NOT spawn another research task")
+		}
+	}
+	if s.completed[orig.ID] != model.TaskStatusAbandoned {
+		t.Errorf("exhausted rebuild + retries → abandoned, got %q", s.completed[orig.ID])
+	}
+}
 
 // recordingWorker passes every task and records the order tasks were dispatched.
 type recordingWorker struct {

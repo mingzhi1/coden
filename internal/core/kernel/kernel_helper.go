@@ -20,9 +20,9 @@ import (
 	"github.com/mingzhi1/coden/internal/core/profile"
 	"github.com/mingzhi1/coden/internal/core/storagepath"
 	"github.com/mingzhi1/coden/internal/core/workflow"
-	"github.com/mingzhi1/coden/internal/tool/inventory"
 	clog "github.com/mingzhi1/coden/internal/log"
 	"github.com/mingzhi1/coden/internal/secretary"
+	"github.com/mingzhi1/coden/internal/tool/inventory"
 )
 
 // Turn status constants. "fail" comes from CheckpointResult.Status (acceptor

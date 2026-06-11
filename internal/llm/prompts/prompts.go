@@ -28,7 +28,12 @@ Rules for "kind":
 - "research" = gather EXTERNAL knowledge not in this codebase — library docs, third-party APIs, current best practices, anything that needs the web (read-only)
 - "plan_only" = user wants a plan/design/approach but explicitly NOT execution ("just plan", "how would you", "draft a plan", "don't write code yet", "propose an approach")
 - "other" = greetings, meta-requests, ambiguous input that fits none of the above
-- "code_gen" = anything else involving writing or modifying code
+- "code_gen" = writing or modifying code in THIS project (实现/写/加/改/创建/修复/重构/…)
+
+Look-up vs write — decide by the VERB, not the nouns:
+- A request to look up or explain information with NO code to write ("查一下…", "…有哪些", "…怎么用", "what is", "how does X work") is question / research / analyze:
+  - about an EXTERNAL library / API / general knowledge → research; about THIS codebase → analyze
+- A request that asks to write or change files (实现/写/加/改/创建/修复/build/implement) is code_gen / debug / refactor — even if it also names a library or package ("在 X 包里实现 Y" is code_gen).
 
 Rules:
 - Focus on the user's real requested outcome, not implementation mechanics
@@ -43,7 +48,10 @@ Example for debug:
 {"goal": "Fix Add function returning wrong result in calc.go", "kind": "debug", "success_criteria": ["calc.go uses + instead of -", "go test ./... passes", "Add(2,3) returns 5"]}
 
 Example for code_gen:
-{"goal": "Add JWT authentication middleware", "kind": "code_gen", "success_criteria": ["middleware.go compiles", "go build ./... passes", "unit tests pass"]}`
+{"goal": "Add JWT authentication middleware", "kind": "code_gen", "success_criteria": ["middleware.go compiles", "go build ./... passes", "unit tests pass"]}
+
+Example for research (external knowledge, no code written):
+{"goal": "List the common functions in Go's slices package and what each does", "kind": "research", "success_criteria": ["covers Contains/Sort/Index", "cites the package docs"]}`
 }
 
 // Dispatcher returns the system prompt for the Dispatcher — the role that
@@ -280,6 +288,11 @@ Given a goal and task list, produce a JSON tool plan matching this schema:
   web_search (and web_fetch for a specific doc URL) to look it up BEFORE writing
   code against it — never guess an external API. For unclear parts of THIS codebase,
   read_file/search first. Discover web_search/web_fetch via tool_search if not listed.
+- If the knowledge gap is too LARGE to resolve with a quick inline web_search/web_fetch
+  (you'd need to study several sources before you can write any code), emit a single
+  {"kind":"request_research","query":"<what to research>"} call instead of guessing.
+  The system spawns a research task and re-runs this task with its findings.
+  Prefer inline lookup for small gaps; use request_research only for substantial ones.
 - Reply ONLY with valid JSON, no markdown fences, no explanations` +
 		executorSafetyRules() + executorStyleRules()
 
